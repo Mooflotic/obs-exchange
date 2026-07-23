@@ -1,0 +1,103 @@
+diff --git a/observatory/docs/KNOWN_DEBT.md b/observatory/docs/KNOWN_DEBT.md
+index 2336fbe..e9d0657 100644
+--- a/observatory/docs/KNOWN_DEBT.md
++++ b/observatory/docs/KNOWN_DEBT.md
+@@ -116,5 +116,12 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+ - **Priorità:** bassa — degrado UX AssetChassis
+ - **Cosa:** se `api.chassis()` o un fetch member falliscono, AssetChassis degrada in silenzio a vista mono-NIC senza segnalare «vista parziale».
+ - **Perché debito:** l’operatore non sa che mancano NIC sibling; multi-NIC appare incompleto senza errore.
+ - **Fix quando servirà:** stato `partial` + messaggio UI; retry selettivo dei member falliti.
+ - **Vietato:** ripristinare `api.assets()` full inventory come workaround.
++
++## DEBT-MANUAL-CONF-BAR (OBS-026/028)
++
++- **Priorità:** bassa — rappresentazione, non funzionalità
++- **Cosa:** l’API inserisce la scelta manuale in `os_candidates` con `accuracy: 100`; la UI le disegna la barra di confidenza come se fosse un’inferenza misurata. La confidenza è proprietà della macchina; la scelta umana è autorevole per statuto, non «inferita al 100%». Il subtitle disambigua, la barra traveste.
++- **Fix quando servirà:** per candidati `source=manual` (o subtitle «scelta manuale») nascondere barra/numero e mostrare la dicitura al loro posto.
++- **Vietato:** estendere accuracy sintetiche ad altre fonti; rimuovere il subtitle «scelta manuale».
+diff --git a/observatory/docs/RELEASE_CHECKLIST.md b/observatory/docs/RELEASE_CHECKLIST.md
+index 9f8d875..4ec6936 100644
+--- a/observatory/docs/RELEASE_CHECKLIST.md
++++ b/observatory/docs/RELEASE_CHECKLIST.md
+@@ -5,5 +5,6 @@
+ 3. Eseguire test backend e frontend, compile Python, build web e controllo route OpenAPI duplicate.
+ 4. Verificare migrazioni idempotenti, backup, sicurezza delle allowlist e assenza di segreti.
+ 5. Controllare layout, accessibilità e assenza di overflow ai viewport supportati.
+ 6. Sincronizzare con esclusioni dati/segreti, verificare checksum e validare `docker compose config --quiet`.
+ 7. Eseguire deploy e QA live prima di commit, tag e push.
++   - **Igiene assert:** gli assert post-deploy che SCRIVONO si eseguono su un asset sacrificabile, oppure si chiudono con il restore nello stesso giro. Mai lasciare artefatti di test su record veri. (Le scritture mutate richiedono anche `X-CSRF-Token`, come la UI.)
+diff --git a/observatory/docs/obs-oui-test-restore-diff-029.md b/observatory/docs/obs-oui-test-restore-diff-029.md
+new file mode 100644
+index 0000000..0b337ec
+--- /dev/null
++++ b/observatory/docs/obs-oui-test-restore-diff-029.md
+@@ -0,0 +1,21 @@
++# OBS-OUI-TEST-RESTORE-DIFF-029
++
++## Summary
++
++Ripristina `test_oui_parse_ieee_and_lookup` in `tests/test_asset_identity.py` com’era a `main` @ 0.10.15 (`673b50b`): parse IEEE (hex + base16 + commenti + tab) → `upsert_oui` → `lookup_oui_vendor` su MAC completo con `reliable=True`.
++
++Import già presenti su main post-028; nessun adattamento necessario. Nessun bump VERSION / nessun deploy.
++
++## Suite
++
++`pytest observatory/tests/test_asset_identity.py` → **16 passed**.
++
++## Commit collaterale (stesso branch)
++
++Documentazione: `DEBT-MANUAL-CONF-BAR` in `KNOWN_DEBT.md`; regola igiene assert in `docs/RELEASE_CHECKLIST.md` §7 (+ puntatore in header `scripts/deploy.sh`).
++
++## Base
++
++`main` post OBS-028. Fingerbank 027 non toccato.
++
++**STOP:** merge/push main solo dopo GO.
+diff --git a/observatory/scripts/deploy.sh b/observatory/scripts/deploy.sh
+index ad6736f..8ba5ec8 100755
+--- a/observatory/scripts/deploy.sh
++++ b/observatory/scripts/deploy.sh
+@@ -7,10 +7,13 @@
+ #   OBS_HOST=mooflo@192.168.1.3 ./scripts/deploy.sh
+ #
+ # Sicurezza cablata (non opzionale):
+ #   - rsync esclude sempre data/ e .env
+ #   - prima del rsync: snapshot SQLite su data/backups/pre-deploy-YYYYmmdd-HHMM.db
++#
++# Post-deploy QA: vedi docs/RELEASE_CHECKLIST.md §7 (igiene assert su asset
++# sacrificabili / restore nello stesso giro; niente artefatti su record veri).
+ set -euo pipefail
+ 
+ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ HOST="${OBS_HOST:-mooflo@192.168.1.3}"
+ REMOTE_DIR="${OBS_REMOTE_DIR:-/volume1/Docker/observatory}"
+diff --git a/observatory/tests/test_asset_identity.py b/observatory/tests/test_asset_identity.py
+index 19c886e..e345b74 100644
+--- a/observatory/tests/test_asset_identity.py
++++ b/observatory/tests/test_asset_identity.py
+@@ -232,10 +232,25 @@ def test_identity_os_mac_mismatch_legacy_scan_meta(db):
+     assert ident["labels"]["os"] == OS_LABEL_MAC_MISMATCH
+     assert ident["os_attribution"]["observed_mac"] == "DC:A6:32:9C:A7:62"
+     assert "OS rilevato ma non attribuito" in ident["os_attribution"]["message"]
+ 
+ 
++def test_oui_parse_ieee_and_lookup(db):
++    sample = """
++# comment
++00-11-32   (hex)\t\tSynology Incorporated
++001132     (base 16)\t\tSynology Incorporated
++"""
++    parsed = parse_ieee_oui_txt(sample)
++    assert parsed["00:11:32"].startswith("Synology")
++    upsert_oui(db, "00:11:32", parsed["00:11:32"], source="ieee")
++    db.flush()
++    vendor, reliable = lookup_oui_vendor(db, "00:11:32:11:22:33")
++    assert reliable is True
++    assert "Synology" in vendor
++
++
+ def test_identity_manual_os_wins_and_divergence(db):
+     """OBS-026: manual os_guess wins labels/selection; scan divergence declared."""
+     asset = _asset(db, mac="00:11:32:AA:BB:01", ip="192.168.1.11", name="NAS")
+     asset.os_guess = "ADM 4.x (ASUSTOR)"
+     asset.meta = {
