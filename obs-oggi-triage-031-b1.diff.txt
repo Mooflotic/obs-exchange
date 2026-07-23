@@ -1,0 +1,657 @@
+diff --git a/observatory/web/src/triageRules.js b/observatory/web/src/triageRules.js
+new file mode 100644
+index 0000000..65354f7
+--- /dev/null
++++ b/observatory/web/src/triageRules.js
+@@ -0,0 +1,319 @@
++/**
++ * Pure client triage rules for Oggi name proposals (OBS-OGGI-TRIAGE-031).
++ * No API calls — decisions D1–D8 live here for UI + tests.
++ */
++
++export const ADOPT_CONFIDENCE_MIN = 0.75;
++
++const BARE_BRANDS = new Set([
++  "sky",
++  "amazon",
++  "bticino",
++  "tp-link",
++  "gaggenau",
++  "switch",
++  "rock",
++  "pc",
++  "unknown",
++  "roborock",
++]);
++
++/** Room / role tokens (word-boundary). "Telecamera" must NOT match "camera". */
++const ROOM_RE =
++  /\b(?:cabina|cucina|sala|bagno|biblioteca|camera|lavanderia|salone|media|mesh|ethernet|armadio|boschetti|ospiti|beatrice|padronale|etnico|saletta|tecnico|tv)\b|\bnic\s*\d+\b|sant['’]?agostino/i;
++
++/**
++ * D7: lower + collapse whitespace.
++ * @param {unknown} name
++ * @returns {string}
++ */
++export function normalizeName(name) {
++  return String(name ?? "")
++    .trim()
++    .toLowerCase()
++    .replace(/\s+/g, " ");
++}
++
++/**
++ * Specificity rank 1..5 (A3). Empty → 0.
++ * "PC 108" and "PC-68-13-…" share rank 1 (synthetics).
++ * @param {unknown} name
++ * @returns {number}
++ */
++export function scoreSpecificity(name) {
++  const raw = String(name ?? "").trim();
++  if (!raw) return 0;
++  const n = raw;
++  const lower = n.toLowerCase();
++
++  // Rank 1 — synthetic / Unknown
++  if (lower === "unknown" || lower === "pc") return 1;
++  if (/^amazon-[0-9a-f]{8,}$/i.test(n)) return 1;
++  // PC 108, PC-68-13-F3-…, PC-192-168-2-* (digits / hex / dots / dashes only)
++  if (/^pc[\s-][\d.a-f:-]+$/i.test(n)) return 1;
++
++  // Rank 2 — brand nudo / generico
++  if (BARE_BRANDS.has(lower)) return 2;
++
++  // Rank 5 — nome+modello / hostname parlante univoco
++  if (/fritz/i.test(n) && /\d{3,}/.test(n)) return 5;
++  if (/^roborock-vacuum/i.test(n)) return 5;
++  if (
++    /^(romo|amazonaqm|loewe|appletv|fritz)/i.test(n) &&
++    n.includes("-") &&
++    /\d/.test(n)
++  ) {
++    return 5;
++  }
++  if (
++    /^[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9][\w.-]*\d[\w.-]*$/.test(n) &&
++    !/^echo-/i.test(n)
++  ) {
++    return 5;
++  }
++  if (/^FRITZ!/i.test(n) && /\d/.test(n)) return 5;
++
++  // Rank 4 — nome umano con stanza/ruolo
++  if (/[—–]/.test(n) && (ROOM_RE.test(n) || /\bNIC\b/i.test(n))) return 4;
++  if (ROOM_RE.test(n) && /\s/.test(n)) return 4;
++  // "PC CabinaArmadio" (CamelCase room after PC)
++  const spaced = n.replace(/(?<=[a-z])(?=[A-Z])/g, " ");
++  if (/^pc\b/i.test(spaced) && ROOM_RE.test(spaced)) return 4;
++  if (/^FRITZ!/i.test(n)) return 4;
++
++  // Rank 3 — tipo+brand non univoco
++  if (
++    /^(raspberry\s*pi|switch\s+\w+|bms\s+honeywell|echo\s+amazon|dispositivo\s+apple|robot\s+\w+|gateway\s+\w+|cassiopea\s*\()/i.test(
++      n,
++    )
++  ) {
++    return 3;
++  }
++  if (
++    /\b(raspberry|switch|bms|echo|hub|gateway|robot|telecamera|dvr|citofono|lavastoviglie|piano|sensore|presa|apparato|touch|philips|honeywell)\b/i.test(
++      n,
++    ) &&
++    /\s/.test(n)
++  ) {
++    return 3;
++  }
++  if (/\bamazon\s+(air|plug|quality)\b/i.test(n)) return 3;
++
++  // Short SKUs (LGS328C, GS308EP) — brand-like, not parlanti
++  if (/^[A-Za-z]{2,4}\d{2,}[A-Za-z0-9]*$/.test(n)) return 2;
++
++  // Hostnames: allsky3, ropieee
++  if (/^[a-z][a-z0-9]+$/i.test(n) && !/\s/.test(n)) {
++    if (/\d/.test(n) || n.length >= 6) return 3;
++    return 2;
++  }
++
++  // "Allsky 3"
++  if (/^[A-Za-z]+\s+\d+$/.test(n)) return 3;
++
++  if (/\s/.test(n)) return 3;
++  return 2;
++}
++
++/**
++ * Count OTHER assets whose normalized name equals the proposed name (D7).
++ * @param {string} proposed
++ * @param {Array<{id?: number, name?: string}>} assets
++ * @param {number|null} [excludeAssetId]
++ * @returns {number}
++ */
++export function countCollisions(proposed, assets, excludeAssetId = null) {
++  const target = normalizeName(proposed);
++  if (!target) return 0;
++  let n = 0;
++  for (const a of assets || []) {
++    if (excludeAssetId != null && Number(a?.id) === Number(excludeAssetId)) {
++      continue;
++    }
++    if (normalizeName(a?.name) === target) n += 1;
++  }
++  return n;
++}
++
++/**
++ * @param {object} asset
++ * @returns {boolean}
++ */
++export function isManualName(asset) {
++  const meta = asset?.meta || {};
++  const overrides = new Set(
++    [...(asset?.manual_overrides || []), ...(meta.manual_overrides || [])].map(
++      String,
++    ),
++  );
++  if (overrides.has("name") || overrides.has("nome")) return true;
++
++  const fs =
++    asset?.field_sources?.name ||
++    asset?.field_sources?.nome ||
++    meta.field_sources?.name ||
++    meta.field_sources?.nome;
++  if (!fs) return false;
++  const src = String(typeof fs === "string" ? fs : fs.source || "")
++    .toLowerCase()
++    .trim();
++  return src === "manual" || src.startsWith("manual");
++}
++
++/**
++ * Asset ids that belong to a chassis with ≥2 members (D5).
++ * @param {object} chassisPayload
++ * @returns {Set<number>}
++ */
++export function chassisMemberIds(chassisPayload) {
++  const out = new Set();
++  const groups = chassisPayload?.chassis || chassisPayload?.groups || [];
++  for (const ch of groups) {
++    const members = ch.members || [];
++    if (members.length < 2) continue;
++    for (const m of members) {
++      const id = m?.asset_id ?? m?.id;
++      if (id != null) out.add(Number(id));
++    }
++  }
++  return out;
++}
++
++function topPendingProposal(asset) {
++  const proposals = (asset?.proposals || asset?.name_proposals || []).filter(
++    (p) => (p.status || "pending") === "pending" && p.value,
++  );
++  if (!proposals.length) return null;
++  return [...proposals].sort(
++    (x, y) => Number(y.confidence || 0) - Number(x.confidence || 0),
++  )[0];
++}
++
++function normalizeConfidence(raw) {
++  let c = Number(raw || 0);
++  if (!Number.isFinite(c)) return 0;
++  if (c > 1) c /= 100;
++  return c;
++}
++
++/**
++ * Build triage grid rows for name proposals.
++ *
++ * @param {Array<object>} assets
++ * @param {object} [chassisPayload]
++ * @returns {Array<object>}
++ */
++export function buildTriageRows(assets, chassisPayload = {}) {
++  const list = Array.isArray(assets) ? assets : [];
++  const chassisIds = chassisMemberIds(chassisPayload);
++  const rows = [];
++
++  for (const asset of list) {
++    if ((asset?.status || "") === "ignorato") continue;
++    const top = topPendingProposal(asset);
++    if (!top) continue;
++
++    const currentName = String(asset?.name || "").trim();
++    const proposedName = String(top.value || "").trim();
++    if (!proposedName) continue;
++    if (currentName && currentName === proposedName) continue;
++
++    const scoreCurrent = scoreSpecificity(currentName);
++    const scoreProposed = scoreSpecificity(proposedName);
++    const collisions = countCollisions(proposedName, list, asset.id);
++    const manual = isManualName(asset);
++    const chassisMember = chassisIds.has(Number(asset.id));
++    const confidence = normalizeConfidence(top.confidence);
++    const moreSpecific = scoreProposed > scoreCurrent;
++    // D3: parity included → rumore
++    const isNoise = scoreProposed <= scoreCurrent;
++
++    let verdict;
++    let recommendedAction;
++    let massEligible = false;
++
++    if (chassisMember) {
++      // D5: still a row, but mass archive excludes chassis members
++      verdict = "chassis";
++      recommendedAction = "verifica";
++      // If also less/equal specific, keep noise flag for declaration
++    } else if (isNoise) {
++      verdict = "rumore";
++      recommendedAction = "archivia";
++      massEligible = true;
++    } else if (collisions > 0) {
++      // D7
++      verdict = "collide";
++      recommendedAction = "verifica";
++    } else if (manual) {
++      // D4: enter only if strictly more specific → always verifica
++      if (moreSpecific) {
++        verdict = "upgrade";
++        recommendedAction = "verifica";
++      } else {
++        verdict = "rumore";
++        recommendedAction = "archivia";
++        massEligible = true;
++      }
++    } else if (
++      moreSpecific &&
++      collisions === 0 &&
++      confidence >= ADOPT_CONFIDENCE_MIN &&
++      !manual
++    ) {
++      // D8
++      verdict = "upgrade";
++      recommendedAction = "adotta";
++    } else {
++      verdict = "upgrade";
++      recommendedAction = "verifica";
++    }
++
++    // Chassis: if D3 noise, declare it but keep verdict chassis for triage UX
++    const noiseDeclared = isNoise || (manual && !moreSpecific);
++
++    rows.push({
++      kind: "proposta_nome",
++      key: `name-${asset.id}-${top.source}-${proposedName}`,
++      asset_id: asset.id,
++      current_name: currentName || null,
++      proposed_name: proposedName,
++      source: top.source || null,
++      confidence,
++      score_current: scoreCurrent,
++      score_proposed: scoreProposed,
++      collisions,
++      chassis_member: chassisMember,
++      is_noise: noiseDeclared,
++      mass_eligible: massEligible && !chassisMember,
++      manual_name: manual,
++      verdict,
++      recommended_action: recommendedAction,
++      presence_state: asset.presence_state ?? null,
++      port_label: asset.port_label ?? asset.port ?? null,
++      macs: asset.macs || [],
++      ips: asset.ips || [],
++      updated_at: top.updated_at || asset.last_seen || null,
++    });
++  }
++
++  return rows;
++}
++
++/**
++ * Summarize triage counts for dump / UI header.
++ * @param {Array<object>} rows
++ */
++export function summarizeTriage(rows) {
++  const list = rows || [];
++  return {
++    rows: list.length,
++    rumore: list.filter((r) => r.is_noise).length,
++    adotta: list.filter((r) => r.recommended_action === "adotta").length,
++    verifica: list.filter((r) => r.recommended_action === "verifica").length,
++    archivia: list.filter((r) => r.recommended_action === "archivia").length,
++    chassis: list.filter((r) => r.chassis_member).length,
++    mass_eligible: list.filter((r) => r.mass_eligible).length,
++    collide: list.filter((r) => r.verdict === "collide").length,
++  };
++}
+diff --git a/observatory/web/src/triageRules.test.js b/observatory/web/src/triageRules.test.js
+new file mode 100644
+index 0000000..e8721a3
+--- /dev/null
++++ b/observatory/web/src/triageRules.test.js
+@@ -0,0 +1,326 @@
++import assert from "node:assert/strict";
++import fs from "node:fs";
++import path from "node:path";
++import test from "node:test";
++import { fileURLToPath } from "node:url";
++
++import {
++  buildTriageRows,
++  countCollisions,
++  normalizeName,
++  scoreSpecificity,
++  summarizeTriage,
++} from "./triageRules.js";
++
++const __dirname = path.dirname(fileURLToPath(import.meta.url));
++
++function loadDump030() {
++  const doc = path.resolve(
++    __dirname,
++    "../../docs/obs-oggi-fasea-030.md",
++  );
++  const text = fs.readFileSync(doc, "utf8");
++  const m = text.match(/```json\n(\{[\s\S]*?\})\n```/);
++  assert.ok(m, "appendice JSON dump 030 non trovata");
++  return JSON.parse(m[1]);
++}
++
++function assetsFromDump(dump) {
++  const byId = new Map();
++  for (const r of dump.proposte_nome || []) {
++    byId.set(r.asset_id, {
++      id: r.asset_id,
++      name: r.nome_attuale || "",
++      status: r.status || "noto",
++      macs: r.macs || (r.mac ? [r.mac] : []),
++      ips: r.ips || (r.ip ? [r.ip] : []),
++      port_label: r.port_label || null,
++      presence_state: r.presence_state || null,
++      field_sources: {},
++      manual_overrides: [],
++      proposals: [
++        {
++          value: r.nome_proposto,
++          source: r.fonte,
++          confidence: r.confidenza,
++          status: "pending",
++          updated_at: r.updated_at,
++        },
++      ],
++    });
++  }
++  for (const c of dump.collisioni_inventario_top || []) {
++    for (const aid of c.asset_ids_norm || []) {
++      if (byId.has(aid)) continue;
++      byId.set(aid, {
++        id: aid,
++        name: c.proposto,
++        status: "noto",
++        macs: [],
++        ips: [],
++        field_sources: {},
++        manual_overrides: [],
++        proposals: [],
++      });
++    }
++  }
++  return [...byId.values()];
++}
++
++const CHASSIS_CASSIOPEA = {
++  chassis: [
++    {
++      id: 1,
++      label: "Cassiopea",
++      members: [{ asset_id: 5 }, { asset_id: 6 }],
++    },
++  ],
++};
++
++// ---------------------------------------------------------------------------
++// scoreSpecificity / normalizeName
++// ---------------------------------------------------------------------------
++
++test("PC 108 e PC-68-13-… stesso rank sintetico (1)", () => {
++  assert.equal(scoreSpecificity("PC 108"), 1);
++  assert.equal(scoreSpecificity("PC-68-13-F3-E7-D2-B2"), 1);
++  assert.equal(scoreSpecificity("PC-192-168-2-10"), 1);
++  assert.equal(scoreSpecificity("amazon-5b5bf3c111c404ae"), 1);
++  assert.equal(scoreSpecificity("Unknown"), 1);
++});
++
++test("scala A3: esempi tabella rank 5..2", () => {
++  assert.equal(scoreSpecificity("ROMO-A3021K"), 5);
++  assert.equal(scoreSpecificity("AmazonAQM-008G"), 5);
++  assert.equal(scoreSpecificity("Loewe-bild-7.77"), 5);
++  assert.equal(scoreSpecificity("roborock-vacuum-a70"), 5);
++
++  assert.equal(scoreSpecificity("Echo Cabina Armadio"), 4);
++  assert.equal(scoreSpecificity("SkyBooster2 BIBLIO — mesh"), 4);
++  assert.equal(scoreSpecificity("Cassiopea — NIC 1"), 4);
++
++  assert.equal(scoreSpecificity("Raspberry Pi"), 3);
++  assert.equal(scoreSpecificity("Switch Linksys"), 3);
++  assert.equal(scoreSpecificity("BMS Honeywell"), 3);
++  assert.equal(scoreSpecificity("Echo Amazon"), 3);
++
++  assert.equal(scoreSpecificity("Sky"), 2);
++  assert.equal(scoreSpecificity("Amazon"), 2);
++  assert.equal(scoreSpecificity("BTicino"), 2);
++  assert.equal(scoreSpecificity("Switch"), 2);
++});
++
++test("normalizeName: lower + spazi collassati (D7)", () => {
++  assert.equal(normalizeName("  Echo   Cucina  "), "echo cucina");
++  assert.equal(normalizeName("ECHO CUCINA"), "echo cucina");
++  assert.equal(normalizeName(null), "");
++});
++
++test("countCollisions esclude self e usa normalize", () => {
++  const assets = [
++    { id: 1, name: "Echo Cucina" },
++    { id: 2, name: "echo  cucina" },
++    { id: 48, name: "Amazon Air Quality Monitor" },
++  ];
++  assert.equal(countCollisions("Echo Cucina", assets, 48), 2);
++  assert.equal(countCollisions("Echo Cucina", assets, 1), 1);
++});
++
++// ---------------------------------------------------------------------------
++// 7 casi ambigui report 030 (esiti da decisioni D)
++// ---------------------------------------------------------------------------
++
++test("caso 1: Allsky/Pi → Raspberry Pi → rumore (D3 parità/≤)", () => {
++  const assets = [
++    {
++      id: 101,
++      name: "Allsky 3",
++      proposals: [{ value: "Raspberry Pi", source: "oui", confidence: 0.85 }],
++    },
++    {
++      id: 102,
++      name: "allsky3",
++      proposals: [{ value: "Raspberry Pi", source: "oui", confidence: 0.85 }],
++    },
++    {
++      id: 103,
++      name: "Openhab Pi",
++      proposals: [{ value: "Raspberry Pi", source: "oui", confidence: 0.85 }],
++    },
++    {
++      id: 104,
++      name: "ropieee",
++      proposals: [{ value: "Raspberry Pi", source: "oui", confidence: 0.85 }],
++    },
++  ];
++  const rows = buildTriageRows(assets, {});
++  assert.equal(rows.length, 4);
++  for (const r of rows) {
++    assert.equal(r.verdict, "rumore");
++    assert.equal(r.recommended_action, "archivia");
++    assert.equal(r.is_noise, true);
++    assert.ok(r.score_proposed <= r.score_current);
++  }
++});
++
++test("caso 2: AQM → Echo Cucina → collide (D7)", () => {
++  const assets = [
++    {
++      id: 48,
++      name: "Amazon Air Quality Monitor",
++      proposals: [
++        { value: "Echo Cucina", source: "ai", confidence: 0.93, status: "pending" },
++      ],
++    },
++    { id: 55, name: "Echo Cucina", proposals: [] },
++  ];
++  const rows = buildTriageRows(assets, {});
++  assert.equal(rows.length, 1);
++  assert.equal(rows[0].verdict, "collide");
++  assert.equal(rows[0].recommended_action, "verifica");
++  assert.ok(rows[0].collisions > 0);
++  assert.equal(rows[0].recommended_action !== "adotta", true);
++});
++
++test("caso 3: Cassiopea NIC → chassis_member (D5)", () => {
++  const assets = [
++    {
++      id: 5,
++      name: "Cassiopea — NIC 1",
++      proposals: [
++        {
++          value: "Cassiopea (ASUSTOR)",
++          source: "oui",
++          confidence: 0.85,
++          status: "pending",
++        },
++      ],
++    },
++    {
++      id: 6,
++      name: "Cassiopea — NIC 2",
++      proposals: [
++        {
++          value: "Cassiopea (ASUSTOR)",
++          source: "oui",
++          confidence: 0.85,
++          status: "pending",
++        },
++      ],
++    },
++  ];
++  const rows = buildTriageRows(assets, CHASSIS_CASSIOPEA);
++  assert.equal(rows.length, 2);
++  for (const r of rows) {
++    assert.equal(r.chassis_member, true);
++    assert.equal(r.verdict, "chassis");
++    assert.equal(r.mass_eligible, false);
++    assert.equal(r.recommended_action, "verifica");
++  }
++});
++
++test("caso 5: LGS328C → Switch → rumore (D3 parità)", () => {
++  const assets = [
++    {
++      id: 2,
++      name: "LGS328C",
++      proposals: [{ value: "Switch", source: "dns", confidence: 0.6 }],
++    },
++  ];
++  const rows = buildTriageRows(assets, {});
++  assert.equal(rows.length, 1);
++  assert.equal(rows[0].verdict, "rumore");
++  assert.equal(rows[0].recommended_action, "archivia");
++  assert.equal(rows[0].score_proposed, rows[0].score_current);
++});
++
++test("caso 7: Sky (manual) → PC CabinaArmadio → verifica (D4)", () => {
++  const assets = [
++    {
++      id: 82,
++      name: "Sky",
++      field_sources: { name: { source: "manual", confidence: 1 } },
++      manual_overrides: ["name"],
++      proposals: [
++        { value: "PC CabinaArmadio", source: "ai", confidence: 0.88 },
++      ],
++    },
++  ];
++  const rows = buildTriageRows(assets, {});
++  assert.equal(rows.length, 1);
++  assert.equal(rows[0].recommended_action, "verifica");
++  assert.equal(rows[0].verdict, "upgrade");
++  assert.ok(rows[0].score_proposed > rows[0].score_current);
++  assert.equal(rows[0].manual_name, true);
++});
++
++test("D8: adotta solo se più specifica + 0 collisioni + conf≥0.75 + non-manual", () => {
++  const assets = [
++    {
++      id: 36,
++      name: "Robot Roborock",
++      proposals: [
++        { value: "roborock-vacuum-a70", source: "mdns", confidence: 0.92 },
++      ],
++    },
++  ];
++  const rows = buildTriageRows(assets, {});
++  assert.equal(rows[0].recommended_action, "adotta");
++  assert.equal(rows[0].verdict, "upgrade");
++});
++
++test("D8 negato: conf < 0.75 → verifica", () => {
++  const assets = [
++    {
++      id: 9,
++      name: "GS308EP",
++      proposals: [
++        { value: "Switch Netgear", source: "oui", confidence: 0.6 },
++      ],
++    },
++  ];
++  const rows = buildTriageRows(assets, {});
++  assert.equal(rows[0].recommended_action, "verifica");
++});
++
++// ---------------------------------------------------------------------------
++// Dump 030: conteggi con regole definitive (parità inclusa)
++// ---------------------------------------------------------------------------
++
++test("dump 030: 65 righe; rumore definitivo (D3 ≤) vs bozza 26", () => {
++  const dump = loadDump030();
++  assert.equal(dump.proposte_nome.length, 65);
++  assert.equal(dump.counts.proposte_rumore_meno_specifiche, 26);
++
++  const assets = assetsFromDump(dump);
++  const rows = buildTriageRows(assets, CHASSIS_CASSIOPEA);
++  const summary = summarizeTriage(rows);
++
++  assert.equal(summary.rows, 65, "ogni proposta dump diventa una riga");
++
++  // Bozza A1: score_prop < score_cur → 26. Definitivo D3: ≤ (parità inclusa).
++  const rumoreDefinitivo = summary.rumore;
++  assert.ok(
++    rumoreDefinitivo > 26,
++    `parità inclusa deve alzare il rumore oltre 26 (got ${rumoreDefinitivo})`,
++  );
++
++  // Valori pinati dalle regole definitive (riportare in report B1)
++  assert.equal(rumoreDefinitivo, 48);
++  assert.equal(summary.adotta, 9);
++  assert.equal(summary.chassis, 2);
++
++  // eslint-disable-next-line no-console
++  console.log(
++    JSON.stringify({
++      dump_rows: 65,
++      bozza_rumore_lt: 26,
++      definitivo_rumore_le: rumoreDefinitivo,
++      adotta_consigliati: summary.adotta,
++      verifica: summary.verifica,
++      chassis_members: summary.chassis,
++      mass_eligible: summary.mass_eligible,
++      collide: summary.collide,
++    }),
++  );
++});
