@@ -1,7 +1,7 @@
 # OBS-OGGI-TRIAGE-031 — B2-ter (D9 + D10 + S1)
 
-**Branch:**   
-**Commit:**  ()`feature/oggi-triage-031`  
+**Branch:** `feature/oggi-triage-031`  
+**Commit:** `6a8a363`  
 **VERSION:** 0.10.19 (invariata)  
 **Deploy:** no — STOP review
 
@@ -56,7 +56,7 @@ Alternativa simulata: max `scoreSpecificity`, a parità max confidenza.
 | · manual-upgrade | **4** |
 | · sotto-soglia | **23** |
 | rumore (righe griglia = top) | **36** |
-| **massa Archivia rumore (tutte le pending ≤ score)** | **192** |
+| **massa Archivia rumore (tutte le pending ≤ score)** | **192** su **67** asset |
 
 Confirm se 192 > 36: «Archiviare 192 proposte su 67 asset (include proposte di secondo livello non visibili in griglia)?»
 
