@@ -11,6 +11,8 @@ Design:
 - provenance[] + title/purpose aggregato
 - UI: titolo dinamico + «Traffico da: eth #N · wifi #M»
 
+Nota: habitsUi.js può apparire come NEW se 2B non ancora in git HEAD.
+
 diff --git a/observatory/api/app/routers/assets.py b/observatory/api/app/routers/assets.py
 index 7c25024..729d5af 100644
 --- a/observatory/api/app/routers/assets.py
@@ -817,3 +819,298 @@ index b0f3c6b..1d9b0e7 100644
    padding: 6px 0; border-bottom: 1px dashed var(--inv-border-soft); font-size: 12.5px;
  }
  .inv-iface .imac { color: var(--inv-mut); }
+
+=== NEW FILE: observatory/web/src/habitsUi.js ===
+diff --git a/observatory/web/src/habitsUi.js b/observatory/web/src/habitsUi.js
+new file mode 100644
+index 0000000..8d7cd04
+--- /dev/null
++++ b/observatory/web/src/habitsUi.js
+@@ -0,0 +1,172 @@
++/** Wave 1a Parte 2B — presentazione Abitudini (descrittivo, niente giudizi). */
++
++import { formatBytes } from "./spanUi.js";
++
++export const HABITS_VISIBLE_DEST = 8;
++export const HABITS_VISIBLE_PORTS = 5;
++export const HABITS_DIR_RATIO_MIN = 0.2;
++
++export const EMPTY_KIND_TEXT = {
++  silence_observed:
++    "Nessun flusso osservato in 7 giorni. Con copertura completa, questo è silenzio osservato sullo SPAN.",
++  maybe_unmirrored:
++    "Nessun flusso in 7 giorni. Può esserci traffico non mirrorato (es. WiFi↔WiFi).",
++  unknown_gap:
++    "Nessun flusso in 7 giorni — non sappiamo se il device è quieto o fuori dallo SPAN.",
++};
++
++export { formatBytes };
++
++export function emptyKindMessage(emptyKind) {
++  if (!emptyKind) return null;
++  return EMPTY_KIND_TEXT[emptyKind] || null;
++}
++
++export function isEmptySilenceKind(emptyKind) {
++  return (
++    emptyKind === "silence_observed" ||
++    emptyKind === "maybe_unmirrored" ||
++    emptyKind === "unknown_gap"
++  );
++}
++
++/** Format direction_since ISO for the meta line (short date). */
++export function formatDirectionSince(iso) {
++  if (!iso) return "";
++  const d = new Date(iso);
++  if (Number.isNaN(d.getTime())) return "";
++  return new Intl.DateTimeFormat("it-IT", {
++    timeZone: "Europe/Rome",
++    day: "numeric",
++    month: "short",
++    year: "numeric",
++  }).format(d);
++}
++
++export function directionMetaLine(habits) {
++  if (!habits) return null;
++  const ratio = Number(habits.direction_sample_ratio) || 0;
++  if (ratio <= 0) return null;
++  const pct = Math.round(ratio * 100);
++  const since = formatDirectionSince(habits.direction_since);
++  if (since) {
++    return `Direzione dal ${since} · ${pct}% delle osservazioni`;
++  }
++  return `Direzione · ${pct}% delle osservazioni`;
++}
++
++/** "Traffico da: eth #51 (90 oss) · wifi #30 (0 oss)" */
++export function provenanceLine(habits) {
++  const list = Array.isArray(habits?.provenance) ? habits.provenance : [];
++  if (!list.length || habits?.scope !== "chassis") return null;
++  const parts = list.map((p) => {
++    const media = p.media || "iface";
++    const n = Number(p.samples) || 0;
++    return `${media} #${p.asset_id} (${n} oss)`;
++  });
++  return `Traffico da: ${parts.join(" · ")}`;
++}
++
++/**
++ * Remap UTC hour bins → dense 0–23 in Europe/Rome (or given tz).
++ * Same-calendar-day UTC anchors; DST handled by Intl.
++ */
++export function hoursToLocalBins(hours, timezone = "Europe/Rome", refDate = new Date()) {
++  const local = Array.from({ length: 24 }, (_, hour) => ({
++    hour,
++    bytes: 0,
++    samples: 0,
++  }));
++  const y = refDate.getUTCFullYear();
++  const m = refDate.getUTCMonth();
++  const day = refDate.getUTCDate();
++  for (const bin of hours || []) {
++    const utcH = Number(bin.hour);
++    if (!Number.isFinite(utcH) || utcH < 0 || utcH > 23) continue;
++    const d = new Date(Date.UTC(y, m, day, utcH, 0, 0));
++    let localH = Number(
++      new Intl.DateTimeFormat("en-GB", {
++        timeZone: timezone,
++        hour: "numeric",
++        hour12: false,
++      }).format(d),
++    );
++    if (localH === 24) localH = 0;
++    if (!Number.isFinite(localH) || localH < 0 || localH > 23) continue;
++    local[localH].bytes += Number(bin.bytes) || 0;
++    local[localH].samples += Number(bin.samples) || 0;
++  }
++  return local;
++}
++
++export function hourTooltip(bin) {
++  const h = String(bin.hour).padStart(2, "0");
++  return `${h}:00 · ${formatBytes(bin.bytes)} · ${bin.samples} oss.`;
++}
++
++export function sparklineHeights(bins) {
++  const max = Math.max(0, ...bins.map((b) => Number(b.bytes) || 0));
++  return bins.map((b) => {
++    const n = Number(b.bytes) || 0;
++    if (max <= 0 || n <= 0) return 0;
++    return Math.max(0.08, n / max);
++  });
++}
++
++/** Whether destination rows may show out|in bars. */
++export function showDirectionBars(habits) {
++  const ratio = Number(habits?.direction_sample_ratio);
++  return Number.isFinite(ratio) && ratio >= HABITS_DIR_RATIO_MIN;
++}
++
++/**
++ * Split bar fractions for Opzione A. Null if row has no direction data.
++ * Returns { outPct, inPct } in 0–100 of the directed subset.
++ */
++export function directionSplit(dest) {
++  const out = dest?.bytes_out;
++  const inn = dest?.bytes_in;
++  if (out == null || inn == null) return null;
++  const o = Number(out);
++  const i = Number(inn);
++  if (!Number.isFinite(o) || !Number.isFinite(i) || o < 0 || i < 0) return null;
++  const sum = o + i;
++  if (sum <= 0) return { outPct: 50, inPct: 50 };
++  return {
++    outPct: (o / sum) * 100,
++    inPct: (i / sum) * 100,
++  };
++}
++
++export function formatDirPair(dest) {
++  if (dest?.bytes_out == null || dest?.bytes_in == null) return null;
++  return `${formatBytes(dest.bytes_out)} | ${formatBytes(dest.bytes_in)}`;
++}
++
++export function visibleDestinations(destinations, expanded) {
++  const list = Array.isArray(destinations) ? destinations : [];
++  if (expanded || list.length <= HABITS_VISIBLE_DEST) {
++    return { shown: list, hidden: 0 };
++  }
++  return {
++    shown: list.slice(0, HABITS_VISIBLE_DEST),
++    hidden: list.length - HABITS_VISIBLE_DEST,
++  };
++}
++
++export function visiblePorts(ports, expanded) {
++  const list = Array.isArray(ports) ? ports : [];
++  if (expanded || list.length <= HABITS_VISIBLE_PORTS) {
++    return { shown: list, hidden: 0 };
++  }
++  return {
++    shown: list.slice(0, HABITS_VISIBLE_PORTS),
++    hidden: list.length - HABITS_VISIBLE_PORTS,
++  };
++}
++
++export function portChipLabel(port) {
++  const p = port?.port ?? "?";
++  const proto = (port?.proto || "").toLowerCase();
++  return proto && proto !== "tcp" ? `${p}/${proto}` : String(p);
++}
+
+=== NEW FILE: observatory/web/src/habitsUi.test.js ===
+diff --git a/observatory/web/src/habitsUi.test.js b/observatory/web/src/habitsUi.test.js
+new file mode 100644
+index 0000000..b69ff65
+--- /dev/null
++++ b/observatory/web/src/habitsUi.test.js
+@@ -0,0 +1,107 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import {
++  EMPTY_KIND_TEXT,
++  directionMetaLine,
++  directionSplit,
++  emptyKindMessage,
++  formatDirectionSince,
++  hoursToLocalBins,
++  hourTooltip,
++  isEmptySilenceKind,
++  provenanceLine,
++  showDirectionBars,
++  sparklineHeights,
++  visibleDestinations,
++  visiblePorts,
++} from "./habitsUi.js";
++
++test("empty_kind testi esatti §7", () => {
++  assert.equal(
++    emptyKindMessage("silence_observed"),
++    EMPTY_KIND_TEXT.silence_observed,
++  );
++  assert.match(emptyKindMessage("silence_observed"), /silenzio osservato sullo SPAN/);
++  assert.match(emptyKindMessage("maybe_unmirrored"), /non mirrorato/);
++  assert.match(emptyKindMessage("unknown_gap"), /non sappiamo/);
++  assert.equal(emptyKindMessage("thin_sample"), null);
++  assert.equal(isEmptySilenceKind("silence_observed"), true);
++  assert.equal(isEmptySilenceKind("thin_sample"), false);
++});
++
++test("directionSplit Opzione A proporzioni", () => {
++  const s = directionSplit({ bytes_out: 400_000, bytes_in: 3_600_000 });
++  assert.ok(s);
++  assert.ok(Math.abs(s.outPct - 10) < 0.01);
++  assert.ok(Math.abs(s.inPct - 90) < 0.01);
++  assert.equal(directionSplit({ bytes_out: null, bytes_in: 1 }), null);
++  assert.equal(directionSplit({ bytes_out: 1, bytes_in: null }), null);
++});
++
++test("showDirectionBars soglia 0.20", () => {
++  assert.equal(showDirectionBars({ direction_sample_ratio: 0.19 }), false);
++  assert.equal(showDirectionBars({ direction_sample_ratio: 0.2 }), true);
++  assert.equal(showDirectionBars({ direction_sample_ratio: 0 }), false);
++});
++
++test("hoursToLocalBins remappa UTC → Europe/Rome", () => {
++  // Winter-ish: use a fixed January UTC date so CET = UTC+1
++  const ref = new Date(Date.UTC(2026, 0, 15, 12, 0, 0));
++  const bins = hoursToLocalBins(
++    [{ hour: 20, bytes: 12_000_000, samples: 34 }],
++    "Europe/Rome",
++    ref,
++  );
++  assert.equal(bins[21].bytes, 12_000_000);
++  assert.equal(bins[21].samples, 34);
++  assert.equal(bins[20].bytes, 0);
++  assert.equal(hourTooltip(bins[21]), "21:00 · 12 MB · 34 oss.");
++});
++
++test("sparklineHeights normalizza su max", () => {
++  const h = sparklineHeights([
++    { bytes: 0 },
++    { bytes: 50 },
++    { bytes: 100 },
++  ]);
++  assert.equal(h[0], 0);
++  assert.equal(h[2], 1);
++  assert.ok(h[1] > 0 && h[1] < 1);
++});
++
++test("visibleDestinations max 8 + hidden", () => {
++  const list = Array.from({ length: 12 }, (_, i) => ({ dst_ip: `1.1.1.${i}` }));
++  const { shown, hidden } = visibleDestinations(list, false);
++  assert.equal(shown.length, 8);
++  assert.equal(hidden, 4);
++  assert.equal(visibleDestinations(list, true).hidden, 0);
++});
++
++test("visiblePorts max 5", () => {
++  const list = Array.from({ length: 8 }, (_, i) => ({ port: i }));
++  assert.equal(visiblePorts(list, false).shown.length, 5);
++  assert.equal(visiblePorts(list, false).hidden, 3);
++});
++
++test("directionMetaLine solo se ratio > 0", () => {
++  assert.equal(directionMetaLine({ direction_sample_ratio: 0 }), null);
++  const line = directionMetaLine({
++    direction_sample_ratio: 0.38,
++    direction_since: "2026-07-23T00:00:00Z",
++  });
++  assert.match(line, /Direzione dal/);
++  assert.match(line, /38% delle osservazioni/);
++  assert.ok(formatDirectionSince("2026-07-23T00:00:00Z"));
++});
++
++test("provenanceLine solo scope chassis", () => {
++  assert.equal(provenanceLine({ scope: "asset", provenance: [{ asset_id: 1, media: "eth", samples: 3 }] }), null);
++  const line = provenanceLine({
++    scope: "chassis",
++    provenance: [
++      { asset_id: 51, media: "eth", samples: 90 },
++      { asset_id: 30, media: "wifi", samples: 0 },
++    ],
++  });
++  assert.equal(line, "Traffico da: eth #51 (90 oss) · wifi #30 (0 oss)");
++});
