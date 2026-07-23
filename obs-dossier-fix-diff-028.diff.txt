@@ -1,0 +1,1419 @@
+diff --git a/observatory/CHANGELOG.md b/observatory/CHANGELOG.md
+index 2db0820..5ed138b 100644
+--- a/observatory/CHANGELOG.md
++++ b/observatory/CHANGELOG.md
+@@ -1,11 +1,52 @@
+ # Changelog
+ 
++## 0.10.19 — 2026-07-23
++
++- **OBS-DOSSIER-FIX-028:** CandidateList collassa dopo la scelta (+ «cambia»); placeholder neutro «nessuna di queste?»; ordine Dossier chi sei → connesso; AssetChassis senza fetch inventario (niente spinner infinito) + errore/vuoto; divergenza OS solo su label normalizzate (truncation ≠ divergenza).
++
++## 0.10.18 — 2026-07-23
++
++- **OBS-FINGERBANK-DIFF-027:** Fingerbank on-demand da Dossier `azioni ▾` (POST interrogate confermato). Cache `hash(opt55|opt60)` TTL 90g; CandidateList score=confidenza, fonte esterna; adopt → `source=manual`. DHCP opt55/60 su `asset.meta.dhcp` (+ seed da `dhcp.log`). Hostname solo DHCP, mai MAC completo. Chiave solo `.env`.
++
++## 0.10.17 — 2026-07-23
++
++- **OBS-MANUAL-WINS-DIFF-026:** scelta OS umana vince a schermo (`labels.os` / `os_selected`); `os_divergence` quando nmap diverge; `field_sources` uniformato a `manual` (+ migrazione bootstrap); `used_ports` da nmap `<portused>` persistiti in evidence → `os_ports_used`.
++
++## 0.10.16 — 2026-07-23
++
++- **Restyle OBS-DESIGN-SPEC-025 (fasi A–F):** token ardesia + Inter/JetBrains Mono; ESLint `no-undef`; primitivi UI (DenseRow, StatusBadge, DirectionBar, HourlySparkline, CandidateList, SaveIndicator); Dossier con TOC sticky + OS multi-match; note auto-save; Inventario su tipografia sans; vista **Oggi** (coda triage proposte/nuovi/monitor). Spec in `docs/obs-design-spec-025.md`.
++
+ ## 0.10.15 — 2026-07-23
+ 
+ - **Fix Inventario crash (regressione 0.10.11):** badge infrastruttura chiamava `catLabel()` non definito nello SFC → `ReferenceError` al primo device infra e smontaggio della vista. Ripristinato helper; hardened `matchDeviceFilter`/`sourceLabel(dhcp)`; `AssetDecide`/`AssetNotes` tollerano `assetId` null.
+ 
++## 0.10.14 — 2026-07-23
++
++- **Hostname DHCP → name_proposals (`source=dhcp`):** collector legge `dhcp.log`/`ja4d.log`, API `POST /api/ingest/dhcp-hostnames`. Confidence alta su hostname parlanti (`AmazonAQM-*`, `ROMO-*`, `*-bild-*`, …); skip rumore (`amazon-<hex>`, `Amazon`, Fritz `PC-MAC`). Solo proposta, mai auto-rinomina. Priorità display: umano > dhcp parlante > fritz sintetico (escluso) > oui.
++- **Adozioni:** Amazon AQM 48/64, Loewe bild 7.77 (42) — identificati da hostname DHCP.
++
++## 0.10.13 — 2026-07-23
++
++- **DHCP fingerprint in dhcp.log:** `zeek/dhcp_fingerprint.zeek` estende `DHCP::Info` con `param_list` (opt 55) e `vendor_class` (opt 60); `@load` da `local.zeek` accanto a JA4. Input Fingerbank correlabile a MAC/IP senza package extra. Volume compose: `./zeek` intera.
++
++## 0.10.12 — 2026-07-23
++
++- **Sensore Zeek JA4 in produzione:** image `observatory-zeek-ja4:prod` (base `zeek/zeek:8.2` + package `zeek/foxio/ja4` v0.18.8); `@load ja4` in `zeek/local.zeek`. Impronte TLS (`ssl.log` → `ja4`/`ja4s`) + JA4D DHCP (`ja4d.log`). Prune esteso a `ja4d*`. Spike accettato (~98% ja4, RAM ~121 MiB/768). Rollback: `image: zeek/zeek:8.2` + `docker compose --profile span up -d --force-recreate zeek`.
++
++## 0.10.11 — 2026-07-23
++
++- **Abitudini — contesto AI in UI (OBS-DOSSIER-COMPLETE-022):** `/habits` espone `dst_context` + `dst_category` da `ip_intel`; riga destinazione = descrizione leggibile in evidenza, nome tecnico+IP solo in tooltip (fallback middle-ellipsis se `non_deducibile`).
++- **Dossier autosufficiente:** `AssetChassis` / `AssetDecide` / `AssetNotes` estratti; `/dossier/:id` ha interfacce+presenza, Tu decidi (rinomina/adotta/ignora/watch), note editabili, Identity (OS protect) e Habits. Drawer Inventario riusa Decide/Notes (anteprima).
++- **Contesto — automazione + confidence (022 addendum):**
++  - job notturno `IP_INTEL_CONTEXT_NIGHTLY_*` (default OFF): solo `context IS NULL`, mai ritenta `non_deducibile`; stesso batch/sleep dello script
++  - correzione manuale `PATCH /api/ip-intel/context` (`source=manual`, priorità max, ✎ in Abitudini)
++  - ritento esplicito script `--retry-non-deducibile` (dopo validazione prompt)
++  - UI: conf≥0.7 normale · 0.3–0.7 arancione + «probabile:» · manual tono distinto; tooltip con fonte+conf
++  - prompt propositivo (ipotesi su indizi leggibili) — validare con `--preview` su batch misto prima di apply/retry
++  - **confidence strutturata (OBS-IP-INTEL-STRUCT-023):** colonne `context_category` / `context_what` / `context_confidence` = fonte di verità; `context` blob solo mirror derivato; backfill one-shot con log fail (`scripts/ip_intel_context_struct_migrate.py`); `/habits` → `dst_category`/`dst_context`/`dst_confidence`/`dst_source`; priorità `manual` > `ai`
++
+ ## 0.10.10 — 2026-07-23
+ 
+ - **Dossier pagina piena + sidebar RADAR/MAPPA (OBS-DOSSIER-PAGE-021):** `AssetIdentity` / `AssetHabits` estratti (fetch autonomo, OS actions nel componente); `/dossier` hub + `/dossier/:id`; drawer Inventario = anteprima + Tu decidi + «Apri Dossier»; stub onesti Oggi/Osservatorio/Come funziona.
+ 
+ ## 0.10.9 — 2026-07-23
+diff --git a/observatory/VERSION b/observatory/VERSION
+index ba78838..86c1984 100644
+--- a/observatory/VERSION
++++ b/observatory/VERSION
+@@ -1 +1 @@
+-0.10.15
++0.10.19
+diff --git a/observatory/api/app/services/asset_identity.py b/observatory/api/app/services/asset_identity.py
+index ed48220..fef3a50 100644
+--- a/observatory/api/app/services/asset_identity.py
++++ b/observatory/api/app/services/asset_identity.py
+@@ -1,9 +1,10 @@
+ """Clean, dossier-facing identity facts for one asset (Strato 1 «Chi sei»)."""
+ 
+ from __future__ import annotations
+ 
++import re
+ from datetime import datetime
+ from typing import Any
+ 
+ from sqlalchemy import select
+ from sqlalchemy.orm import Session, joinedload
+@@ -15,14 +16,61 @@ from app.services.macutil import is_locally_administered, normalize_mac
+ from app.services.os_scan_guard import exclusion_payload
+ from app.services.oui_store import lookup_oui_vendor
+ 
+ OS_LABEL_MAC_MISMATCH = "OS non attribuito (MAC discordante — vedi dettagli)"
+ 
+-# Prefer richer announcement sources first; then FRITZ hostname.
++
++def normalize_os_label(value: str) -> str:
++    """Collapse whitespace/dashes for OS string comparison (OBS-028)."""
++    t = re.sub(r"\s+", " ", (value or "").strip().lower())
++    t = re.sub(r"\s*[-–—]\s*", "-", t)
++    return t
++
++
++def os_labels_equivalent(a: str, b: str) -> bool:
++    """True when labels are the same OS, including truncated forms.
++
++    e.g. ``Linux 4.15`` ≡ ``Linux 4.15 - 5.19``.
++    """
++    na = normalize_os_label(a)
++    nb = normalize_os_label(b)
++    if not na or not nb:
++        return False
++    if na == nb:
++        return True
++    shorter, longer = (na, nb) if len(na) <= len(nb) else (nb, na)
++    if not longer.startswith(shorter):
++        return False
++    rest = longer[len(shorter) :]
++    if not rest:
++        return True
++    # Boundary: next char is separator or digit continuation of a truncated range
++    return rest[0] in "-–—,;/|(. " or rest.startswith(" ")
++
++
++def normalize_field_source_label(src: str) -> str:
++    """Unify field_sources vocabulary: ``manuale`` → ``manual`` (OBS-026)."""
++    s = str(src or "")
++    if s == "manuale" or s.startswith("manuale"):
++        return "manual" + s[len("manuale") :]
++    return s
++
++
++def is_manual_os_override(asset: Asset) -> bool:
++    """True when human locked ``os_guess`` via manual_overrides."""
++    meta = dict(asset.meta or {})
++    overrides = {str(x) for x in (meta.get("manual_overrides") or [])}
++    if "os_guess" not in overrides:
++        return False
++    return bool((asset.os_guess or "").strip())
++
++
++# Prefer richer announcement sources first; DHCP parlante > FRITZ > …
+ _HOSTNAME_SOURCE_RANK = {
+     "mdns": 100,
+     "dns": 90,
++    "dhcp": 85,
+     "ssdp": 70,
+     "fritz": 50,
+     "nmap": 40,
+     "ai": 10,
+ }
+@@ -381,20 +429,93 @@ def build_asset_identity(
+         "trust_level": asset.trust_level or "",
+     }
+ 
+     if os_name and os_accuracy is not None:
+         if os_attribution and os_attribution.get("kind") == "chassis_sibling":
+-            os_label = (
++            scan_os_label = (
+                 f"{os_name} ({os_accuracy}%) · sibling "
+                 f"{os_attribution.get('observed_mac') or ''}".rstrip()
+             )
+         else:
+-            os_label = f"{os_name} ({os_accuracy}%)"
++            scan_os_label = f"{os_name} ({os_accuracy}%)"
+     elif os_attribution:
+-        os_label = OS_LABEL_MAC_MISMATCH
++        scan_os_label = OS_LABEL_MAC_MISMATCH
++    else:
++        scan_os_label = "non rilevato"
++
++    # Multi-match OS candidates for UI (§3.5) — from evidence.raw_hints, never invent.
++    os_candidates: list[dict[str, Any]] = []
++    seen_names: set[str] = set()
++    for hint in list(os_evidence.get("raw_hints") or [])[:5]:
++        if not isinstance(hint, dict):
++            continue
++        hname = str(hint.get("name") or "").strip()
++        if not hname or hname in seen_names:
++            continue
++        try:
++            hacc = int(hint.get("accuracy") or 0)
++        except (TypeError, ValueError):
++            hacc = 0
++        if hacc <= 0:
++            continue
++        seen_names.add(hname)
++        os_candidates.append({"name": hname, "accuracy": hacc, "subtitle": ""})
++    if os_name and os_name not in seen_names:
++        os_candidates.insert(
++            0,
++            {
++                "name": os_name,
++                "accuracy": int(os_accuracy or 0),
++                "subtitle": "",
++            },
++        )
++
++    human_os = (asset.os_guess or "").strip()
++    manual_os = is_manual_os_override(asset)
++    os_divergence: dict[str, Any] | None = None
++    if manual_os:
++        os_label = f"{human_os} · scelta manuale"
++        os_selected = human_os
++        os_selected_source = "manual"
++        if human_os not in seen_names:
++            os_candidates.insert(
++                0,
++                {
++                    "name": human_os,
++                    "accuracy": 100,
++                    "subtitle": "scelta manuale",
++                },
++            )
++            seen_names.add(human_os)
++        if os_name and not os_labels_equivalent(os_name, human_os):
++            acc = int(os_accuracy or 0)
++            acc_bit = f" ({acc}%)" if acc > 0 else ""
++            os_divergence = {
++                "human": human_os,
++                "scan": os_name,
++                "accuracy": os_accuracy,
++                "message": (
++                    f"la scansione propone {os_name}{acc_bit}, "
++                    f"la tua scelta resta {human_os}"
++                ),
++            }
+     else:
+-        os_label = "non rilevato"
++        os_label = scan_os_label
++        os_selected = os_name
++        os_selected_source = "nmap_os" if os_name else None
++
++    os_ports_used = []
++    for p in list(os_evidence.get("used_ports") or os_evidence.get("ports") or []):
++        try:
++            os_ports_used.append(int(p))
++        except (TypeError, ValueError):
++            continue
++    # Dedup preserve order
++    seen_ports: set[int] = set()
++    os_ports_used = [
++        p for p in os_ports_used if p > 0 and not (p in seen_ports or seen_ports.add(p))
++    ]
+ 
+     payload: dict[str, Any] = {
+         "asset_id": asset.id,
+         "mac": mac or None,
+         "is_private": is_private,
+@@ -402,10 +523,15 @@ def build_asset_identity(
+         "vendor_reliable": vendor_reliable if vendor else False,
+         "vendor_display": vendor_display,
+         "os_name": os_name,
+         "os_accuracy": os_accuracy,
+         "os_attribution": os_attribution,
++        "os_candidates": os_candidates,
++        "os_ports_used": os_ports_used,
++        "os_selected": os_selected,
++        "os_selected_source": os_selected_source,
++        "os_divergence": os_divergence,
+         "hostname": hostname,
+         "services": services_text,
+         "services_list": services,
+         "device_type": device_type,
+         "first_seen": _iso(first_seen),
+diff --git a/observatory/tests/test_asset_identity.py b/observatory/tests/test_asset_identity.py
+index 1edeba9..19c886e 100644
+--- a/observatory/tests/test_asset_identity.py
++++ b/observatory/tests/test_asset_identity.py
+@@ -232,23 +232,131 @@ def test_identity_os_mac_mismatch_legacy_scan_meta(db):
+     assert ident["labels"]["os"] == OS_LABEL_MAC_MISMATCH
+     assert ident["os_attribution"]["observed_mac"] == "DC:A6:32:9C:A7:62"
+     assert "OS rilevato ma non attribuito" in ident["os_attribution"]["message"]
+ 
+ 
+-def test_oui_parse_ieee_and_lookup(db):
+-    sample = """
+-# comment
+-00-11-32   (hex)\t\tSynology Incorporated
+-001132     (base 16)\t\tSynology Incorporated
+-"""
+-    parsed = parse_ieee_oui_txt(sample)
+-    assert parsed["00:11:32"].startswith("Synology")
+-    upsert_oui(db, "00:11:32", parsed["00:11:32"], source="ieee")
++def test_identity_manual_os_wins_and_divergence(db):
++    """OBS-026: manual os_guess wins labels/selection; scan divergence declared."""
++    asset = _asset(db, mac="00:11:32:AA:BB:01", ip="192.168.1.11", name="NAS")
++    asset.os_guess = "ADM 4.x (ASUSTOR)"
++    asset.meta = {
++        "manual_overrides": ["os_guess"],
++        "field_sources": {
++            "os_guess": {"source": "manual", "confidence": 1.0},
++        },
++    }
++    db.add(
++        FingerprintFact(
++            asset_id=asset.id,
++            kind="os",
++            value="Linux 4.15 - 5.19",
++            source="nmap_os",
++            confidence=0.95,
++            evidence={
++                "accuracy": 95,
++                "raw_hints": [
++                    {"name": "Linux 4.15 - 5.19", "accuracy": 95},
++                    {"name": "OpenWrt 21.02", "accuracy": 92},
++                ],
++                "used_ports": [22, 443],
++            },
++        )
++    )
++    db.flush()
++    ident = build_asset_identity(db, asset)
++    assert ident["labels"]["os"] == "ADM 4.x (ASUSTOR) · scelta manuale"
++    assert ident["os_selected"] == "ADM 4.x (ASUSTOR)"
++    assert ident["os_selected_source"] == "manual"
++    assert ident["os_name"] == "Linux 4.15 - 5.19"
++    assert ident["os_divergence"]["human"] == "ADM 4.x (ASUSTOR)"
++    assert ident["os_divergence"]["scan"] == "Linux 4.15 - 5.19"
++    assert "la tua scelta resta" in ident["os_divergence"]["message"]
++    assert ident["os_ports_used"] == [22, 443]
++    names = [c["name"] for c in ident["os_candidates"]]
++    assert names[0] == "ADM 4.x (ASUSTOR)"
++    assert "Linux 4.15 - 5.19" in names
++
++
++def test_identity_os_truncated_not_divergence(db):
++    """OBS-028: truncated nmap form vs full range is the same OS."""
++    from app.services.asset_identity import os_labels_equivalent
++
++    assert os_labels_equivalent("Linux 4.15", "Linux 4.15 - 5.19")
++    assert os_labels_equivalent("Linux 4.15 - 5.19", "Linux 4.15")
++    assert not os_labels_equivalent("Linux 4.15", "OpenWrt 21.02")
++
++    asset = _asset(db, mac="00:11:32:AA:BB:09", ip="192.168.1.19", name="Box")
++    asset.os_guess = "Linux 4.15 - 5.19"
++    asset.meta = {
++        "manual_overrides": ["os_guess"],
++        "field_sources": {"os_guess": {"source": "manual", "confidence": 1.0}},
++    }
++    db.add(
++        FingerprintFact(
++            asset_id=asset.id,
++            kind="os",
++            value="Linux 4.15",
++            source="nmap_os",
++            confidence=1.0,
++            evidence={"accuracy": 100, "raw_hints": [{"name": "Linux 4.15", "accuracy": 100}]},
++        )
++    )
++    db.flush()
++    ident = build_asset_identity(db, asset)
++    assert ident["os_divergence"] is None
++    assert ident["os_selected"] == "Linux 4.15 - 5.19"
++
++
++def test_identity_os_ports_from_used_ports(db):
++    asset = _asset(db, mac="00:11:32:AA:BB:02", ip="192.168.1.12", name="Box")
++    db.add(
++        FingerprintFact(
++            asset_id=asset.id,
++            kind="os",
++            value="Linux",
++            source="nmap_os",
++            confidence=0.9,
++            evidence={"accuracy": 90, "used_ports": [22, 80, 22]},
++        )
++    )
++    db.flush()
++    ident = build_asset_identity(db, asset)
++    assert ident["os_ports_used"] == [22, 80]
++    assert ident["os_divergence"] is None
++    assert ident["os_selected_source"] == "nmap_os"
++
++
++def test_normalize_field_source_label():
++    from app.services.asset_identity import normalize_field_source_label
++
++    assert normalize_field_source_label("manuale") == "manual"
++    assert normalize_field_source_label("manuale (proposta dhcp)") == "manual (proposta dhcp)"
++    assert normalize_field_source_label("manual") == "manual"
++    assert normalize_field_source_label("OUI") == "OUI"
++
++
++def test_migrate_field_sources_manual_vocab(db):
++    from app.services.field_sources_vocab import migrate_field_sources_manual_vocab
++
++    asset = _asset(db, mac="00:11:32:AA:BB:03", ip="192.168.1.13", name="X")
++    asset.meta = {
++        "field_sources": {
++            "os_guess": {"source": "manuale", "confidence": 1.0},
++            "name": {"source": "manuale (proposta dhcp)", "confidence": 1.0},
++            "category": {"source": "OUI", "confidence": 0.7},
++        }
++    }
+     db.flush()
+-    vendor, reliable = lookup_oui_vendor(db, "00:11:32:11:22:33")
+-    assert reliable is True
+-    assert "Synology" in vendor
++    stats = migrate_field_sources_manual_vocab(db)
++    assert stats["changed"] == 1
++    db.refresh(asset)
++    sources = asset.meta["field_sources"]
++    assert sources["os_guess"]["source"] == "manual"
++    assert sources["name"]["source"] == "manual (proposta dhcp)"
++    assert sources["category"]["source"] == "OUI"
++    # idempotent
++    assert migrate_field_sources_manual_vocab(db)["changed"] == 0
+ 
+ 
+ def test_os_opt_out_via_meta_blocks_enqueue(db, monkeypatch):
+     monkeypatch.setenv("SCANNER_PRIVILEGED", "true")
+     get_settings.cache_clear()
+diff --git a/observatory/web/src/components/AssetChassis.vue b/observatory/web/src/components/AssetChassis.vue
+new file mode 100644
+index 0000000..387d0eb
+--- /dev/null
++++ b/observatory/web/src/components/AssetChassis.vue
+@@ -0,0 +1,155 @@
++<script setup>
++import { computed, ref, watch } from "vue";
++import { api } from "../api";
++import { collectInterfaces, isActiveLastSeen } from "../inventoryDevices";
++import { formatDate } from "../formatTime";
++
++const props = defineProps({
++  assetId: { type: [Number, String], required: true },
++});
++
++const loading = ref(false);
++const error = ref("");
++const device = ref(null);
++const asset = ref(null);
++
++const numericId = computed(() => {
++  const n = Number(props.assetId);
++  return Number.isFinite(n) && n > 0 ? n : null;
++});
++
++const ifaces = computed(() => device.value?.ifaces || []);
++const firstSeen = computed(
++  () => device.value?.first_seen || asset.value?.first_seen || null,
++);
++const lastSeen = computed(
++  () => device.value?.last_seen || asset.value?.last_seen || null,
++);
++const presence = computed(() => {
++  if (device.value?.stale != null) {
++    return device.value.stale ? "non presente" : "presente";
++  }
++  return asset.value?.presence_state || "—";
++});
++const status = computed(() => asset.value?.status || device.value?.status || "—");
++
++function fmtSeen(iso) {
++  return formatDate(iso) || "—";
++}
++
++function deviceFromAsset(row) {
++  if (!row) return null;
++  const ifacesLocal = collectInterfaces([row]);
++  return {
++    key: `asset:${row.id}`,
++    primaryId: row.id,
++    ifaces: ifacesLocal,
++    first_seen: row.first_seen,
++    last_seen: row.last_seen,
++    status: row.status,
++    port: row.port_label || row.port || "",
++    stale: !isActiveLastSeen(row.last_seen),
++  };
++}
++
++async function loadAll() {
++  const id = numericId.value;
++  if (!id) {
++    device.value = null;
++    asset.value = null;
++    error.value = "";
++    return;
++  }
++  loading.value = true;
++  error.value = "";
++  try {
++    // Solo l'asset: niente lista inventario completa (bloccava lo spinner).
++    const row = await api.asset(id);
++    asset.value = row;
++    device.value = deviceFromAsset(row);
++  } catch (e) {
++    asset.value = null;
++    device.value = null;
++    error.value = e.message || "Connessione non disponibile";
++  } finally {
++    loading.value = false;
++  }
++}
++
++watch(
++  () => props.assetId,
++  () => loadAll(),
++  { immediate: true },
++);
++</script>
++
++<template>
++  <section class="asset-chassis inv-p-sec">
++    <div class="inv-p-seclabel"><span>Come sei connesso</span><span class="line" /></div>
++    <div v-if="loading" class="inv-p-note-sugg">caricamento…</div>
++    <div v-else-if="error" class="inv-p-note-sugg inv-err">{{ error }}</div>
++    <div v-else-if="!asset && !device" class="inv-p-note-sugg">nessun dato di connessione</div>
++    <template v-else>
++      <div class="inv-kv">
++        <span class="k">Presenza</span>
++        <span class="v">{{ presence }}</span>
++        <span class="k">Stato</span>
++        <span class="v">{{ status }}</span>
++        <span class="k">Prima volta</span>
++        <span class="v">{{ fmtSeen(firstSeen) }}</span>
++        <span class="k">Ultima volta</span>
++        <span class="v">{{ fmtSeen(lastSeen) }}</span>
++        <span class="k">Porta switch</span>
++        <span class="v">{{ device?.port || asset?.port_label || asset?.port || "—" }}</span>
++      </div>
++
++      <div class="inv-p-seclabel" style="margin-top: 14px">
++        <span>Interfacce · {{ ifaces.length || 1 }}</span><span class="line" />
++      </div>
++      <div v-if="!ifaces.length" class="inv-p-note-sugg">
++        {{ asset?.macs?.[0] || "—" }} · {{ asset?.ips?.[0] || "nessun IP" }}
++      </div>
++      <div v-for="(i, idx) in ifaces" :key="idx" class="inv-iface">
++        <div>
++          <span class="imac mono">{{ i.mac || "—" }}</span>
++          <span class="iname">{{ i.name || "iface" }} · {{ i.kind || "—" }}</span>
++        </div>
++        <div class="iip mono">
++          <template v-if="i.ip">{{ i.ip }}</template>
++          <span v-else class="none">— no IP</span>
++        </div>
++      </div>
++    </template>
++  </section>
++</template>
++
++<style scoped>
++.inv-p-sec { margin-top: 18px; }
++.inv-p-seclabel {
++  font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
++  color: var(--inv-faint); margin-bottom: 9px;
++  display: flex; align-items: center; gap: 10px;
++}
++.inv-p-seclabel .line { flex: 1; height: 1px; background: var(--inv-border-soft); }
++.inv-p-note-sugg { font-size: 12.5px; color: var(--inv-muted, var(--text-3)); }
++.inv-err { color: var(--alert, #b33); }
++.inv-kv {
++  display: grid;
++  grid-template-columns: auto 1fr;
++  gap: 4px 14px;
++  font-size: 13px;
++}
++.inv-kv .k { color: var(--inv-muted, var(--text-3)); }
++.inv-iface {
++  display: flex;
++  justify-content: space-between;
++  gap: 12px;
++  padding: 8px 0;
++  border-bottom: 0.5px solid var(--inv-border-soft, var(--border));
++  font-size: 13px;
++}
++.imac { margin-right: 8px; }
++.iname { color: var(--inv-muted, var(--text-3)); font-size: 12px; }
++.none { color: var(--inv-muted, var(--text-3)); }
++.mono { font-family: var(--font-mono); }
++</style>
+diff --git a/observatory/web/src/components/AssetIdentity.vue b/observatory/web/src/components/AssetIdentity.vue
+index ce6ff9a..3ddf99a 100644
+--- a/observatory/web/src/components/AssetIdentity.vue
++++ b/observatory/web/src/components/AssetIdentity.vue
+@@ -1,9 +1,11 @@
+ <script setup>
+ import { computed, ref, watch } from "vue";
+ import { api } from "../api";
+ import { formatDate } from "../formatTime";
++import CandidateList from "./ui/CandidateList.vue";
++import StatusBadge from "./ui/StatusBadge.vue";
+ 
+ const props = defineProps({
+   assetId: { type: [Number, String], required: true },
+ });
+ 
+@@ -15,16 +17,40 @@ const error = ref("");
+ const technicalOpen = ref(false);
+ const osScanBusy = ref(false);
+ const osScanMsg = ref("");
+ const actionBusy = ref(false);
+ const actionMsg = ref("");
++const selectedOs = ref(null);
++const osPickMsg = ref("");
+ 
+ const numericId = computed(() => {
+   const n = Number(props.assetId);
+   return Number.isFinite(n) && n > 0 ? n : null;
+ });
+ 
++const osCandidates = computed(() =>
++  (identity.value?.os_candidates || []).map((c) => ({
++    id: c.name,
++    name: c.name,
++    subtitle: c.subtitle || "",
++    confidence: c.accuracy,
++  })),
++);
++
++const showOsCandidates = computed(() => {
++  const n = osCandidates.value.length;
++  if (n > 1) return true;
++  if (identity.value?.os_selected_source === "manual" && n >= 1) return true;
++  return false;
++});
++
++const osEvidenceLine = computed(() => {
++  const ports = identity.value?.os_ports_used || [];
++  if (!ports.length) return "";
++  return `Porte usate ${ports.join(" · ")}`;
++});
++
+ async function load({ technical = technicalOpen.value } = {}) {
+   const id = numericId.value;
+   if (!id) {
+     identity.value = null;
+     error.value = "";
+@@ -33,10 +59,15 @@ async function load({ technical = technicalOpen.value } = {}) {
+   loading.value = true;
+   error.value = "";
+   osScanMsg.value = "";
+   try {
+     identity.value = await api.assetIdentity(id, technical);
++    if (identity.value?.os_selected) {
++      selectedOs.value = identity.value.os_selected;
++    } else if (identity.value?.os_name) {
++      selectedOs.value = identity.value.os_name;
++    }
+   } catch (e) {
+     identity.value = null;
+     error.value = e.message || "Identità non disponibile";
+   } finally {
+     loading.value = false;
+@@ -103,57 +134,122 @@ async function detectOsNow() {
+   } finally {
+     osScanBusy.value = false;
+   }
+ }
+ 
++async function adoptOsCandidate(name) {
++  const id = numericId.value;
++  if (!id || !name) return;
++  osPickMsg.value = "";
++  try {
++    await api.updateAsset(id, { os_guess: name });
++    osPickMsg.value = "scelta salvata";
++    await load({ technical: technicalOpen.value });
++    emit("changed");
++  } catch (e) {
++    osPickMsg.value = e.message || "salvataggio fallito";
++  }
++}
++
++async function onOsSelect(id) {
++  selectedOs.value = id;
++  await adoptOsCandidate(String(id));
++}
++
++async function onOsFree(text) {
++  selectedOs.value = text;
++  await adoptOsCandidate(text);
++}
++
+ watch(
+   () => props.assetId,
+   () => {
+     technicalOpen.value = false;
+     osScanMsg.value = "";
+     actionMsg.value = "";
++    osPickMsg.value = "";
+     load({ technical: false });
+   },
+   { immediate: true },
+ );
+ </script>
+ 
+ <template>
+-  <section class="asset-identity inv-p-sec inv-chi-sei">
++  <section id="chi-sei" class="asset-identity inv-p-sec inv-chi-sei">
+     <div class="inv-p-seclabel"><span>Chi sei</span><span class="line" /></div>
+-    <p class="inv-purpose">Chi è questo device — identità osservata</p>
++    <p class="inv-purpose">Identità osservata</p>
+     <div v-if="loading" class="inv-p-note-sugg">caricamento…</div>
+     <template v-else-if="identity">
+-      <div class="inv-kv inv-identity-kv">
+-        <span class="k">Vendor</span>
+-        <span class="v">
+-          {{ identity.labels.vendor }}
++      <div class="id-grid">
++        <div class="id-cell">
++          <span class="id-k">Vendor</span>
++          <span class="id-v">
++            {{ identity.labels.vendor }}
++            <span
++              v-if="identity.vendor && !identity.vendor_reliable"
++              class="badge-privacy"
++              title="MAC locally-administered: OUI non affidabile"
++            >privacy</span>
++          </span>
++        </div>
++        <div class="id-cell">
++          <span class="id-k">Tipo</span>
++          <span class="id-v">{{ identity.labels.device_type }}</span>
++        </div>
++        <div class="id-cell">
++          <span class="id-k">OS</span>
+           <span
+-            v-if="identity.vendor && !identity.vendor_reliable"
+-            class="badge-privacy"
+-            title="MAC locally-administered: OUI non affidabile"
+-          >privacy</span>
+-        </span>
+-        <span class="k">OS</span>
+-        <span
+-          class="v"
+-          :class="{
+-            'os-mac-mismatch': identity.os_attribution?.kind === 'mac_mismatch',
+-            'os-chassis-sibling': identity.os_attribution?.kind === 'chassis_sibling',
+-          }"
+-          :title="identity.os_attribution?.message || undefined"
+-        >{{ identity.labels.os }}</span>
++            class="id-v"
++            :class="{
++              'os-mac-mismatch': identity.os_attribution?.kind === 'mac_mismatch',
++              'os-chassis-sibling': identity.os_attribution?.kind === 'chassis_sibling',
++            }"
++            :title="identity.os_attribution?.message || undefined"
++          >{{ identity.labels.os }}</span>
++        </div>
++      </div>
++
++      <p v-if="identity.os_divergence?.message" class="os-divergence">
++        {{ identity.os_divergence.message }}
++      </p>
++
++      <div v-if="showOsCandidates" class="os-cands">
++        <p class="os-cands-lead">
++          <template v-if="identity.os_selected_source === 'manual'">
++            Scelta manuale attiva. I candidati nmap restano disponibili come proposta.
++          </template>
++          <template v-else>
++            {{ osCandidates.length }} corrispondenze. Scegli quella giusta, oppure lascia la prima.
++          </template>
++        </p>
++        <CandidateList
++          v-model="selectedOs"
++          :candidates="osCandidates"
++          :evidence-line="osEvidenceLine"
++          :start-collapsed="identity.os_selected_source === 'manual'"
++          @select="onOsSelect"
++          @free="onOsFree"
++        />
++        <p v-if="osPickMsg" class="inv-os-msg">{{ osPickMsg }}</p>
++      </div>
++
++      <div class="inv-kv inv-identity-kv">
+         <span class="k">Hostname</span><span class="v">{{ identity.labels.hostname }}</span>
+         <span class="k">Servizi</span><span class="v">{{ identity.labels.services }}</span>
+-        <span class="k">Tipo</span><span class="v">{{ identity.labels.device_type }}</span>
+         <span class="k">MAC</span>
+-        <span class="v">
++        <span class="v mono">
+           {{ identity.labels.mac }}
+           <span v-if="identity.is_private" class="badge-privacy">U/L</span>
+         </span>
+         <span class="k">Prima volta</span><span class="v">{{ fmtSeen(identity.first_seen) || identity.labels.first_seen }}</span>
+-        <span class="k">Presence</span><span class="v">{{ identity.labels.presence }}</span>
++        <span class="k">Presence</span>
++        <span class="v">
++          <StatusBadge
++            :tone="identity.labels.presence === 'present' || identity.labels.presence === 'presente' ? 'presente' : 'muted'"
++            :label="identity.labels.presence"
++          />
++        </span>
+       </div>
+       <div
+         class="inv-switchrow"
+         :class="{ on: identity.os_scan && identity.os_scan.opt_out }"
+         @click="toggleOsProtect"
+@@ -222,89 +318,104 @@ watch(
+ </template>
+ 
+ <style scoped>
+ .inv-p-sec { margin-top: 18px; }
+ .inv-p-seclabel {
+-  font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+-  color: var(--inv-faint); margin-bottom: 9px;
++  font-size: 14px; font-weight: 500; text-transform: none; letter-spacing: 0;
++  color: var(--text-1); margin-bottom: 9px;
+   display: flex; align-items: center; gap: 10px;
+ }
+-.inv-p-seclabel .line { flex: 1; height: 1px; background: var(--inv-border-soft); }
++.inv-p-seclabel .line { flex: 1; height: 0.5px; background: var(--border); }
+ .inv-purpose {
+-  margin: 0 0 10px; font-size: 12px; color: var(--inv-faint); line-height: 1.35;
++  margin: 0 0 10px; font-size: 12px; color: var(--text-3); line-height: 1.35;
++}
++.inv-p-note-sugg { font-size: 12.5px; color: var(--text-3); }
++.id-grid {
++  display: grid;
++  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
++  gap: 8px;
++  margin-bottom: 14px;
++}
++.id-cell {
++  background: var(--bg-1);
++  border: 0.5px solid var(--border);
++  border-radius: var(--radius);
++  padding: 10px 12px;
++}
++.id-k { display: block; font-size: 11px; color: var(--text-3); margin-bottom: 4px; }
++.id-v { font-size: 13px; color: var(--text-1); word-break: break-word; }
++.os-cands { margin: 12px 0; }
++.os-cands-lead { margin: 0 0 8px; font-size: 12px; color: var(--text-2); }
++.os-divergence {
++  margin: 0 0 12px;
++  font-size: 12px;
++  color: var(--text-2);
++  line-height: 1.4;
++  padding-left: 10px;
++  border-left: 2px solid var(--accent);
+ }
+-.inv-p-note-sugg { font-size: 12.5px; color: var(--inv-faint); }
+ .inv-kv {
+   display: grid; grid-template-columns: 108px 1fr; gap: 8px 10px;
+   font-size: 12.5px; margin-top: 12px;
+ }
+-.inv-kv .k { color: var(--inv-faint); }
+-.inv-kv .v { color: var(--inv-mut); word-break: break-all; }
++.inv-kv .k { color: var(--text-3); }
++.inv-kv .v { color: var(--text-2); word-break: break-all; }
+ .inv-identity-kv { margin-top: 0; }
+ .inv-identity-kv .os-mac-mismatch {
+   cursor: help;
+-  border-bottom: 1px dotted color-mix(in srgb, var(--inv-warn, #c9a227) 70%, transparent);
++  border-bottom: 1px dotted color-mix(in srgb, var(--attn) 70%, transparent);
+ }
+ .inv-identity-kv .os-chassis-sibling {
+   cursor: help;
+-  border-bottom: 1px dotted color-mix(in srgb, var(--inv-green, #3d9a5f) 55%, transparent);
++  border-bottom: 1px dotted color-mix(in srgb, var(--accent) 55%, transparent);
+ }
+ .badge-privacy {
+-  display: inline-block; margin-left: 6px; font-size: 10px; letter-spacing: 0.04em;
+-  text-transform: uppercase; border: 1px solid var(--inv-border); border-radius: 4px;
+-  padding: 0 5px; color: var(--inv-faint); vertical-align: middle;
++  display: inline-block; margin-left: 6px; font-size: 10px;
++  border: 0.5px solid var(--border); border-radius: 4px;
++  padding: 0 5px; color: var(--text-3); vertical-align: middle;
+ }
+ .inv-switchrow {
+   display: flex; align-items: center; gap: 10px; margin: 12px 0 2px; cursor: pointer;
+ }
+ .sw {
+-  width: 36px; height: 20px; border-radius: 20px; background: var(--inv-bg-row);
+-  border: 1px solid var(--inv-border); position: relative; flex-shrink: 0;
++  width: 36px; height: 20px; border-radius: 20px; background: var(--bg-1);
++  border: 0.5px solid var(--border); position: relative; flex-shrink: 0;
+ }
+ .sw::after {
+   content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px;
+-  border-radius: 50%; background: var(--inv-faint); transition: all 0.15s;
++  border-radius: 50%; background: var(--text-3); transition: all 0.15s;
+ }
+-.inv-switchrow.on .sw { background: var(--inv-green-deep); border-color: var(--inv-green-dim); }
+-.inv-switchrow.on .sw::after { left: 18px; background: var(--inv-green); }
+-.swlbl { font-size: 12.5px; color: var(--inv-mut); }
+-.inv-switchrow.on .swlbl { color: var(--inv-text); }
+-.inv-swnote { font-size: 11px; color: var(--inv-faint); margin: 2px 0 0 46px; }
++.inv-switchrow.on .sw { background: color-mix(in srgb, var(--ok) 18%, var(--bg-1)); border-color: var(--ok); }
++.inv-switchrow.on .sw::after { left: 18px; background: var(--ok); }
++.swlbl { font-size: 12.5px; color: var(--text-2); }
++.inv-switchrow.on .swlbl { color: var(--text-1); }
++.inv-swnote { font-size: 11px; color: var(--text-3); margin: 2px 0 0 46px; }
+ .inv-os-actions {
+   display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0 8px;
+ }
+-.inv-os-excl, .inv-os-msg { font-size: 11.5px; color: var(--inv-faint); }
+-.inv-os-excl { color: var(--inv-mut); }
++.inv-os-excl, .inv-os-msg { font-size: 11.5px; color: var(--text-3); }
++.inv-os-excl { color: var(--text-2); }
+ .scan-sema {
+   display: inline-flex; align-items: center; gap: 6px;
+-  font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase;
+-  color: var(--inv-faint); border: 1px solid var(--inv-border);
+-  border-radius: 6px; padding: 2px 8px 2px 6px;
++  font-size: 11px; color: var(--text-2);
+ }
+ .scan-sema .dot {
+-  width: 8px; height: 8px; border-radius: 50%; background: var(--inv-faint);
+-}
+-.scan-sema.green { border-color: var(--inv-green-dim); color: var(--inv-green); }
+-.scan-sema.green .dot { background: var(--inv-green); }
+-.scan-sema.yellow { border-color: #a68b2c; color: #c4a035; }
+-.scan-sema.yellow .dot { background: #c4a035; }
+-.scan-sema.red { border-color: #8b3a3a; color: #c45c5c; }
+-.scan-sema.red .dot { background: #c45c5c; }
+-.scan-sema-reason {
+-  margin: 0 0 8px; font-size: 11.5px; line-height: 1.4; color: var(--inv-faint);
++  width: 7px; height: 7px; border-radius: 50%; background: var(--text-3);
+ }
++.scan-sema.green .dot, .scan-sema.ok .dot { background: var(--ok); }
++.scan-sema.amber .dot, .scan-sema.warn .dot { background: var(--attn); }
++.scan-sema.red .dot, .scan-sema.alert .dot { background: var(--alert); }
++.scan-sema-reason { font-size: 11px; color: var(--text-3); margin: 0 0 8px; }
+ .inv-btn {
+-  background: var(--inv-bg-row); border: 1px solid var(--inv-border);
+-  border-radius: 8px; padding: 7px 12px; color: var(--inv-mut);
+-  font-family: inherit; font-size: 12.5px; cursor: pointer;
+-}
+-.inv-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+-.inv-btn.ghost {
+-  background: transparent; border-style: dashed; margin-top: 4px;
++  background: var(--bg-1); border: 0.5px solid var(--border);
++  border-radius: var(--radius); padding: 7px 14px; color: var(--text-2);
++  font-family: inherit; font-size: 12.5px; cursor: pointer; min-height: 0;
+ }
++.inv-btn.ghost { background: transparent; }
++.inv-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+ .inv-tech {
+-  margin: 8px 0 0; padding: 10px; max-height: 220px; overflow: auto;
+-  font-size: 10.5px; line-height: 1.35; color: var(--inv-faint);
+-  background: var(--inv-bg-row); border: 1px solid var(--inv-border-soft);
+-  border-radius: 6px; white-space: pre-wrap; word-break: break-word;
++  margin-top: 8px; padding: 10px; background: var(--bg-1); border: 0.5px solid var(--border);
++  border-radius: var(--radius); font-family: var(--font-mono); font-size: 11px;
++  overflow: auto; max-height: 280px; color: var(--text-2);
+ }
++.mono { font-family: var(--font-mono); }
+ </style>
+diff --git a/observatory/web/src/views/Dossier.vue b/observatory/web/src/views/Dossier.vue
+index a299fcc..e059b24 100644
+--- a/observatory/web/src/views/Dossier.vue
++++ b/observatory/web/src/views/Dossier.vue
+@@ -1,15 +1,19 @@
+ <script setup>
+-import { computed, onMounted, ref, watch } from "vue";
++import { computed, nextTick, onMounted, ref, watch } from "vue";
+ import { useRoute, useRouter } from "vue-router";
+ import { api } from "../api";
+ import { matchDeviceSearch, composeDevices } from "../inventoryDevices";
+ import { formatFreshLabel, freshClass } from "../inventoryDevices";
+ import { pushRecentDossier, readRecentDossiers } from "../dossierRecent";
+ import PageHeader from "../components/PageHeader.vue";
++import AssetChassis from "../components/AssetChassis.vue";
+ import AssetIdentity from "../components/AssetIdentity.vue";
++import AssetDecide from "../components/AssetDecide.vue";
++import AssetNotes from "../components/AssetNotes.vue";
+ import AssetHabits from "../components/AssetHabits.vue";
++import CandidateList from "../components/ui/CandidateList.vue";
+ 
+ const route = useRoute();
+ const router = useRouter();
+ 
+ const assetId = computed(() => {
+@@ -27,10 +31,33 @@ const error = ref("");
+ const assets = ref([]);
+ const chassisPayload = ref({ chassis: [] });
+ const asset = ref(null);
+ const recent = ref(readRecentDossiers());
+ 
++const actionsOpen = ref(false);
++const fbStatus = ref(null);
++const fbBusy = ref(false);
++const fbMsg = ref("");
++const fbSelected = ref(null);
++const fbPickMsg = ref("");
++
++const fbCandidates = computed(() =>
++  (fbStatus.value?.candidates || []).map((c) => ({
++    id: c.id ?? c.name,
++    name: c.name,
++    subtitle: c.subtitle || "",
++    confidence: c.confidence,
++  })),
++);
++
++const fbCanRun = computed(() => !!(fbStatus.value?.available));
++const fbDisabledReason = computed(() => {
++  if (!fbStatus.value) return "";
++  if (fbStatus.value.available) return "";
++  return fbStatus.value.reason || "Fingerbank non disponibile";
++});
++
+ const devices = computed(() => composeDevices(assets.value, chassisPayload.value));
+ 
+ const searchHits = computed(() => {
+   if (!q.value.trim()) return [];
+   return devices.value.filter((d) => matchDeviceSearch(d, q.value)).slice(0, 40);
+@@ -70,29 +97,116 @@ async function loadHubList() {
+   } finally {
+     loading.value = false;
+   }
+ }
+ 
++async function loadFingerbankStatus(id) {
++  fbMsg.value = "";
++  fbPickMsg.value = "";
++  try {
++    fbStatus.value = await api.fingerbankStatus(id);
++    if (fbStatus.value?.candidates?.[0]) {
++      fbSelected.value = fbStatus.value.candidates[0].id ?? fbStatus.value.candidates[0].name;
++    }
++  } catch (e) {
++    fbStatus.value = {
++      available: false,
++      reason: e.message || "stato Fingerbank non disponibile",
++      candidates: [],
++    };
++  }
++}
++
+ async function loadAsset(id) {
+   loading.value = true;
+   error.value = "";
+   asset.value = null;
++  fbStatus.value = null;
++  actionsOpen.value = false;
+   try {
+     asset.value = await api.asset(id);
+     pushRecentDossier({
+       id,
+       name: asset.value.name,
+       ip: primaryIpFrom(asset.value),
+     });
+     recent.value = readRecentDossiers();
++    await loadFingerbankStatus(id);
+   } catch (e) {
+     error.value = e.message || "Asset non trovato";
+   } finally {
+     loading.value = false;
+   }
+ }
+ 
++async function runFingerbank() {
++  const id = assetId.value;
++  if (!id || fbBusy.value) return;
++  if (!fbCanRun.value) {
++    fbMsg.value = fbDisabledReason.value;
++    return;
++  }
++  fbBusy.value = true;
++  fbMsg.value = "";
++  fbPickMsg.value = "";
++  try {
++    const row = await api.fingerbankInterrogate(id);
++    fbStatus.value = {
++      ...(fbStatus.value || {}),
++      available: true,
++      candidates: row.candidates || [],
++      cached: row.cached,
++      source_label: row.source_label || "fonte esterna: Fingerbank",
++    };
++    if (row.candidates?.[0]) {
++      fbSelected.value = row.candidates[0].id ?? row.candidates[0].name;
++    }
++    fbMsg.value = row.cached ? "risultato da cache" : "interrogazione completata";
++    actionsOpen.value = false;
++  } catch (e) {
++    const detail = e.detail && typeof e.detail === "object" ? e.detail : {};
++    const code = detail.code || "";
++    const msg = detail.message || e.message || "Fingerbank fallita";
++    if (code === "not_found" || e.status === 404) {
++      fbMsg.value = "nessun match Fingerbank";
++      fbStatus.value = { ...(fbStatus.value || {}), candidates: [] };
++    } else if (code === "rate_limited" || e.status === 429) {
++      fbMsg.value = "limite richieste Fingerbank — riprova tra poco";
++    } else if (code === "unauthorized" || e.status === 401) {
++      fbMsg.value = "chiave Fingerbank non valida";
++    } else {
++      fbMsg.value = msg;
++    }
++  } finally {
++    fbBusy.value = false;
++  }
++}
++
++async function adoptFingerbank(name) {
++  const id = assetId.value;
++  if (!id || !name) return;
++  fbPickMsg.value = "";
++  try {
++    await api.fingerbankAdopt(id, String(name), "os_guess");
++    fbPickMsg.value = "scelta salvata (manuale)";
++    await loadAsset(id);
++  } catch (e) {
++    fbPickMsg.value = e.message || "salvataggio fallito";
++  }
++}
++
++async function onFbSelect(cid) {
++  fbSelected.value = cid;
++  const row = fbCandidates.value.find((c) => c.id === cid);
++  if (row?.name) await adoptFingerbank(row.name);
++}
++
++async function onFbFree(text) {
++  fbSelected.value = text;
++  await adoptFingerbank(text);
++}
++
+ function primaryIpFrom(row) {
+   const bindings = row?.ip_bindings || [];
+   const cur = bindings.find((b) => b.is_current);
+   if (cur?.ip) return cur.ip;
+   return (row?.ips || [])[0] || "";
+@@ -123,11 +237,24 @@ watch(
+   { immediate: true },
+ );
+ 
+ onMounted(() => {
+   recent.value = readRecentDossiers();
++  nextTick(() => {
++    const hash = route.hash?.replace(/^#/, "");
++    if (hash) document.getElementById(hash)?.scrollIntoView({ behavior: "smooth" });
++  });
+ });
++
++watch(
++  () => route.hash,
++  (hash) => {
++    const id = String(hash || "").replace(/^#/, "");
++    if (!id) return;
++    nextTick(() => document.getElementById(id)?.scrollIntoView({ behavior: "smooth" }));
++  },
++);
+ </script>
+ 
+ <template>
+   <div class="dossier">
+     <!-- Hub: search -->
+@@ -195,114 +322,246 @@ onMounted(() => {
+           </div>
+         </div>
+         <div class="dossier-actions">
+           <button type="button" class="dossier-btn" @click="goInventory">Inventario</button>
+           <button type="button" class="dossier-btn" @click="goTopology">Topologia</button>
++          <div class="dossier-azioni">
++            <button
++              type="button"
++              class="dossier-btn"
++              :aria-expanded="actionsOpen ? 'true' : 'false'"
++              @click="actionsOpen = !actionsOpen"
++            >azioni ▾</button>
++            <div v-if="actionsOpen" class="dossier-azioni-menu" role="menu">
++              <button
++                type="button"
++                role="menuitem"
++                :disabled="fbBusy || !fbCanRun"
++                :title="fbCanRun ? 'Interroga Fingerbank (DHCP opt55/60)' : fbDisabledReason"
++                @click="runFingerbank"
++              >
++                {{ fbBusy ? "Fingerbank…" : "Interroga Fingerbank" }}
++              </button>
++              <p v-if="!fbCanRun && fbDisabledReason" class="dossier-azioni-hint">
++                {{ fbDisabledReason }}
++              </p>
++            </div>
++          </div>
+         </div>
+       </div>
++      <p v-if="fbMsg" class="dossier-fb-msg">{{ fbMsg }}</p>
++      <section v-if="fbCandidates.length" class="dossier-fb" aria-label="Fingerbank">
++        <p class="dossier-fb-lead">
++          {{ fbStatus?.source_label || "fonte esterna: Fingerbank" }}
++          <span v-if="fbStatus?.cached" class="dossier-fb-cache">· cache</span>
++        </p>
++        <CandidateList
++          v-model="fbSelected"
++          :candidates="fbCandidates"
++          @select="onFbSelect"
++          @free="onFbFree"
++        />
++        <p v-if="fbPickMsg" class="dossier-fb-msg">{{ fbPickMsg }}</p>
++      </section>
+       <p v-if="error" class="dossier-err">{{ error }}</p>
+       <template v-else-if="assetId">
++        <nav class="dossier-toc" aria-label="Sezioni dossier">
++          <a href="#chi-sei">chi sei</a>
++          <a href="#connesso">come sei connesso</a>
++          <a href="#decidi">tu decidi</a>
++          <a href="#abitudini">abitudini</a>
++          <a href="#note">note</a>
++        </nav>
+         <AssetIdentity :asset-id="assetId" />
+-        <AssetHabits :asset-id="assetId" wide />
++        <AssetChassis id="connesso" :asset-id="assetId" />
++        <div id="decidi">
++          <AssetDecide :asset-id="assetId" @saved="loadAsset(assetId)" />
++        </div>
++        <div id="abitudini">
++          <AssetHabits :asset-id="assetId" wide />
++        </div>
++        <div id="note">
++          <AssetNotes :asset-id="assetId" @saved="loadAsset(assetId)" />
++        </div>
+       </template>
+     </template>
+   </div>
+ </template>
+ 
+ <style scoped>
+ .dossier {
+   max-width: 980px;
+   margin: 0 auto;
+   padding-bottom: 48px;
+-  font-family: var(--inv-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+-  color: var(--inv-text, var(--text));
++  font-family: var(--font-sans);
++  color: var(--text-1);
+ }
++.dossier-toc {
++  position: sticky;
++  top: 0;
++  z-index: 5;
++  display: flex;
++  flex-wrap: wrap;
++  gap: 4px 14px;
++  padding: 10px 0;
++  margin-bottom: 8px;
++  background: color-mix(in srgb, var(--bg-0) 92%, transparent);
++  border-bottom: 0.5px solid var(--border);
++  backdrop-filter: blur(6px);
++}
++.dossier-toc a {
++  font-size: 12px;
++  color: var(--text-2);
++  text-decoration: none;
++}
++.dossier-toc a:hover { color: var(--accent); }
+ .dossier-lead {
+   margin: -0.2rem 0 1rem;
+   font-size: 13px;
+-  color: var(--inv-faint, var(--muted));
++  color: var(--text-2);
+ }
+ .dossier-search {
+   width: 100%;
+   max-width: 36rem;
+   box-sizing: border-box;
+-  background: var(--inv-bg-row, var(--panel));
+-  border: 1px solid var(--inv-border, var(--line));
+-  border-radius: 9px;
++  background: var(--bg-1);
++  border: 0.5px solid var(--border);
++  border-radius: var(--radius);
+   padding: 10px 14px;
+   color: inherit;
+   font-family: inherit;
+   font-size: 14px;
+   margin-bottom: 1.25rem;
+ }
+ .dossier-search:focus {
+   outline: none;
+-  border-color: var(--inv-green-dim, var(--accent));
++  border-color: var(--accent);
+ }
+ .dossier-sec { margin-top: 1.5rem; }
+ .dossier-h {
+-  font-size: 11px;
+-  letter-spacing: 0.1em;
+-  text-transform: uppercase;
+-  color: var(--inv-faint, var(--muted));
+-  margin: 0 0 0.6rem;
++  font-size: 12px;
+   font-weight: 500;
++  text-transform: none;
++  letter-spacing: 0;
++  color: var(--text-2);
++  margin: 0 0 0.6rem;
+ }
+ .dossier-hit {
+   display: grid;
+   grid-template-columns: 1fr auto;
+   grid-template-rows: auto auto;
+   gap: 2px 12px;
+   width: 100%;
+   text-align: left;
+-  background: var(--inv-bg-row, var(--panel));
+-  border: 1px solid var(--inv-border-soft, var(--line));
+-  border-radius: 8px;
++  background: var(--bg-1);
++  border: 0.5px solid var(--border);
++  border-radius: var(--radius);
+   padding: 10px 12px;
+   margin-bottom: 6px;
+   color: inherit;
+   font-family: inherit;
+   cursor: pointer;
+ }
+-.dossier-hit:hover { border-color: var(--inv-green-dim, var(--accent)); }
++.dossier-hit:hover { border-color: var(--accent); }
+ .dossier-hit .name { font-size: 14px; font-weight: 500; grid-column: 1; }
+-.dossier-hit .name.unnamed { font-style: italic; color: var(--inv-mut, var(--muted)); font-weight: 400; }
+-.dossier-hit .meta { font-size: 12px; color: var(--inv-faint, var(--muted)); grid-column: 1; }
+-.dossier-hit .fresh { font-size: 11px; color: var(--inv-mut, var(--muted)); grid-column: 2; grid-row: 1 / span 2; align-self: center; }
+-.dossier-muted { font-size: 13px; color: var(--inv-faint, var(--muted)); }
+-.dossier-err { color: #c45c5c; font-size: 13px; }
++.dossier-hit .name.unnamed { font-style: italic; color: var(--text-2); font-weight: 400; }
++.dossier-hit .meta { font-size: 12px; color: var(--text-3); grid-column: 1; font-family: var(--font-mono); }
++.dossier-hit .fresh { font-size: 11px; color: var(--text-2); grid-column: 2; grid-row: 1 / span 2; align-self: center; }
++.dossier-muted { font-size: 13px; color: var(--text-3); }
++.dossier-err { color: var(--alert); font-size: 13px; }
+ .dossier-head {
+   display: flex;
+   flex-wrap: wrap;
+   align-items: flex-start;
+   justify-content: space-between;
+   gap: 1rem;
+   margin-bottom: 0.5rem;
+   padding-bottom: 1rem;
+-  border-bottom: 1px solid var(--inv-border-soft, var(--line));
++  border-bottom: 0.5px solid var(--border);
+ }
+ .dossier-back {
+-  background: none; border: none; color: var(--inv-green-dim, var(--accent));
++  background: none; border: none; color: var(--accent);
+   font-family: inherit; font-size: 12px; padding: 0; cursor: pointer; margin-bottom: 6px;
++  min-height: 0;
+ }
+ .dossier-title {
+-  margin: 0; font-size: 1.55rem; font-weight: 600; line-height: 1.2;
++  margin: 0; font-size: 22px; font-weight: 500; line-height: 1.2;
+ }
+-.dossier-title.unnamed { font-style: italic; font-weight: 400; color: var(--inv-mut, var(--muted)); }
++.dossier-title.unnamed { font-style: italic; font-weight: 400; color: var(--text-2); }
+ .dossier-sub {
+-  margin-top: 6px; font-size: 13px; color: var(--inv-mut, var(--muted));
++  margin-top: 6px; font-size: 13px; color: var(--text-2);
+   display: flex; flex-wrap: wrap; gap: 0.4rem;
++  font-family: var(--font-mono);
+ }
+ .dossier-sub .presence {
+-  text-transform: uppercase; letter-spacing: 0.04em; font-size: 11px;
+-  border: 1px solid var(--inv-border, var(--line)); border-radius: 4px; padding: 1px 6px;
++  font-family: var(--font-sans);
++  font-size: 11px;
++  border: 0.5px solid var(--border); border-radius: 20px; padding: 1px 8px;
++}
++.dossier-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-start; }
++.dossier-azioni { position: relative; }
++.dossier-azioni-menu {
++  position: absolute;
++  right: 0;
++  top: calc(100% + 4px);
++  z-index: 8;
++  min-width: 220px;
++  background: var(--bg-1);
++  border: 0.5px solid var(--border);
++  border-radius: var(--radius);
++  padding: 6px;
++  box-shadow: 0 8px 24px color-mix(in srgb, #000 18%, transparent);
++}
++.dossier-azioni-menu button {
++  display: block;
++  width: 100%;
++  text-align: left;
++  background: transparent;
++  border: 0;
++  border-radius: var(--radius);
++  padding: 8px 10px;
++  color: var(--text-1);
++  font-family: inherit;
++  font-size: 12.5px;
++  cursor: pointer;
++}
++.dossier-azioni-menu button:hover:not(:disabled) {
++  background: color-mix(in srgb, var(--accent) 12%, transparent);
++}
++.dossier-azioni-menu button:disabled {
++  opacity: 0.55;
++  cursor: not-allowed;
++}
++.dossier-azioni-hint {
++  margin: 4px 6px 2px;
++  font-size: 11px;
++  color: var(--text-3);
++  line-height: 1.35;
++}
++.dossier-fb {
++  margin: 0 0 1rem;
++  padding: 12px;
++  border: 0.5px solid var(--border);
++  border-radius: var(--radius);
++  background: var(--bg-1);
++}
++.dossier-fb-lead {
++  margin: 0 0 8px;
++  font-size: 12px;
++  color: var(--text-2);
++}
++.dossier-fb-cache { color: var(--text-3); }
++.dossier-fb-msg {
++  margin: 6px 0 10px;
++  font-size: 12px;
++  color: var(--text-2);
+ }
+-.dossier-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+ .dossier-btn {
+-  background: var(--inv-bg-row, var(--panel));
+-  border: 1px solid var(--inv-border, var(--line));
+-  border-radius: 8px; padding: 7px 12px;
+-  color: var(--inv-mut, var(--muted)); font-family: inherit; font-size: 12.5px; cursor: pointer;
++  background: var(--bg-1);
++  border: 0.5px solid var(--border);
++  border-radius: var(--radius); padding: 7px 12px;
++  color: var(--text-2); font-family: inherit; font-size: 12.5px; cursor: pointer;
++  min-height: 0;
+ }
+-.dossier-btn:hover { border-color: var(--inv-green-dim, var(--accent)); color: var(--inv-text, var(--text)); }
+-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
++.dossier-btn:hover { border-color: var(--accent); color: var(--text-1); }
++.mono { font-family: var(--font-mono); }
+ </style>
