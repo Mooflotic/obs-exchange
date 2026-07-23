@@ -1,0 +1,335 @@
+commit d5c7da908ab367865033d9368669309fe8d60eee
+Author:     Michele Storci <m.storci@gmail.com>
+AuthorDate: Fri Jul 24 00:11:58 2026 +0200
+Commit:     Michele Storci <m.storci@gmail.com>
+CommitDate: Fri Jul 24 00:11:58 2026 +0200
+
+    fix(oggi): notice massa + sort fallback reject (B2-bis)
+    
+    Esito archivia rumore resta dopo reload; dichiara id mancanti;
+    newest_name_proposal non TypeError se date None.
+    
+    Co-authored-by: Cursor <cursoragent@cursor.com>
+
+diff --git a/observatory/api/app/routers/assets.py b/observatory/api/app/routers/assets.py
+index cf3eb5b..d0f0e9e 100644
+--- a/observatory/api/app/routers/assets.py
++++ b/observatory/api/app/routers/assets.py
+@@ -769,10 +769,22 @@ def adopt_name(
+     )
+     db.commit()
+     return _serialize(db, asset)
+ 
+ 
++def newest_name_proposal(pending):
++    """Pick newest pending proposal; dates None → datetime.min, tie-break by id."""
++    return sorted(
++        pending,
++        key=lambda item: (
++            item.updated_at or item.created_at or datetime.min,
++            item.id or 0,
++        ),
++        reverse=True,
++    )[0]
++
++
+ @router.post("/{asset_id}/reject-name-proposal", response_model=AssetOut)
+ def reject_name_proposal(
+     asset_id: int,
+     request: Request,
+     source: str = Query(...),
+@@ -792,15 +804,11 @@ def reject_name_proposal(
+     if not candidates:
+         raise HTTPException(404, "Proposta non trovata")
+     pending = [p for p in candidates if (p.status or "") == "pending"]
+     if not pending:
+         raise HTTPException(409, "Nessuna proposta pending da rifiutare")
+-    prop = sorted(
+-        pending,
+-        key=lambda item: item.updated_at or item.created_at,
+-        reverse=True,
+-    )[0]
++    prop = newest_name_proposal(pending)
+     prev_status = prop.status or "pending"
+     prop.status = "rejected"
+     prop.status_reason = "rejected_from_oggi"
+     prop.updated_at = datetime.utcnow()
+     audit(
+diff --git a/observatory/tests/test_reject_name_proposal.py b/observatory/tests/test_reject_name_proposal.py
+index 32d0ce7..12db08f 100644
+--- a/observatory/tests/test_reject_name_proposal.py
++++ b/observatory/tests/test_reject_name_proposal.py
+@@ -154,10 +154,27 @@ def test_reject_bulk_counts(db):
+     assert result["not_found"] == 1
+     db.refresh(p_ok)
+     assert p_ok.status == "rejected"
+ 
+ 
++def test_newest_name_proposal_sort_fallback_when_dates_none():
++    """E3: updated_at e created_at None → fallback datetime.min + id (no TypeError)."""
++    from types import SimpleNamespace
++
++    from app.routers.assets import newest_name_proposal
++
++    older = SimpleNamespace(id=1, updated_at=None, created_at=None)
++    newer = SimpleNamespace(id=5, updated_at=None, created_at=None)
++    dated = SimpleNamespace(
++        id=2,
++        updated_at=datetime(2026, 7, 1),
++        created_at=None,
++    )
++    assert newest_name_proposal([older, newer]).id == 5
++    assert newest_name_proposal([older, dated, newer]).id == 2
++
++
+ def test_reject_bulk_invalid_csrf(db):
+     user = _user(db)
+     with pytest.raises(HTTPException) as ei:
+         reject_name_proposals_bulk(
+             body=RejectNameBulkIn(ids=[1]),
+diff --git a/observatory/web/src/oggiTriage.js b/observatory/web/src/oggiTriage.js
+index 72bf1be..67882e1 100644
+--- a/observatory/web/src/oggiTriage.js
++++ b/observatory/web/src/oggiTriage.js
+@@ -14,10 +14,36 @@ export function groupTriageRows(rows) {
+     else verifica.push(r);
+   }
+   return { adotta, verifica, rumore };
+ }
+ 
++/**
++ * Esito massa archivia rumore (sempre «Archiviate N», anche se 0 saltate).
++ * @param {{ rejected?: number, skipped_non_pending?: number, not_found?: number }} res
++ * @returns {string}
++ */
++export function formatArchiveNotice(res) {
++  const rejected = Number(res?.rejected || 0);
++  const skipped = Number(res?.skipped_non_pending || 0);
++  const missing = Number(res?.not_found || 0);
++  let msg = `Archiviate ${rejected}`;
++  if (skipped) msg += `, saltate non-pending ${skipped}`;
++  if (missing) msg += `, non trovate ${missing}`;
++  return msg;
++}
++
++/**
++ * Righe rumore senza proposal_id (escluse dalla massa).
++ * @param {object[]} rumoreRows
++ * @param {object[]} massEligibleRows
++ */
++export function rumoreMissingProposalCount(rumoreRows, massEligibleRows) {
++  const rumoreN = (rumoreRows || []).length;
++  const eligibleN = (massEligibleRows || []).length;
++  return Math.max(0, rumoreN - eligibleN);
++}
++
+ /** @param {object} row */
+ export function displayCurrentName(row) {
+   const n = row?.current_name;
+   if (n == null || String(n).trim() === "") return "anonimo";
+   return String(n).trim();
+diff --git a/observatory/web/src/oggiTriage.test.js b/observatory/web/src/oggiTriage.test.js
+index b82d931..576dfe9 100644
+--- a/observatory/web/src/oggiTriage.test.js
++++ b/observatory/web/src/oggiTriage.test.js
+@@ -5,11 +5,13 @@ import { dirname, join } from "node:path";
+ import { fileURLToPath } from "node:url";
+ 
+ import {
+   displayCurrentName,
+   displayPort,
++  formatArchiveNotice,
+   groupTriageRows,
++  rumoreMissingProposalCount,
+   verdictTone,
+ } from "./oggiTriage.js";
+ 
+ const root = dirname(fileURLToPath(import.meta.url));
+ 
+@@ -40,10 +42,40 @@ test("displayPort: trattino dichiarato se assente", () => {
+ test("verdictTone mapping", () => {
+   assert.equal(verdictTone("collide"), "attn");
+   assert.equal(verdictTone("rumore"), "muted");
+ });
+ 
++test("formatArchiveNotice: sempre Archiviate N (anche tutto-ok)", () => {
++  assert.equal(formatArchiveNotice({ rejected: 12 }), "Archiviate 12");
++  assert.equal(
++    formatArchiveNotice({ rejected: 10, skipped_non_pending: 2, not_found: 1 }),
++    "Archiviate 10, saltate non-pending 2, non trovate 1",
++  );
++  assert.equal(formatArchiveNotice({}), "Archiviate 0");
++});
++
++test("rumoreMissingProposalCount: differenza gruppo vs massEligible", () => {
++  assert.equal(rumoreMissingProposalCount([{ a: 1 }, { a: 2 }], [{ a: 1 }]), 1);
++  assert.equal(rumoreMissingProposalCount([{ a: 1 }], [{ a: 1 }]), 0);
++});
++
++test("Oggi.vue: notice distinto da error, non azzerato da load (E1)", () => {
++  const src = readFileSync(join(root, "views/Oggi.vue"), "utf8");
++  assert.ok(src.includes("const notice = ref"));
++  assert.ok(src.includes("formatArchiveNotice"));
++  assert.ok(src.includes("oggi-notice"));
++  assert.ok(src.includes("role=\"status\""));
++  // load clears error but must NOT clear notice
++  const loadBlock = src.slice(src.indexOf("async function load()"), src.indexOf("function openDossier"));
++  assert.ok(loadBlock.includes('error.value = ""'));
++  assert.ok(
++    !loadBlock.includes('notice.value = ""'),
++    "load() non deve azzerare notice",
++  );
++  assert.ok(src.includes("senza id proposta, escluse"));
++});
++
+ test("Oggi.vue: usa buildTriageRows + reject bulk + gruppi (OBS-031 B2)", () => {
+   const src = readFileSync(join(root, "views/Oggi.vue"), "utf8");
+   assert.ok(src.includes("buildTriageRows"));
+   assert.ok(src.includes("groupTriageRows"));
+   assert.ok(src.includes("rejectNameProposalsBulk"));
+diff --git a/observatory/web/src/views/Oggi.vue b/observatory/web/src/views/Oggi.vue
+index 03150cb..d0e3fc9 100644
+--- a/observatory/web/src/views/Oggi.vue
++++ b/observatory/web/src/views/Oggi.vue
+@@ -13,12 +13,14 @@ import {
+ import {
+   displayCurrentName,
+   displayIp,
+   displayMac,
+   displayPort,
++  formatArchiveNotice,
+   formatConfidencePct,
+   groupTriageRows,
++  rumoreMissingProposalCount,
+   verdictLabel,
+   verdictTone,
+ } from "../oggiTriage";
+ import PageHeader from "../components/PageHeader.vue";
+ import DenseRow from "../components/ui/DenseRow.vue";
+@@ -31,10 +33,12 @@ const assets = ref([]);
+ const chassisPayload = ref({ chassis: [] });
+ const monitors = ref([]);
+ const busyKey = ref("");
+ const rumoreExpanded = ref(false);
+ const massBusy = ref(false);
++/** Esito massa: distinto da error; non azzerato da load(). */
++const notice = ref("");
+ 
+ const devices = computed(() => composeDevices(assets.value, chassisPayload.value));
+ 
+ const triageRows = computed(() =>
+   buildTriageRows(assets.value || [], chassisPayload.value || {}),
+@@ -42,10 +46,13 @@ const triageRows = computed(() =>
+ const triageGroups = computed(() => groupTriageRows(triageRows.value));
+ 
+ const massEligible = computed(() =>
+   triageRows.value.filter((r) => r.mass_eligible && r.proposal_id != null),
+ );
++const rumoreMissingIds = computed(() =>
++  rumoreMissingProposalCount(triageGroups.value.rumore, massEligible.value),
++);
+ const chassisExcludedFromMass = computed(() =>
+   triageRows.value.filter((r) => r.is_noise && r.chassis_member),
+ );
+ 
+ const newItems = computed(() => {
+@@ -98,10 +105,11 @@ const emptyAll = computed(
+ );
+ 
+ async function load() {
+   loading.value = true;
+   error.value = "";
++  // notice NON azzerato qui (E1): sopravvive al reload post-massa
+   try {
+     const [a, c, m] = await Promise.all([
+       api.assets({ include_historical: "true" }),
+       api.chassis(),
+       api.monitors(),
+@@ -156,27 +164,24 @@ async function rejectRow(row) {
+ async function archiveNoiseMass() {
+   const eligible = massEligible.value;
+   const excluded = chassisExcludedFromMass.value.length;
+   const n = eligible.length;
+   if (!n) return;
++  const missing = rumoreMissingIds.value;
+   const msg =
+     `Archiviare ${n} proposte rumore come rejected?` +
+     (excluded
+       ? `\nEscluse ${excluded} membri chassis (non in massa).`
+-      : "");
++      : "") +
++    (missing ? `\n${missing} senza id proposta, escluse.` : "");
+   if (!window.confirm(msg)) return;
+   massBusy.value = true;
+   error.value = "";
+   try {
+     const ids = eligible.map((r) => r.proposal_id).filter((id) => id != null);
+     const res = await api.rejectNameProposalsBulk(ids);
+-    if (res?.not_found || res?.skipped_non_pending) {
+-      error.value =
+-        `Archiviate ${res.rejected || 0}` +
+-        (res.skipped_non_pending ? `, saltate non-pending ${res.skipped_non_pending}` : "") +
+-        (res.not_found ? `, non trovate ${res.not_found}` : "");
+-    }
++    notice.value = formatArchiveNotice(res || { rejected: 0 });
+     await load();
+   } catch (e) {
+     error.value = e.message || String(e);
+   } finally {
+     massBusy.value = false;
+@@ -230,16 +235,17 @@ onMounted(load);
+     <PageHeader
+       title="Oggi"
+       help="Coda di triage: proposte nome filtrate per specificità, poi device nuovi e monitor."
+     />
+     <p v-if="error" class="oggi-err" role="alert">{{ error }}</p>
+-    <p v-else-if="loading" class="oggi-muted" aria-live="polite">caricamento…</p>
+-    <template v-else>
+-      <p v-if="emptyAll" class="oggi-empty">
++    <p v-if="notice" class="oggi-notice" role="status">{{ notice }}</p>
++    <p v-if="loading" class="oggi-muted" aria-live="polite">caricamento…</p>
++    <template v-if="!loading">
++      <p v-if="emptyAll && !error" class="oggi-empty">
+         Niente in coda. La rete non richiede interventi adesso.
+       </p>
+-      <template v-else>
++      <template v-if="!emptyAll">
+         <!-- Proposte nome: ADOTTA → VERIFICA → rumore -->
+         <section v-if="triageRows.length" class="oggi-section">
+           <div class="oggi-section-head">
+             <h2 class="oggi-h2">Proposte nome</h2>
+             <span class="oggi-counts">
+@@ -379,10 +385,13 @@ onMounted(load);
+                 Archivia rumore ({{ massEligible.length }})
+               </button>
+               <span v-if="chassisExcludedFromMass.length" class="oggi-muted-inline">
+                 +{{ chassisExcludedFromMass.length }} chassis esclusi
+               </span>
++              <span v-if="rumoreMissingIds" class="oggi-muted-inline">
++                {{ rumoreMissingIds }} senza id proposta, escluse
++              </span>
+             </div>
+             <div v-if="rumoreExpanded">
+               <div
+                 v-for="row in triageGroups.rumore"
+                 :key="row.key"
+@@ -501,10 +510,19 @@ onMounted(load);
+   padding-bottom: 48px;
+ }
+ .oggi-muted { color: var(--text-3); font-size: 13px; }
+ .oggi-muted-inline { color: var(--text-3); font-size: 12px; margin-left: 8px; }
+ .oggi-err { color: var(--alert); font-size: 13px; }
++.oggi-notice {
++  color: var(--text-2);
++  font-size: 13px;
++  margin: 0.5rem 0 0;
++  padding: 8px 10px;
++  border: 0.5px solid var(--border);
++  border-radius: var(--radius);
++  background: var(--bg-1);
++}
+ .oggi-empty {
+   margin-top: 1.5rem;
+   padding: 16px;
+   border: 0.5px solid var(--border);
+   border-radius: var(--radius-lg);
