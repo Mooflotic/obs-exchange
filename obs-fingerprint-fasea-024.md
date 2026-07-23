@@ -247,3 +247,122 @@ classificati (pubblici), non come FQDN lunghi se evitabili.
 **Prossimo passo (solo dopo GO esplicito):** spike FASE B —
 immagine Zeek con `zeek/foxio/ja4`, misura 24h di fill-rate `ja4`,
 poi disegno ingest + bundle. Nessun retry AI / nessun deploy in questa fase.
+
+---
+
+## 10. Ricognizione fonti esterne (sola lettura)
+
+### 10.1 FoxIO JA4+ Database ([ja4db.com](https://ja4db.com/))
+
+| Voce | Stato |
+|---|---|
+| Endpoint/dump | Docs: `GET /api/download/` → JSON di fingerprint sets ([docs.ja4db.com](https://docs.ja4db.com/ja4+-database/usage/download-the-database)). Accesso tipicamente account/API key (docs pubbliche; download live non verificato qui — 403 senza auth). Sul repo: sample `ja4plus-mapping.csv` (poche app note). |
+| Formato | JSON fingerprint sets; CSV sample application↔JA4 |
+| Licenza | **JA4 TLS (client)**: BSD 3-Clause. **JA4+** (JA4S/H/L/T/D/…): **FoxIO License 1.1** — uso interno/accademico OK; **vietata monetizzazione** senza OEM. Uso domestico/interno LAN Observatory = non-commercial purpose (consentito). |
+| Offline | Previsto via download dump; da confermare auth + refresh periodico |
+
+**Vale la pena?** **Sì, in coda a JA4 live** — come *lookup opzionale* (“questo hash è tipico di Chromium / Python requests”), non come SoT. Priorità bassa rispetto al clustering interno. Non bloccare FASE B sul DB commerciale.
+
+### 10.2 abuse.ch SSLBL — JA3 blacklist
+
+| Voce | Stato |
+|---|---|
+| Endpoint | `https://sslbl.abuse.ch/blacklist/ja3_fingerprints.csv` (CSV pubblico, refresh ≤ ogni 5 min) |
+| Formato | `ja3_md5,Firstseen,Lastseen,Listingreason` |
+| Licenza / ToS | Gratis; vendor OK anche commerciale (ToS abuse.ch) |
+| Caveat ufficiale | Hash da malware PCAP **non** testati su traffico buono → **FP possibili** |
+
+**Vale la pena?** **Sì, come lista di ESCLUSIONE / alert**, non identificazione. Match → finding `tls_client_fp_sslbl` (severity), non “è un Echo”. Utile solo dopo che abbiamo JA3 **oppure** se restiamo su JA3 legacy; con solo JA4 serve feed JA4 (oggi SSLBL è JA3-centrico). Priorità: bassa finché non c’è fingerprint client ingerito.
+
+### 10.3 Fingerbank (API)
+
+| Voce | Stato |
+|---|---|
+| Input | `dhcp_fingerprint` (opt 55: `1,3,6,15,…`), `dhcp_vendor` (opt 60), `mac`, `user_agents[]` (max 5), UPnP UA, … (`/api/v2/combinations/interrogate`) |
+| Output | device match + **score 0–100** |
+| Tier gratis | Community: ~**600 req/ora**; rate limit globale **250/min** (anche premium) |
+| Offline DB | Endpoint static download **solo con licensing** a pagamento |
+
+**Vale la pena?** **Non ora.** Dipende da opt 55/60 che **non logghiamo**. Dopo JA4D / DHCP fingerprint: rivalutare come *secondo parere* su device sconosciuti (poche query/giorno). Privacy: inviare MAC/UA a terzi — solo opt-in esplicito.
+
+### 10.4 Raccolte GitHub JA3/JA4 “IoT”
+
+| Fonte | Cosa offre | Qualità / rischio |
+|---|---|---|
+| FoxIO `ja4plus-mapping.csv` | Sample ufficiale piccolo | Affidabile ma scarsa copertura |
+| Huginn-Muninn | Dump enormi DHCP/MAC/device (CSV/JSON/SQLite) | Ottimo per **opt55/60** e OUI esteso; TLS JA3/JA4 ancora thin |
+| leetha / aggregatori | Meta-DB multi-source | Comodo ma licenze miste + manutenzione; overkill per casa |
+| Repo JA3 IoT sparsi | Liste ad hoc | Qualità variabile, stale, overlap malware/browser |
+
+**Vale la pena?** **Huginn-Muninn DHCP**: sì *dopo* che logghiamo opt55/60 (o JA4D). Liste JA3 IoT random: **no** come SoT. Preferire clustering interno + (poi) ja4db ufficiale.
+
+### Riepilogo fonti
+
+| Fonte | Integrare? | Perché |
+|---|---|---|
+| FoxIO ja4db | Più tardi (lookup) | Licenza OK uso interno; completa il JA4 live |
+| SSLBL JA3 | Sì come denylist | Barato, chiaro, non identifica device |
+| Fingerbank | No finché no opt55 | API cloud + privacy; input che non abbiamo |
+| GitHub IoT JA3 | No SoT | Rumore; Huginn utile solo lato DHCP |
+
+---
+
+## 11. Clustering interno (funziona anche senza DB esterni)
+
+### Stato numerico OGGI (senza JA4)
+
+| Metrica | Valore live 2026-07-23 |
+|---|---|
+| JA3/JA4 distinti | **0** (non in `ssl.log`) |
+| Proxy `ssl_history` distinti (LAN) | **31** |
+| Client LAN con history | **56** |
+| Cluster con ≥2 membri (primary history) | **5** |
+| Top cluster | `CsxknGIi`→17 · `CsxkrnXGYIi`→16 · `CsiI`→15 |
+
+Conclusione: `ssl_history` **collassa troppo** (tre bucket tengono ~48 client). Utile solo come smoke test di UI clustering; **non** per propagare identità. Il clustering serio parte da **JA4** (FASE B).
+
+### Modello dati (proposta)
+
+```
+tls_client_fp
+  asset_id, fp_kind ('ja4'|'ja3'|'ssl_history'),
+  fp_value, hits, first_seen, last_seen, is_primary
+
+fp_cluster_hypothesis   (come name_proposals / ip_intel manual)
+  cluster_key (= fp_kind:fp_value),
+  suggested_device_class | suggested_label_slug,
+  source ('user_adopt'|'ja4db'|'sslbl'),
+  confidence, created_by, created_at
+  — mai scrive assets.name umano; solo class/slug tecnico
+```
+
+Priorità: ipotesi `user_adopt` su cluster **non** sovrascrive `context_source=manual` / nomi adottati; conf ≤ 0.55 finché non c’è secondo segnale (OUI+dest).
+
+### Vista UI — «Stesso stack»
+
+```
+Stack TLS  ja4=t13d1516h2_…
+  ● Echo Sala          (adottato · tu)     → ancora
+  ○ 192.168.x.x        (ipotesi 0.45)      [Adotta class] [Ignora]
+  ○ 192.168.y.y        (sconosciuto)
+  3 device · stesso ClientHello
+```
+
+Flusso:
+1. Utente apre un device → sezione **Stack / twin**.
+2. Vede gli altri asset con stesso `ja4` primario (e opz. stesso OUI).
+3. «Propaga class a tutti i sconosciuti del gruppo» → scrive
+   `fingerprint_facts` source=`ja4_cluster` (come adopt soft).
+4. SSLBL match → badge rosso sul cluster, non sul nome.
+
+Privacy UI: niente «Echo Cucina» nel prompt AI; in UI locale i nomi
+restano (sono già in Inventario). Propagazione = solo `device_class`
+tecnico.
+
+### Ordine di implementazione suggerito
+
+1. FASE B: Zeek+JA4 → ingest `tls_client_fp`
+2. Vista cluster + propagate (senza DB esterni)
+3. SSLBL denylist (se anche JA3, o feed JA4 se disponibile)
+4. Lookup ja4db offline (opzionale)
+5. Fingerbank solo se DHCP fingerprint reale
