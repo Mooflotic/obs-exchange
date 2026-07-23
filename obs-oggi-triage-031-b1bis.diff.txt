@@ -1,0 +1,134 @@
+commit 0e803fb8f882730b246c21b160a1d9f96f758c71
+Author: Michele Storci <m.storci@gmail.com>
+Date:   Thu Jul 23 23:34:20 2026 +0200
+
+    fix(oggi): rank 4 per nomi-stanza col trattino (B1-bis)
+    
+    Fritz-Cucina/Echo-Cucina → 4 via -→spazio dopo i check rank 5;
+    pulizia is_noise; pin dump invariati 48/9.
+    
+    Co-authored-by: Cursor <cursoragent@cursor.com>
+
+diff --git a/observatory/web/src/triageRules.js b/observatory/web/src/triageRules.js
+index 65354f7..b67a693 100644
+--- a/observatory/web/src/triageRules.js
++++ b/observatory/web/src/triageRules.js
+@@ -18,7 +18,10 @@ const BARE_BRANDS = new Set([
+   "roborock",
+ ]);
+ 
+-/** Room / role tokens (word-boundary). "Telecamera" must NOT match "camera". */
++/**
++ * Room / role tokens (word-boundary). "Telecamera" must NOT match "camera".
++ * Lessico di casa: curare quando compaiono stanze o dispositivi nuovi.
++ */
+ const ROOM_RE =
+   /\b(?:cabina|cucina|sala|bagno|biblioteca|camera|lavanderia|salone|media|mesh|ethernet|armadio|boschetti|ospiti|beatrice|padronale|etnico|saletta|tecnico|tv)\b|\bnic\s*\d+\b|sant['’]?agostino/i;
+ 
+@@ -73,13 +76,8 @@ export function scoreSpecificity(name) {
+   }
+   if (/^FRITZ!/i.test(n) && /\d/.test(n)) return 5;
+ 
+-  // Rank 4 — nome umano con stanza/ruolo
+-  if (/[—–]/.test(n) && (ROOM_RE.test(n) || /\bNIC\b/i.test(n))) return 4;
+-  if (ROOM_RE.test(n) && /\s/.test(n)) return 4;
+-  // "PC CabinaArmadio" (CamelCase room after PC)
+-  const spaced = n.replace(/(?<=[a-z])(?=[A-Z])/g, " ");
+-  if (/^pc\b/i.test(spaced) && ROOM_RE.test(spaced)) return 4;
+-  if (/^FRITZ!/i.test(n)) return 4;
++  // Rank 4 — nome umano con stanza/ruolo (anche "Fritz-Cucina" via - → spazio)
++  if (isRank4HumanRoom(n) || isRank4HumanRoom(n.replace(/-/g, " "))) return 4;
+ 
+   // Rank 3 — tipo+brand non univoco
+   if (
+@@ -115,6 +113,17 @@ export function scoreSpecificity(name) {
+   return 2;
+ }
+ 
++/** @param {string} s */
++function isRank4HumanRoom(s) {
++  if (/[—–]/.test(s) && (ROOM_RE.test(s) || /\bNIC\b/i.test(s))) return true;
++  if (ROOM_RE.test(s) && /\s/.test(s)) return true;
++  // "PC CabinaArmadio" (CamelCase room after PC)
++  const spaced = s.replace(/(?<=[a-z])(?=[A-Z])/g, " ");
++  if (/^pc\b/i.test(spaced) && ROOM_RE.test(spaced)) return true;
++  if (/^FRITZ!/i.test(s)) return true;
++  return false;
++}
++
+ /**
+  * Count OTHER assets whose normalized name equals the proposed name (D7).
+  * @param {string} proposed
+@@ -246,15 +255,9 @@ export function buildTriageRows(assets, chassisPayload = {}) {
+       verdict = "collide";
+       recommendedAction = "verifica";
+     } else if (manual) {
+-      // D4: enter only if strictly more specific → always verifica
+-      if (moreSpecific) {
+-        verdict = "upgrade";
+-        recommendedAction = "verifica";
+-      } else {
+-        verdict = "rumore";
+-        recommendedAction = "archivia";
+-        massEligible = true;
+-      }
++      // D4: qui solo se più specifica (altrimenti isNoise); sempre verifica
++      verdict = "upgrade";
++      recommendedAction = "verifica";
+     } else if (
+       moreSpecific &&
+       collisions === 0 &&
+@@ -269,9 +272,6 @@ export function buildTriageRows(assets, chassisPayload = {}) {
+       recommendedAction = "verifica";
+     }
+ 
+-    // Chassis: if D3 noise, declare it but keep verdict chassis for triage UX
+-    const noiseDeclared = isNoise || (manual && !moreSpecific);
+-
+     rows.push({
+       kind: "proposta_nome",
+       key: `name-${asset.id}-${top.source}-${proposedName}`,
+@@ -284,7 +284,7 @@ export function buildTriageRows(assets, chassisPayload = {}) {
+       score_proposed: scoreProposed,
+       collisions,
+       chassis_member: chassisMember,
+-      is_noise: noiseDeclared,
++      is_noise: isNoise,
+       mass_eligible: massEligible && !chassisMember,
+       manual_name: manual,
+       verdict,
+diff --git a/observatory/web/src/triageRules.test.js b/observatory/web/src/triageRules.test.js
+index e8721a3..44f4599 100644
+--- a/observatory/web/src/triageRules.test.js
++++ b/observatory/web/src/triageRules.test.js
+@@ -89,6 +89,15 @@ test("PC 108 e PC-68-13-… stesso rank sintetico (1)", () => {
+   assert.equal(scoreSpecificity("Unknown"), 1);
+ });
+ 
++test("rank 4: nomi-stanza col trattino (Fritz-Cucina, Echo-Cucina)", () => {
++  assert.equal(scoreSpecificity("Fritz-Cucina"), 4);
++  assert.equal(scoreSpecificity("Echo-Cucina"), 4);
++  // invarianti: sintetici / parlanti / bare restano
++  assert.equal(scoreSpecificity("PC-68-13-F3-E7-D2-B2"), 1);
++  assert.equal(scoreSpecificity("roborock-vacuum-a70"), 5);
++  assert.equal(scoreSpecificity("TP-Link"), 2);
++});
++
+ test("scala A3: esempi tabella rank 5..2", () => {
+   assert.equal(scoreSpecificity("ROMO-A3021K"), 5);
+   assert.equal(scoreSpecificity("AmazonAQM-008G"), 5);
+@@ -305,10 +314,13 @@ test("dump 030: 65 righe; rumore definitivo (D3 ≤) vs bozza 26", () => {
+     `parità inclusa deve alzare il rumore oltre 26 (got ${rumoreDefinitivo})`,
+   );
+ 
+-  // Valori pinati dalle regole definitive (riportare in report B1)
++  // Valori pinati dalle regole definitive (B1 + B1-bis trattini→spazi;
++  // conteggi invariati rispetto a B1: 48/9/10/46)
+   assert.equal(rumoreDefinitivo, 48);
+   assert.equal(summary.adotta, 9);
+   assert.equal(summary.chassis, 2);
++  assert.equal(summary.verifica, 10);
++  assert.equal(summary.mass_eligible, 46);
+ 
+   // eslint-disable-next-line no-console
+   console.log(
