@@ -1,0 +1,144 @@
+diff --git a/observatory/api/app/services/asset_identity.py b/observatory/api/app/services/asset_identity.py
+index 69a818c..a0e1e26 100644
+--- a/observatory/api/app/services/asset_identity.py
++++ b/observatory/api/app/services/asset_identity.py
+@@ -41,11 +41,12 @@ def os_labels_equivalent(a: str, b: str) -> bool:
+     if not longer.startswith(shorter):
+         return False
+     rest = longer[len(shorter) :]
+     if not rest:
+         return True
+-    return rest[0] in "-–—,;/|(. " or rest.startswith(" ")
++    # Separators after normalize_os_label (dashes already collapsed to "-").
++    return rest[0] in "-,;/|(. "
+ 
+ 
+ def normalize_field_source_label(src: str) -> str:
+     """Unify field_sources vocabulary: ``manuale`` → ``manual`` (OBS-026)."""
+     s = str(src or "")
+diff --git a/observatory/docs/KNOWN_DEBT.md b/observatory/docs/KNOWN_DEBT.md
+index 6367f14..2336fbe 100644
+--- a/observatory/docs/KNOWN_DEBT.md
++++ b/observatory/docs/KNOWN_DEBT.md
+@@ -100,5 +100,21 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+ - **Stato:** **RISOLTO PER RIMOZIONE** in codice 0.9.10 (pre-deploy review).
+ - **Cosa è cambiato:** nmap installato nell’immagine collector; esecuzione diretta; **eliminati** mount `docker.sock` e `privileged: true`. Restano `cap_add: NET_RAW, NET_ADMIN`.
+ - **Gate operativo:** `SCANNER_PRIVILEGED` resta `false` finché staging non conferma: (1) discovery `-sn` con MAC/ARP, (2) un `os_fingerprint` con flag true produce `osmatch`. Solo allora alzare il flag sul NAS.
+ - **Residuo:** `run_deep_scan` API non usa più docker nested — richiede `nmap` nell’immagine API o la coda Azioni (`full_tcp`). Fuori dal vettore sock.
+ - **Vietato:** reintrodurre docker.sock sul collector; `privileged: true` “per sicurezza”; alzare `SCANNER_PRIVILEGED` senza smoke ARP/-O.
++
++## DEBT-OS-LABELS-PREFIX-EQUIV (OBS-028)
++
++- **Priorità:** bassa — scelta consapevole in OBS-DOSSIER-FIX-028
++- **Cosa:** `os_labels_equivalent` tratta come equivalenti due label se la più corta è prefisso della più lunga a confine di parola/separatore (es. `Microsoft Windows` ≡ `Microsoft Windows Server 2019`), oltre al solo troncamento nmap (`Linux 4.15` ≡ `Linux 4.15 - 5.19`).
++- **Perché debito:** alcune divergenze OS reali vengono azzittite (niente banner `os_divergence`).
++- **Fix quando servirà:** equivalenza più stretta (solo range nmap / token numerici) o flag esplicito “troncamento vs upgrade edition”.
++- **Vietato:** allargare ulteriormente il prefisso senza review; silenziare divergenze via UI bypass.
++
++## DEBT-CHASSIS-PARTIAL-SILENT (OBS-028)
++
++- **Priorità:** bassa — degrado UX AssetChassis
++- **Cosa:** se `api.chassis()` o un fetch member falliscono, AssetChassis degrada in silenzio a vista mono-NIC senza segnalare «vista parziale».
++- **Perché debito:** l’operatore non sa che mancano NIC sibling; multi-NIC appare incompleto senza errore.
++- **Fix quando servirà:** stato `partial` + messaggio UI; retry selettivo dei member falliti.
++- **Vietato:** ripristinare `api.assets()` full inventory come workaround.
+diff --git a/observatory/docs/obs-dossier-fix-diff-028b.md b/observatory/docs/obs-dossier-fix-diff-028b.md
+new file mode 100644
+index 0000000..4844b72
+--- /dev/null
++++ b/observatory/docs/obs-dossier-fix-diff-028b.md
+@@ -0,0 +1,21 @@
++# OBS-DOSSIER-FIX-DIFF-028b (emendamento post-review)
++
++Delta su `fix/obs-dossier-028` dopo GO condizionato. **VERSION resta 0.10.18.**  
++Base: commit 028 (`44f43bb`) + questo emendamento. **Non** merge/main/deploy finché GO finale.
++
++## Cosa cambia
++
++1. **CandidateList** — riga collassata su testo libero: se `modelValue` non è in `candidates`, mostra `modelValue` come nome (niente barra confidenza, **niente** fallback su `normalized[0]`).
++2. **KNOWN_DEBT** — `DEBT-OS-LABELS-PREFIX-EQUIV`, `DEBT-CHASSIS-PARTIAL-SILENT`.
++3. **Pulizia** — `os_labels_equivalent`: rimossi separatori unicode morti e `rest.startswith(" ")` post-normalize.
++
++## File
++
++- `web/src/components/ui/CandidateList.vue`
++- `web/src/components/ui/uiPrimitives.test.js`
++- `docs/KNOWN_DEBT.md`
++- `api/app/services/asset_identity.py` (solo cleanup morto)
++
++## Fuori scope (post GO finale)
++
++Merge → main, push tag `v0.10.16`/`v0.10.17`/`v0.10.18`, deploy, assert live, ripristino `test_oui_parse` (cantiere separato).
+diff --git a/observatory/web/src/components/ui/CandidateList.vue b/observatory/web/src/components/ui/CandidateList.vue
+index 41ddc9e..918e729 100644
+--- a/observatory/web/src/components/ui/CandidateList.vue
++++ b/observatory/web/src/components/ui/CandidateList.vue
+@@ -53,13 +53,24 @@ const selected = computed({
+     emit("select", v);
+     expanded.value = false;
+   },
+ });
+ 
+-const selectedRow = computed(
+-  () => normalized.value.find((c) => c.id === selected.value) || normalized.value[0] || null,
+-);
++/** Collapsed row: match by modelValue id, else free-text label — never first candidate. */
++const selectedRow = computed(() => {
++  const mv = props.modelValue;
++  if (mv == null || mv === "") return null;
++  const found = normalized.value.find((c) => c.id === mv);
++  if (found) return found;
++  return {
++    id: mv,
++    name: String(mv),
++    subtitle: "",
++    confidence: null,
++    freeText: true,
++  };
++});
+ 
+ const showList = computed(() => expanded.value || !selectedRow.value);
+ 
+ watch(
+   normalized,
+@@ -108,11 +119,11 @@ function reopen() {
+         <span class="radio" aria-hidden="true">◉</span>
+         <span class="body">
+           <span class="name">{{ selectedRow.name }}</span>
+           <span v-if="selectedRow.subtitle" class="sub">{{ selectedRow.subtitle }}</span>
+         </span>
+-        <span class="conf">
++        <span v-if="selectedRow.confidence != null" class="conf">
+           <span class="bar"><i :style="{ width: confWidth(selectedRow) }" /></span>
+           <span class="num">{{ selectedRow.confidence }}</span>
+         </span>
+         <button type="button" class="cambia" @click="reopen">cambia</button>
+       </div>
+diff --git a/observatory/web/src/components/ui/uiPrimitives.test.js b/observatory/web/src/components/ui/uiPrimitives.test.js
+index 092c7d4..7571f54 100644
+--- a/observatory/web/src/components/ui/uiPrimitives.test.js
++++ b/observatory/web/src/components/ui/uiPrimitives.test.js
+@@ -28,10 +28,23 @@ test("CandidateList: placeholder neutro + collapse (OBS-028)", () => {
+   assert.ok(!src.includes("nessuna delle tre?"));
+   assert.ok(src.includes("cambia"));
+   assert.ok(src.includes("startCollapsed"));
+ });
+ 
++test("CandidateList: free-text collapse senza fallback su normalized[0] (OBS-028b)", () => {
++  const src = readFileSync(join(root, "CandidateList.vue"), "utf8");
++  assert.ok(
++    !src.includes("|| normalized.value[0]"),
++    "selectedRow non deve ricadere sul primo candidato",
++  );
++  assert.ok(src.includes("freeText: true"), "riga collassata da modelValue non in lista");
++  assert.ok(
++    src.includes('v-if="selectedRow.confidence != null"'),
++    "testo libero: niente barra confidenza",
++  );
++});
++
+ test("direction gate 0.20 e split temperatura", () => {
+   assert.equal(HABITS_DIR_RATIO_MIN, 0.2);
+   assert.equal(showDirectionBars({ direction_sample_ratio: 0.19 }), false);
+   assert.equal(showDirectionBars({ direction_sample_ratio: 0.2 }), true);
+   const split = directionSplit({ bytes_out: 75, bytes_in: 25 });
