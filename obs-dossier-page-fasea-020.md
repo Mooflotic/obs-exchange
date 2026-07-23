@@ -1,129 +1,135 @@
 <!-- BLOCK-ID: OBS-DOSSIER-PAGE-FASEA-020 -->
 
-# OBS-DOSSIER-PAGE-FASEA-020 — Dossier pagina piena (ricognizione)
+# OBS-DOSSIER-PAGE-FASEA-020 — Dossier pagina piena + sidebar RADAR/MAPPA
 
-**STOP FASE A** — sola lettura, nessun codice/deploy.
+**STOP FASE A** — sola lettura · nessun codice/deploy.
 
-Obiettivo: `/dossier/:id` nel gruppo «Non so cosa cerco»; riusare Chi sei / Abitudini da Inventory, non duplicare.
+Obiettivo: `/dossier/:id` come vista piena nel gruppo **RADAR**. Sidebar riorganizzata in due gruppi (stub per voci non ancora vive).
 
 ---
 
-## 1. Estrazione — Inventory.vue oggi
+## Target sidebar (FASE B)
 
-**File:** `web/src/views/Inventory.vue`
+| Gruppo | Voci | Stato in questa fase |
+|--------|------|----------------------|
+| **RADAR** | Oggi · Osservatorio · **Dossier** · Come funziona | stub tranne Dossier (pagina reale) |
+| **MAPPA** | Inventario · Impianto · Topologia · Monitor · Timeline · Findings · Azioni | già esistenti (rinominate/riordinate) |
 
-### Struttura template (drawer `aside.inv-panel`)
+Fuori scope / da decidere in B: Incidenti, Proposte, Runbook, AI (oggi in «Salute/Controllo») — non compaiono nella lista target; o si aggregano sotto MAPPA o restano in un terzo gruppo minimo.
 
-| Blocco | ~righe | Contenuto |
-|--------|--------|-----------|
-| Head | 680–698 | nome / MAC / IP + close |
-| **Tu decidi** | 700–749 | form edit (nome, cat, status, OS, patch, critico, watch) |
-| **Chi sei** | 751–850 | identity KV, opt-out OS, scan readiness, «Rileva OS ora», JSON technical |
-| **Abitudini** | 852–973 | coverage, provenance, dest out\|in, sparkline, porte |
-| Altro drawer | 975–1114 | IP, «Il sistema ha visto», interfacce, percorso, proposte, fingerprint, note, Salva |
+---
 
-### State dedicato alle due sezioni
+## 1. Estrazione componenti
 
-- **Chi sei:** `identity`, `identityLoading`, `identityTechnicalOpen`, `osScanBusy`, `osScanMsg`
-- **Abitudini:** `habits`, `habitsLoading`, `habitsDestExpanded`, `habitsPortsExpanded` + computed (`habitsLocalHours`, `habitsSpark`, `habitsDestView`, …)
+**Oggi:** Chi sei + Abitudini vivono solo nel drawer di `web/src/views/Inventory.vue` (Teleport → `aside.inv-panel`).
 
-### Load API (già per `primaryId`, non chassis key)
+### Template / API
 
-| Funzione | Endpoint client | Note |
-|----------|-----------------|------|
-| `loadIdentity(assetId)` | `GET /api/assets/{id}/identity[?technical=1]` | fail → `msg` |
-| `loadHabits(assetId)` | `GET /api/assets/{id}/habits?days=7` | fail soft, non blocca pannello |
-| azioni OS | `PATCH` asset opt-out · `POST …/scan-os` · `scanReadiness` | usano `busy`/`msg` condivisi |
+| Sezione | ~righe | Fetch |
+|---------|--------|-------|
+| Chi sei | 751–850 | `GET /api/assets/{id}/identity[?technical=1]` via `loadIdentity` |
+| Abitudini | 852–973 | `GET /api/assets/{id}/habits?days=7` via `loadHabits` |
 
-Helpers: `habitsUi.js` (presentazione pura); `inventoryDevices.identitySources` / `pathHops` per pezzi adiacenti del panel.
+Chiave asset: `device.primaryId` (non la chassis key).
 
-### Accoppiamento col pannello (da spezzare)
+### State intrecciato col pannello
+
+| Stato | Accoppiamento |
+|-------|----------------|
+| `identity*` / `habits*` / expand | init in `openPanel` → `load*`; azzerati in `closePanel` |
+| `panelOpen` + `body.panel-open` | Teleport drawer; Escape / backdrop chiudono |
+| `busy` / `msg` | **condivisi** con Tu decidi, adopt, IP role, AI — anche opt-out OS / scan |
+| `selected` / `form` | editing; le due sezioni leggono `selected.primaryId` |
+
+### Come estrarre (riuso vero, zero duplicazione UI)
 
 ```
-openPanel(device)
-  → selected + form + panelOpen + body.panel-open
-  → loadIdentity(primaryId) + loadHabits(primaryId)
+AssetIdentity.vue   prop: assetId
+  watch → api.assetIdentity; loading/error interni
+  azioni OS: emit('changed') oppure solo-lettura sul Dossier
 
-closePanel()
-  → azzera selected/form/identity/habits/expand + body.panel-open
+AssetHabits.vue     prop: assetId, days?=7
+  watch → api.assetHabits; expand interni; helpers da habitsUi.js
 
-Escape / backdrop / post-save → closePanel
-busy + msg → condivisi con Tu decidi / adopt / IP role / AI
+Inventory drawer:  <AssetIdentity :asset-id="…" /> + <AssetHabits … />
+Dossier page:      stessi due componenti
 ```
 
-**Per `AssetIdentity.vue` / `AssetHabits.vue`:**
+CSS `.habits-*` / `.inv-chi-sei` oggi scoped in Inventory → spostare col componente (o modulo CSS condiviso).
 
-- Prop: `assetId: number` (+ opz. `days` per habits).
-- Caricano da soli (`onMounted` / `watch assetId`).
-- State loading/error **interno**; non dipendere da `panelOpen` / `closePanel`.
-- Azioni mutanti (opt-out, scan OS): o restano nel child con emit `changed`, o restano nel drawer Inventario (azioni) e sul dossier solo lettura.
-- CSS: ~100 linee `.habits-*` / `.inv-chi-sei` oggi scoped in Inventory → spostare col componente (o foglio condiviso).
-- Inventory dopo extract: `<AssetIdentity :asset-id="selected.primaryId" />` + stesso per Habits **oppure** link «Apri dossier» e drawer snellito.
-
-**Verdict estrazione:** fattibile; costo = spostare template+state+CSS+load. Il vincolo reale è `busy`/`msg` e le azioni OS, non le API.
+**Verdict:** si riusa davvero. Non duplicare markup. Costo = move template+state+CSS+load; spezzare dipendenza da `closePanel`/`Teleport`.
 
 ---
 
 ## 2. Routing
 
-**File:** `web/src/router.js` — routes flat, **nessun layout nested**.
+`web/src/router.js`: routes flat, nessun layout nested.
 
-- Guard unico: `beforeEach` → `auth.check()`; solo `/login` è `meta.public`.
-- Inventario già `/inventory`; query `?view=` gestita in-page.
-
-**`/dossier` + `/dossier/:id`:** additivo e banale (due entry come le altre viste). Auth già coperta. Shell `App.vue` + `<router-view>` invariata. Attenzione solo all’ordine: `/dossier/:id` prima del catch-all `/:pathMatch(.*)*`.
-
----
-
-## 3. Sidebar
-
-**File:** `web/src/App.vue` ~115–137 — già tre `.nav-group` con `.nav-label` («Operativo», «Salute», «Controllo»). CSS pronto in `matrix.css` (`.nav-group` / `.nav-label`).
-
-**«So cosa cerco» / «Non so cosa cerco»:** solo markup additivo (rinominare/riordinare gruppi + link Dossier). Nessun refactor strutturale. Mobile già nasconde le label.
-
-Proposta gruppi (orientativa):
-
-| Gruppo | Voci |
-|--------|------|
-| So cosa cerco | Inventario, Impianto, Topologia, … |
-| Non so cosa cerco | **Dossier**, Dashboard?, Findings? |
-| (Salute / Controllo restano o si fondono) | … |
+- Guard: `beforeEach` + `auth.check()`; solo `/login` è `meta.public`.
+- Aggiungere `/dossier` e `/dossier/:id`: **banale/additivo** (come Inventory).
+- Stub RADAR: `/oggi`, `/osservatorio`, `/come-funziona` → stesso componente `Stub.vue` o tre mini-viste «Prossimamente».
+- Catch-all `/:pathMatch(.*)*` resta in coda.
 
 ---
 
-## 4. Ricerca
+## 3. Sidebar — oggi e mobile
 
-**Backend:** `GET /api/assets?q=` già filtra substring su name, category, vendor, notes, status, MAC, IP (`assets.py` ~288–301). **Nessun campo hostname dedicato** nel blob search.
+**Oggi** (`App.vue` ~115–137): tre `.nav-group` (Operativo / Salute / Controllo) + `.nav-label`. CSS già in `matrix.css` (`.nav-group`, `.nav-label::before`).
 
-**Client Inventario oggi:** carica **tutto** (`include_historical=true`) e filtra con `matchDeviceSearch` (nome/vendor/IP/MAC iface) — **non** passa `q` all’API.
+**RADAR / MAPPA:** refactor **di contenuto** (riordino link + 2 label), **non strutturale** — stesso markup group/label.
 
-**Scala:** ~130–150 device/asset in casa → client-side basta per hub `/dossier`. Alternativa zero-costo: riusare `?q=` server se un giorno cresce.
+**Mobile (`max-width: 800px` in `matrix.css` ~744+; sotto ~430px stessa regola, più stretto):**
 
-**Endpoint nuovo:** non necessario in FASE B.
+- Sidebar diventa barra orizzontale in alto (flex, scroll).
+- **`.nav-label { display: none }`** — le intestazioni di gruppo **spariscono**; restano solo i link in fila.
+- Con ~11+ voci MAPPA+RADAR la barra sarà affollata: in FASE B valutare truncate / overflow-x (già tipico) o nascondere stub su mobile.
 
----
-
-## 5. Proposta — drawer vs pagina (niente doppioni)
-
-| **Drawer Inventario** (azione) | **Pagina `/dossier/:id`** (lettura / narrativa) |
-|--------------------------------|--------------------------------------------------|
-| Lista + search + countbar | Hero: nome, MAC, IP (da `GET /api/assets/{id}`) |
-| **Tu decidi** + Salva / Note | **AssetIdentity** (Chi sei) |
-| Adotta proposte / AI nome / ruoli IP | **AssetHabits** (Abitudini) |
-| Watch / critico | Percorso (+ link Topologia) opzionale |
-| CTA «Apri dossier» → `/dossier/:id` | Link «Modifica in Inventario» → `/inventory` + open panel |
-
-**`/dossier` (senza id):** search-first hub («Non so cosa cerco») → pick → naviga a `/:id`. Stesso dataset assets, UI diversa dalla tabella Inventario.
-
-**Regola anti-duplicazione:** le due sezioni vivono **solo** nei componenti estratti; Inventory e Dossier li montano. Contenuto edit resta solo in Inventario.
+Nessun refactor CSS obbligatorio per introdurre i gruppi; solo attenzione UX mobile (label nascoste = gruppi invisibili).
 
 ---
 
-## FASE B (fuori scope) — pezzi previsti
+## 4. Ricerca `/dossier` (senza id)
 
-1. Extract `AssetIdentity.vue` + `AssetHabits.vue`; Inventory li riusa.
-2. `Dossier.vue` + routes `/dossier`, `/dossier/:id`.
-3. Sidebar: due gruppi + link Dossier.
-4. Hub search client-side; deep-link da Inventario.
+| Opzione | Pro | Contro |
+|---------|-----|--------|
+| **A. Client-side** — `GET /api/assets?include_historical=true` + filtro locale (come Inventario) | Zero API nuova; ~130–150 asset ok | Scarica tutto |
+| **B. Server `?q=`** — già in `list_assets` (name/vendor/notes/status/MAC/IP) | Leggero se cresce | Hostname non nel blob search |
+
+**Proposta FASE B:** **A** per hub Dossier (stesso ordine di grandezza Inventario). Opzionale debounce + `?q=` se la lista cresce. Niente endpoint dedicato.
+
+Placeholder search: nome / IP / MAC (allineato a `matchDeviceSearch`).
+
+---
+
+## 5. Divisione contenuti — drawer vs pagina
+
+Principio: **una sola fonte UI** per Chi sei / Abitudini (i componenti). Drawer = anteprima + azione; pagina = approfondimento.
+
+| | **Drawer Inventario** | **Pagina `/dossier/:id`** |
+|--|------------------------|---------------------------|
+| Scopo | «È questo? Agisci / correggi» | «Chi è davvero e come si comporta» |
+| Anteprima | Presente/stale · IP · nome · vendor/OUI breve | Hero completo (nome, MAC, IP, presence) |
+| Chi sei | **snippet** o componente in modalità compact *oppure* solo link | `AssetIdentity` completo (+ technical) |
+| Abitudini | **no** (o 1 riga volume 7g) — evita doppio fetch pesante in lista | `AssetHabits` completo |
+| Editing | Tu decidi · Note · adopt · IP role · watch | link «Modifica in Inventario» |
+| CTA | **`Apri Dossier`** → `router.push(/dossier/${primaryId})` | «Torna all’Inventario» / search hub |
+
+**Evita duplicazione:** non mantenere due markup paralleli di Chi sei/Abitudini. Se il drawer mostra un pezzo di identity, è lo stesso `AssetIdentity` con prop `variant="compact"` **oppure** solo i campi già noti dal device composto (senza secondo fetch) + CTA Dossier.
+
+Raccomandazione FASE B minima:
+
+1. Drawer: head (presente? IP? nome) + Tu decidi + **Apri Dossier** + editing residuo.
+2. Dossier: Identity + Habits full.
+3. Inventario lista invariata; open panel resta per edit rapido.
+
+---
+
+## FASE B (fuori scope) — pezzi
+
+1. Extract `AssetIdentity` / `AssetHabits`; Inventory li monta (o snellisce).
+2. `DossierHub.vue` (`/dossier`) + `Dossier.vue` (`/dossier/:id`).
+3. Sidebar RADAR/MAPPA; stub Oggi / Osservatorio / Come funziona.
+4. CTA «Apri Dossier» nel drawer.
+5. Decisione Incidenti/Proposte/Runbook/AI (terzo gruppo o sotto MAPPA).
 
 **STOP FASE A.**
