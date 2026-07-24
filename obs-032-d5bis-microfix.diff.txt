@@ -1,0 +1,50 @@
+# OBS-032 micro-fix: 12-hex \\b + DEBT-MAC-REGEX-DIGIT-RUN
+
+diff --git a/observatory/docs/KNOWN_DEBT.md b/observatory/docs/KNOWN_DEBT.md
+index 0dde9c8..a84c8a7 100644
+--- a/observatory/docs/KNOWN_DEBT.md
++++ b/observatory/docs/KNOWN_DEBT.md
+@@ -156,3 +156,10 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+ - **Cosa:** l’adozione nome (`POST …/adopt-name` e bottone «adotta» in Oggi) **non ha vincolo chassis**: scrive sul singolo asset. La protezione operativa è solo (1) raccomandazione `buildTriageRows` (membri → verifica/`verdict=chassis`) e (2) conferma UI dichiarativa introdotta in D5-bis (conseguenza: nome su asset, sibling divergenti).
+ - **Fix quando servirà:** rename a livello chassis (spec design 025: «Il nome vive sul chassis»).
+ - **Vietato:** considerare la conferma UI un sostituto del vincolo API/modello; bloccare l’adozione chassis in UI senza fix rename chassis.
++
++## DEBT-MAC-REGEX-DIGIT-RUN (OBS-032)
++
++- **Priorità:** bassa — falso positivo asimmetrico su `scoreSpecificity`
++- **Cosa:** il token `\b[0-9a-f]{12}\b` tratta anche una corsa di **12+ cifre decimali** (non-MAC) come sintetica (rank 1). Se colpisce il **nome attuale**, una proposta peggiore diventa «upgrade» e può arrivare in Adotta; se colpisce solo la proposta, è rumore (asimmetria).
++- **Fix quando servirà:** riconoscere il MAC dell’asset stesso (evidence) invece della sola forma tipografica.
++- **Vietato:** allargare ulteriormente il pattern senza review.
+diff --git a/observatory/web/src/triageRules.js b/observatory/web/src/triageRules.js
+index 1f101cb..2ebbeec 100644
+--- a/observatory/web/src/triageRules.js
++++ b/observatory/web/src/triageRules.js
+@@ -54,9 +54,9 @@ export function scoreSpecificity(name) {
+   if (/^amazon-[0-9a-f]{8,}$/i.test(n)) return 1;
+   // PC 108, PC-68-13-F3-…, PC-192-168-2-* (digits / hex / dots / dashes only)
+   if (/^pc[\s-][\d.a-f:-]+$/i.test(n)) return 1;
+-  // MAC anywhere: 6 hex pairs (-/:) or 12 consecutive hex
++  // MAC anywhere: 6 hex pairs (-/:) or 12 consecutive hex as whole token
+   if (/(?:[0-9a-f]{2}[-:]){5}[0-9a-f]{2}/i.test(n)) return 1;
+-  if (/[0-9a-f]{12}/i.test(n)) return 1;
++  if (/\b[0-9a-f]{12}\b/i.test(n)) return 1;
+ 
+   // Rank 2 — brand nudo / generico
+   if (BARE_BRANDS.has(lower)) return 2;
+diff --git a/observatory/web/src/triageRules.test.js b/observatory/web/src/triageRules.test.js
+index c014e4a..a52bfb6 100644
+--- a/observatory/web/src/triageRules.test.js
++++ b/observatory/web/src/triageRules.test.js
+@@ -125,6 +125,12 @@ test("OBS-032: MAC incapsulato → rank 1; invarianti non-1", () => {
+   assert.equal(scoreSpecificity("C3X-00-03-50-96-82-2c-45123"), 1);
+   assert.equal(scoreSpecificity("GAGGENAU-DF480162-68A40E40A69A"), 1);
+   assert.equal(scoreSpecificity("garmin-fenix8-51mm-11b8d0080342"), 1);
++  // 12-hex dentro token più lungo: \\b non matcha (confine documentato)
++  assert.notEqual(
++    scoreSpecificity("pref68A40E40A69Asuff"),
++    1,
++    "12-hex embedded non è rank 1",
++  );
+   for (const name of [
+     "ROMO-A3021K",
+     "roborock-vacuum-a70",
