@@ -62,13 +62,24 @@ Pre-massa il sottogruppo UI resta **chassis(21)** (15 top-rumore + 6 già non-ru
 
 ## 3 · Deploy + osservato
 
-*(compilato dopo merge/tag/deploy)*
-
 | Voce | Dichiarato | Osservato | Δ |
 |------|------------|-----------|---|
-| API/UI version | 0.10.20 | _TBD_ | |
-| Archivia rumore | 60 | _TBD_ | |
-| chassis Verifica | 21 | _TBD_ | |
-| Confirm adotta chassis → Annulla | dialogo sì | _TBD_ | |
+| API `/api/health` version | 0.10.20 | **0.10.20** | ok |
+| UI sidebar | 0.10.20 | **v0.10.20 · 24/07** | ok |
+| Archivia rumore (N) | **60** | **60** (UI + `noiseProposalIds`) | ok |
+| chassis Verifica | **21** | **21** | ok |
+| Confirm adotta chassis → Annulla | dialogo sì | testo chassis/sibling; `confirm` → false (nessuna adozione) | ok |
 
-Massa: **non eseguita** (Michele).
+Massa: **non eseguita** (Michele). Post-massa atteso: chassis **10** (elenco §2a).
+
+### Merge / tag
+
+- Merge no-ff → `main` (`db99ac9`)
+- Tag **`v0.10.20`** pushato
+- `./scripts/deploy.sh api web` → ok (bootstrap trust lento ~minuti, poi healthy)
+
+### Suite micro-fix
+
+- `node --test src/*.test.js` → **107 pass**
+- `pytest --ignore=tests/test_m6_m8_detectors_flow.py` → **479 pass / 9 fail noti**
+- Dump 030 pin: **invariato** 48/9/2/10/46
