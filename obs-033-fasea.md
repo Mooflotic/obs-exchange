@@ -10,14 +10,17 @@
 
 **Sì, eseguita** (Michele).
 
-| Voce | Valore |
-|------|--------|
-| Passate | **2** (60 @ 17:18:50 + 1 @ 17:21:03) |
-| Pulsante massa finale | sezione rumore assente (griglia **0**); residuo `noiseProposalIds` **2** (nascosti) |
-| Gruppo chassis | **10** (atteso 10) — **ok** |
-| Top diversa | **1** (atteso 0) — diverge: `#2` LGS328C `Switch`/dns 0.6 vs `Switch Linksys`/oui 0.4 |
+| Voce | Misurato / ricostruito | Valore |
+|------|------------------------|--------|
+| Passate | **misurato** (cluster `updated_at` su `rejected_bulk_oggi`) | **2**: **60** @ `2026-07-24 17:18:50` + **1** @ `2026-07-24 17:21:03` |
+| Notice UI | **ricostruito** (notice non osservato post-reload) | attesi `Archiviate 60` / `Archiviate 1` |
+| `rejected_bulk_oggi` | **misurato** (conteggi esatti) | **165** → **230** (**+65**) |
+| `pending` | **misurato** | **205** → **140** (**−65**) |
+| Pulsante massa finale | **misurato** | sezione rumore assente (griglia **0**); residuo `noiseProposalIds` **2** (vedi B1–B2) |
+| Gruppo chassis | **misurato** | **10** (atteso 10) — **ok** |
+| Top diversa | **misurato** | **1** (atteso 0) — `#2` LGS328C `Switch`/dns 0.6 vs `Switch Linksys`/oui 0.4 |
 
-Dettaglio: `obs-032-postmassa.md`.
+Dettaglio passate: addendum **B4**. Post-massa originale: `obs-032-postmassa.md`.
 
 ---
 
@@ -124,3 +127,87 @@ Coppie (nome attuale, proposta) con `normalizeName` uguale ma rank diversi: **0*
 ## Pending by source (contesto)
 
 dns 65 · fritz 44 · oui 14 · **ssdp 10** · ai 5 · dhcp 2 · **totale 140**
+
+---
+
+## Addendum B (sola lettura)
+
+### B1 — I 2 id rumore residui
+
+`noiseProposalIds` su dump `_serialize` + chassis live: **`[297, 3]`**. Entrambi su asset **#2**.
+
+| id proposta | asset | nome attuale | valore | fonte |
+|------------:|------:|--------------|--------|-------|
+| **297** | 2 | LGS328C | Switch | **dns** |
+| **3** | 2 | LGS328C | Switch | fritz |
+
+**Sì:** uno dei due è il `Switch` dns di `#2` (id **297**). Entrambi sono membri chassis → riga top in **verifica**, non in griglia rumore; restano in `noiseProposalIds` (D5-bis).
+
+### B2 — Pulsante «Archivia rumore» vs griglia vuota
+
+Confermato: il pulsante è **dentro** il blocco condizionato alla griglia rumore.
+
+```411:429:observatory/web/src/views/Oggi.vue
+          <div v-if="triageGroups.rumore.length" class="oggi-group oggi-rumore">
+            ...
+              <button
+                ...
+                Archivia rumore ({{ noiseIds.length }})
+```
+
+- `triageGroups.rumore` = righe con `recommended_action === "archivia"` (`oggiTriage.js` `groupTriageRows`)
+- `noiseIds` = `noiseProposalIds(...)` — include rumore chassis anche se la riga è in verifica
+
+Stato post-massa (e oggi): `triageGroups.rumore.length === 0` e `noiseIds.length === 2` → **pulsante assente dal DOM**.
+
+**Difetto (dichiarato, non fixato):** il rumore chassis è archiviabile per regola (`noiseProposalIds`) ma **irraggiungibile dalla UI** quando la griglia rumore è vuota.
+
+### B3 — Rigenerazione pending vs rejected
+
+| Domanda | Esito |
+|---------|--------|
+| Esiste pending con stesso `(asset_id, source, value)` di una `rejected`? | **Sì** |
+| Quante | **2** |
+| Su quanti asset | **1** (`#2`) |
+| Pending creati *dopo* il reject della stessa tupla | **0** |
+
+Dettaglio delle 2 (coesistenza, non re-creazione post-reject):
+
+| pending id | asset | source | value | created pending | rejected id | reject `updated_at` |
+|-----------:|------:|--------|-------|-----------------|------------:|---------------------|
+| 3 | 2 | fritz | Switch | 2026-07-17 23:06:25 | 295 | 2026-07-24 17:18:50 (bulk) |
+| 297 | 2 | dns | Switch | 2026-07-18 01:26:08 | 296 | 2026-07-24 17:18:50 (bulk) |
+
+Distanza temporale: i pending sono **più vecchi** del reject sui row sibling (~**6,5 giorni** da create a bulk). Non c’è un caso «reject → nuova create» della stessa tupla.
+
+**Controllo anti-ricreazione nel codice:** **non esiste**. Nessun path verifica «valore già rejected per questo asset» prima di inserire/aggiornare.
+
+Path tipici (lookup solo per `asset_id`+`source`, senza filtro su rejected/value):
+
+- `identity.py` ~1128–1137 (`upsert` host proposals) — `next(... source == src)` poi `db.add` se assente
+- `identity.attach_ssdp_evidence` ~309–327 — select per `asset_id`+`source==ssdp` senza status
+- `dhcp_names.py` ~82–106 — upsert solo su `pending`; se esiste altro status per `dhcp` non crea, ma **non** confronta il valore rejected
+- `ai_naming._upsert_ai_proposal` ~411–437 — solo `status==pending`; history rejected lasciata intatta → **può** creare un nuovo pending con lo stesso value
+- `printer.py` ~35–47 — per source, senza check rejected
+- `suggest.ensure_oui_proposals` ~109–116 — per source, senza check rejected
+
+### B4 — Contabilità delle passate
+
+| Fonte | Natura | Dato |
+|-------|--------|------|
+| Cluster `rejected_bulk_oggi` @ `17:18:50` | **misurato** | **60** |
+| Cluster `rejected_bulk_oggi` @ `17:21:03` | **misurato** | **1** |
+| Notice in pagina | **ricostruito** (non osservato) | `Archiviate 60` / `Archiviate 1` |
+| Totale `rejected_bulk_oggi` | **misurato** (esatto) | **165** → **230** |
+| Totale `pending` | **misurato** (esatto) | **205** → **140** |
+
+Cluster DB completi per `status_reason=rejected_bulk_oggi` (misurati, somma **230**):
+
+| `updated_at` (secondo) | N |
+|------------------------|--:|
+| 2026-07-23 22:53:36 | 164 |
+| 2026-07-23 23:20:43 | 5 |
+| 2026-07-24 17:18:50 | 60 |
+| 2026-07-24 17:21:03 | 1 |
+
+Nessun «arrotondamento di baseline»: i conteggi 165/230 e i cluster per secondo sono esatti.
