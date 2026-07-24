@@ -41,12 +41,14 @@ Pre-massa il sottogruppo UI resta **chassis(21)** (15 top-rumore + 6 già non-ru
 
 ### 2b — Tabella assert (corretta)
 
-| Voce | Vecchia stima | **Dichiarato** |
-|------|---------------|----------------|
-| Archivia rumore (N) | ≈62 | **60** |
-| chassis Verifica **pre-massa** (assert deploy) | 21 | **21** |
-| chassis Verifica **post-massa** (Michele) | ≈0–2 | **10** |
-| top diversa (max-conf vs max-score) | →0 | **8** (invariato; casi non-MAC) |
+| Voce | Quando | Dichiarato |
+|------|--------|------------|
+| Archivia rumore (N) | pre-massa / deploy | **60** |
+| chassis Verifica | pre-massa / deploy | **21** |
+| chassis Verifica | **post-massa** (Michele) | **10** |
+| top diversa (max-conf vs max-score) | **post-massa** (Michele) | **0** |
+
+Nota: pre-massa la top diversa era **8** (baseline, non un assert fallito). «→0» resta assert **in attesa** fino dopo la massa — vedi `obs-032-postmassa.md`.
 
 ### 2c — `#135` Sky TV
 
@@ -70,7 +72,7 @@ Pre-massa il sottogruppo UI resta **chassis(21)** (15 top-rumore + 6 già non-ru
 | chassis Verifica | **21** | **21** | ok |
 | Confirm adotta chassis → Annulla | dialogo sì | testo chassis/sibling; `confirm` → false (nessuna adozione) | ok |
 
-Massa: **non eseguita** (Michele). Post-massa atteso: chassis **10** (elenco §2a).
+Massa: eseguita da Michele — misura in [`obs-032-postmassa.md`](obs-032-postmassa.md) (chassis **10** ok; top diversa **1≠0**).
 
 ### Merge / tag
 
