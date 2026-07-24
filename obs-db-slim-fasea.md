@@ -244,6 +244,42 @@ Nessun reader presence/habits/dossier su raw oggi.
 
 **Rischi:** trust backfill full-history se asset senza `portal_first_seen`; scans/detectors ancora su `Observation`; dual-write gate `created` — smettere di scrivere legacy richiede switch esplicito dei reader + periodo shadow. **Non DROP in questa fase.** Percorso naturale: (a) reader → portal fields / raw, (b) stop write legacy, (c) TTL aggressivo / truncate, (d) VACUUM, (e) DROP tabella.
 
+### C4 — `observations_raw` oltre 7 giorni? Cliente per archivio / cold DB?
+
+**Domanda:** esiste OGGI, o è previsto in `vision-osservatorio-strato5.md`, un consumatore che legga `observations_raw` oltre la finestra di 7 giorni? L’Osservatorio userà trend > 7g su quel store?
+
+#### Codice oggi
+
+Nessun reader di `observations_raw` con finestra > 7g:
+
+| Path | Uso | Orizzonte |
+|------|-----|-----------|
+| `fingerprint_facts.py:1201–1205` | SSDP latest | limit 800, ordine desc (recente) |
+| `reliability_metrics.py` | `COUNT(*)` store | punto nel tempo, non trend storico raw |
+| `retention.py` | rollup+delete | cutoff = TTL 7g |
+
+Habits / Dossier / Osservatorio UI **non** interrogano `observations_raw`.
+
+#### Visione Strato 5 (`docs/vision-osservatorio-strato5.md`)
+
+- Dati citati: **`flow_observations`** (`bytes_out` / `bytes_in`), `GET /api/assets/{id}/habits`, coverage SPAN.
+- Orizzonte esplicito: **«~7 giorni»** di ore chiuse post-direzione per tarare soglie; FASE A solo quando «una settimana di `flow_observations`».
+- **Zero menzioni** di `observations_raw` / store M1 / cold archive / hot-cold split.
+- Segnale «IP nuovo» = «storia **breve** del device», non mesi di raw.
+- Wave successive (z-score, “mai visto a quest’ora”, ML) sono **fuori scope** finché non esiste baseline esplicita — e anche lì la visione non lega la baseline a `observations_raw`.
+
+Design correlata (`obs-design-spec-025.md`): Osservatorio = «ultimi **7 giorni**» / «~7 giorni di dati direzionali» — ancora su traffico/habits, non sul raw discovery.
+
+#### Distinzione importante
+
+Trend comportamentale > 7g, se mai richiesto, riguarda **`flow_observations`** (habits già `MAX_DAYS=30`, prune flows 30g) — **non** giustifica trattenere `observations_raw` oltre TTL.
+
+#### Dichiarazione
+
+**NO — nessuno storico lungo su `observations_raw` ha lettori (oggi né in visione Strato 5).**
+
+→ Per il raw: **prune puro al TTL 7g**, poi VACUUM. **Nessun archivio esterno / cold DB** ha un cliente da progettare ora. Un hot/cold split andrebbe riaperto solo se nasce un requisito esplicito nuovo (non presente).
+
 ---
 
 ## 4 · VACUUM (D1–D3)
@@ -284,8 +320,9 @@ Nessun reader presence/habits/dossier su raw oggi.
 2. **Freelist nulla** → prune senza VACUUM = file invariato su disco.
 3. **Duplicati indici certi ~197 MiB** recuperabili con DROP INDEX + VACUUM (basso rischio, fuori scope Fase A).
 4. **Pavimento TTL:** legacy **≥24h** (consigliato 3g); raw **7g** già allineato; flows **30g**; heartbeats **30g**.
-5. **Live 0.10.21:** raw TTL ancora no-op; **legacy non prunata**; wlan_assoc solo legacy.
-6. **Presence→DROP legacy:** fattibile via campi asset + stop dual-write, non via “solo raw” ingenuo; richiede migrazione reader scans/detectors/trust.
+5. **C4:** nessun cliente di `observations_raw` >7g (codice né vision Strato 5) → **prune puro, niente archivio/cold DB** per il raw. Osservatorio trend = `flow_observations` ~7g.
+6. **Live 0.10.21:** raw TTL ancora no-op; **legacy non prunata**; wlan_assoc solo legacy.
+7. **Presence→DROP legacy:** fattibile via campi asset + stop dual-write, non via “solo raw” ingenuo; richiede migrazione reader scans/detectors/trust.
 
 Prossimi tagli da progettare in review: TTL legacy calibrato su C2, dedupe indici, migra-presence, poi **VACUUM INTO** in manutenzione.
 
