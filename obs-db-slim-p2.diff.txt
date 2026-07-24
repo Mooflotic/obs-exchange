@@ -1,0 +1,164 @@
+diff --git a/observatory/api/app/config.py b/observatory/api/app/config.py
+index 790f959..c796e50 100644
+--- a/observatory/api/app/config.py
++++ b/observatory/api/app/config.py
+@@ -80,6 +80,8 @@ class Settings(BaseSettings):
+     # M1 observation store (valori PROVVISORI, finalizzati in M1b su dati reali)
+     obs_dedup_window_s: int = 60
+     obs_ttl_raw_days: int = 7
++    # Legacy dual-write table; align with raw (≫ presence/scans/detectors 24h floor)
++    obs_ttl_legacy_days: int = 7
+     obs_rollup_window_hours: int = 6
+     heartbeat_retention_days: int = 30
+     measure_window_days: int = 14
+diff --git a/observatory/api/app/routers/ingest.py b/observatory/api/app/routers/ingest.py
+index 8ad4cb8..5297b74 100644
+--- a/observatory/api/app/routers/ingest.py
++++ b/observatory/api/app/routers/ingest.py
+@@ -525,7 +525,7 @@ def ingest_retention_run(
+     settings: Settings = Depends(get_settings),
+     x_obs_token: Optional[str] = Header(default=None),
+ ):
+-    """Run raw-observation rollup + heartbeat pruning (provisional TTLs)."""
++    """Run raw rollup + heartbeat/flow/legacy observation pruning (TTLs)."""
+     _check_internal(x_obs_token, settings)
+     before = store_counts(db)
+     result = run_retention(
+@@ -534,6 +534,7 @@ def ingest_retention_run(
+         rollup_window_hours=settings.obs_rollup_window_hours,
+         heartbeat_retention_days=settings.heartbeat_retention_days,
+         flow_observation_retention_days=settings.flow_observation_retention_days,
++        legacy_observation_retention_days=settings.obs_ttl_legacy_days,
+     )
+     after = store_counts(db)
+     return {"ok": True, "result": result, "before": before, "after": after}
+diff --git a/observatory/api/app/services/retention.py b/observatory/api/app/services/retention.py
+index 1fba46e..6ae1a5d 100644
+--- a/observatory/api/app/services/retention.py
++++ b/observatory/api/app/services/retention.py
+@@ -1,9 +1,9 @@
+ """M1 retention / rollup mechanism (provisional TTLs, finalized in M1b).
+ 
+ Compresses raw observations older than the raw TTL into per-(source, window)
+-aggregates, then deletes the compressed raw rows. Also prunes old heartbeats.
+-Only touches the raw/aggregate/heartbeat layers; derived state is untouched.
+-Idempotent and safe to run repeatedly.
++aggregates, then deletes the compressed raw rows. Also prunes old heartbeats,
++flow observations, and legacy ``observations`` (dual-write presence evidence).
++Derived asset state is untouched. Idempotent and safe to run repeatedly.
+ """
+ 
+ from __future__ import annotations
+@@ -14,7 +14,13 @@ from typing import Optional
+ from sqlalchemy import delete, func, select
+ from sqlalchemy.orm import Session
+ 
+-from app.models import FlowObservation, Heartbeat, ObservationAggregate, ObservationRaw
++from app.models import (
++    FlowObservation,
++    Heartbeat,
++    Observation,
++    ObservationAggregate,
++    ObservationRaw,
++)
+ 
+ 
+ def _window_start(moment: datetime, window_hours: int) -> datetime:
+@@ -111,6 +117,22 @@ def prune_flow_observations(
+     return int(deleted or 0)
+ 
+ 
++def prune_legacy_observations(
++    db: Session, *, retention_days: int, now: Optional[datetime] = None
++) -> int:
++    """Delete legacy ``observations`` rows older than retention_days.
++
++    Dual-write path still appends for presence evidence (readers use ≤24h).
++    Default TTL matches raw (7d) — well above the C2 floor. Does not VACUUM.
++    """
++    now = now or datetime.utcnow()
++    cutoff = now - timedelta(days=max(0, retention_days))
++    deleted = db.execute(
++        delete(Observation).where(Observation.seen_at < cutoff)
++    ).rowcount
++    return int(deleted or 0)
++
++
+ def run_retention(
+     db: Session,
+     *,
+@@ -118,6 +140,7 @@ def run_retention(
+     rollup_window_hours: int,
+     heartbeat_retention_days: int,
+     flow_observation_retention_days: int = 30,
++    legacy_observation_retention_days: int = 7,
+     now: Optional[datetime] = None,
+ ) -> dict[str, int]:
+     rollup = rollup_raw_observations(
+@@ -129,11 +152,15 @@ def run_retention(
+     flows = prune_flow_observations(
+         db, retention_days=flow_observation_retention_days, now=now
+     )
++    legacy = prune_legacy_observations(
++        db, retention_days=legacy_observation_retention_days, now=now
++    )
+     db.commit()
+     return {
+         **rollup,
+         "heartbeats_pruned": heartbeats,
+         "flow_observations_pruned": flows,
++        "legacy_observations_pruned": legacy,
+     }
+ 
+ 
+@@ -144,6 +171,7 @@ def store_counts(db: Session) -> dict[str, int]:
+             select(func.count()).select_from(ObservationAggregate)
+         )
+         or 0,
++        "observations": db.scalar(select(func.count()).select_from(Observation)) or 0,
+         "heartbeats": db.scalar(select(func.count()).select_from(Heartbeat)) or 0,
+         "flow_observations": db.scalar(select(func.count()).select_from(FlowObservation))
+         or 0,
+diff --git a/observatory/tests/test_m1_observation_store.py b/observatory/tests/test_m1_observation_store.py
+index 244bf8e..ffb75ca 100644
+--- a/observatory/tests/test_m1_observation_store.py
++++ b/observatory/tests/test_m1_observation_store.py
+@@ -297,6 +297,38 @@ def test_retention_prunes_old_heartbeats(db):
+     assert db.scalar(select(func.count()).select_from(Heartbeat)) == 1
+ 
+ 
++def test_retention_prunes_legacy_observations(db):
++    from app.models import Observation
++
++    old = datetime.utcnow() - timedelta(days=10)
++    db.add(
++        Observation(
++            kind="nmap",
++            mac="aa:bb:cc:dd:ee:01",
++            ip="10.0.0.1",
++            seen_at=old,
++        )
++    )
++    db.add(
++        Observation(
++            kind="nmap",
++            mac="aa:bb:cc:dd:ee:02",
++            ip="10.0.0.2",
++            seen_at=datetime.utcnow(),
++        )
++    )
++    db.commit()
++    result = run_retention(
++        db,
++        ttl_raw_days=7,
++        rollup_window_hours=6,
++        heartbeat_retention_days=30,
++        legacy_observation_retention_days=7,
++    )
++    assert result["legacy_observations_pruned"] == 1
++    assert db.scalar(select(func.count()).select_from(Observation)) == 1
++
++
+ # --- reliability metrics --------------------------------------------------
+ 
+ def test_compute_reliability_metrics_shape(db):
