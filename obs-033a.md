@@ -9,7 +9,11 @@
 
 | ID | Effetto |
 |----|---------|
-| **B2** | «Archivia rumore (N)» su `noiseIds.length > 0`, anche con griglia rumore vuota; etichetta «proposte non visibili in griglia…» |
+| **B2** | «Archivia rumore (N)» su `noiseIds.length > 0`, anche con griglia rumore vuota; etichetta «proposte non visibili in griglia…». Conferma già gestisce `n > gridRows` (anche `gridRows === 0`). |
+
+### Assert B2 post-massa residui `#2`
+
+Archiviando i rumore residui **`297`** + **`3`** (`Switch` dns/fritz su LGS328C): resta solo `Switch Linksys`/oui → **«top diversa» passa da 1 a 0**.
 | **D12** | `scoreSpecificity === 1` → rumore sempre (anche nome attuale vuoto) |
 | **D13** | `normalizeName` collassa `-_.`; se chiavi uguali → rumore **prima** dei rank |
 
@@ -48,6 +52,8 @@ Calcolata su dump Cassiopea `_serialize` + chassis **prima** del deploy (pending
 (= 2 chassis Switch `#2` + 2× BTicino D13 + 2× `#85` D12 + 1× `#98` D12)
 
 Se dopo deploy questi numeri divergono: **STOP** e report.
+
+Assert B2 (dopo prima massa o archivio mirato di `297`+`3`): **top diversa = 0**.
 
 ---
 
