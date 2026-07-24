@@ -1,0 +1,425 @@
+diff --git a/observatory/CHANGELOG.md b/observatory/CHANGELOG.md
+index e87aaa0..7c0efce 100644
+--- a/observatory/CHANGELOG.md
++++ b/observatory/CHANGELOG.md
+@@ -1,5 +1,9 @@
+ # Changelog
+ 
++## 0.10.21 — 2026-07-24
++
++- **OBS-033A (B2 + D12 + D13):** massa «Archivia rumore» segue `noiseIds` anche con griglia rumore vuota; rank 1 sempre rumore (anche su anonimi); `normalizeName` collassa `-_./spazi` e la parità normalizzata è rumore prima dei rank. Debito: `DEBT-NO-RECREATION-GUARD`, `DEBT-VERSION-SILENT-FALLBACK`.
++
+ ## 0.10.20 — 2026-07-24
+ 
+ - **OBS-032 + D5-bis:** `scoreSpecificity` tratta i MAC incapsulati (coppie hex o 12 hex) come sintetici rank 1; massa «archivia rumore» include i membri chassis (`noiseProposalIds`); conferma dichiarativa su adotta chassis. Debito: `DEBT-PROPOSALS-HIDDEN-FROM-API`, `DEBT-ADOPT-NO-CHASSIS-GUARD`.
+diff --git a/observatory/VERSION b/observatory/VERSION
+index 566871c..e831019 100644
+--- a/observatory/VERSION
++++ b/observatory/VERSION
+@@ -1 +1 @@
+-0.10.20
++0.10.21
+diff --git a/observatory/docs/KNOWN_DEBT.md b/observatory/docs/KNOWN_DEBT.md
+index a84c8a7..c43cc56 100644
+--- a/observatory/docs/KNOWN_DEBT.md
++++ b/observatory/docs/KNOWN_DEBT.md
+@@ -163,3 +163,17 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+ - **Cosa:** il token `\b[0-9a-f]{12}\b` tratta anche una corsa di **12+ cifre decimali** (non-MAC) come sintetica (rank 1). Se colpisce il **nome attuale**, una proposta peggiore diventa «upgrade» e può arrivare in Adotta; se colpisce solo la proposta, è rumore (asimmetria).
+ - **Fix quando servirà:** riconoscere il MAC dell’asset stesso (evidence) invece della sola forma tipografica.
+ - **Vietato:** allargare ulteriormente il pattern senza review.
++
++## DEBT-NO-RECREATION-GUARD (OBS-033 / B3)
++
++- **Priorità:** media — proprietà dei generatori, non vincolo di dominio
++- **Cosa:** nessun controllo impedisce di ricreare una `NameProposal` già `rejected` per lo stesso `(asset_id, source, value)`. I path tipici (`identity` upsert, SSDP, dhcp, AI, printer, OUI) guardano al più `source` / `pending`, non lo storico rejected. Oggi **0** ricreazioni post-reject osservate (OBS-033 B3: solo coesistenza di row sibling); non è una garanzia.
++- **Fix quando servirà:** guardia in fase di creazione (skip se esiste rejected con stessa tupla).
++- **Vietato:** considerare la purga/massa «definitiva» senza la guardia; affidarsi al solo upsert per-source.
++
++## DEBT-VERSION-SILENT-FALLBACK (OBS-033 / Q0b)
++
++- **Priorità:** bassa — presentazione sidebar
++- **Cosa:** `versionLabel` in `App.vue` senza `health.version` mostra solo `__BUILD_ID__` (gg/mm). Sembra una versione valida («24/07»), non un dato mancante.
++- **Fix quando servirà:** dichiarare esplicitamente «versione non disponibile» (o equivalente) finché `/api/health` non risponde.
++- **Vietato:** fallback che sembrano un dato valido.
+diff --git a/observatory/web/package.json b/observatory/web/package.json
+index e78b1fa..94d2403 100644
+--- a/observatory/web/package.json
++++ b/observatory/web/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "lan-observatory-web",
+   "private": true,
+-  "version": "0.10.20",
++  "version": "0.10.21",
+   "type": "module",
+   "scripts": {
+     "dev": "vite",
+diff --git a/observatory/web/src/oggiTriage.test.js b/observatory/web/src/oggiTriage.test.js
+index 79f8eb2..8a9fdaa 100644
+--- a/observatory/web/src/oggiTriage.test.js
++++ b/observatory/web/src/oggiTriage.test.js
+@@ -127,6 +127,27 @@ test("Oggi.vue: D10 noiseProposalIds + D9 splitVerifica + E2 missing id", () =>
+   assert.ok(src.includes("senza id proposta, escluse"));
+ });
+ 
++test("Oggi.vue B2: Archivia rumore fuori da v-if griglia rumore", () => {
++  const src = readFileSync(join(root, "views/Oggi.vue"), "utf8");
++  const massIdx = src.indexOf('v-if="noiseIds.length"');
++  assert.ok(massIdx >= 0, "blocco massa su noiseIds.length");
++  const massBlock = src.slice(massIdx, massIdx + 900);
++  assert.ok(massBlock.includes("Archivia rumore ({{ noiseIds.length }})"));
++  assert.ok(massBlock.includes("proposte non visibili in griglia"));
++  // Il comando NON è annidato nel v-if della griglia rumore
++  const gridIdx = src.indexOf('v-if="triageGroups.rumore.length"');
++  assert.ok(gridIdx >= 0);
++  assert.ok(
++    massIdx < gridIdx,
++    "massa prima del gruppo griglia rumore",
++  );
++  const gridBlock = src.slice(gridIdx, gridIdx + 500);
++  assert.ok(
++    !gridBlock.includes("Archivia rumore"),
++    "Archivia rumore non dentro il v-if griglia",
++  );
++});
++
+ test("Oggi.vue: D5-bis conferma adozione chassis (dichiarativa)", () => {
+   const src = readFileSync(join(root, "views/Oggi.vue"), "utf8");
+   assert.ok(src.includes("row.chassis_member"));
+diff --git a/observatory/web/src/triageRules.js b/observatory/web/src/triageRules.js
+index 2ebbeec..e0de255 100644
+--- a/observatory/web/src/triageRules.js
++++ b/observatory/web/src/triageRules.js
+@@ -1,6 +1,6 @@
+ /**
+- * Pure client triage rules for Oggi name proposals (OBS-OGGI-TRIAGE-031).
+- * No API calls — decisions D1–D8 live here for UI + tests.
++ * Pure client triage rules for Oggi name proposals (OBS-OGGI-TRIAGE-031 / OBS-033A).
++ * No API calls — decisions D1–D13 live here for UI + tests.
+  */
+ 
+ export const ADOPT_CONFIDENCE_MIN = 0.75;
+@@ -26,7 +26,7 @@ const ROOM_RE =
+   /\b(?:cabina|cucina|sala|bagno|biblioteca|camera|lavanderia|salone|media|mesh|ethernet|armadio|boschetti|ospiti|beatrice|padronale|etnico|saletta|tecnico|tv)\b|\bnic\s*\d+\b|sant['’]?agostino/i;
+ 
+ /**
+- * D7: lower + collapse whitespace.
++ * D7 / D13: lower; treat -, _, . as spaces; collapse whitespace.
+  * @param {unknown} name
+  * @returns {string}
+  */
+@@ -34,6 +34,7 @@ export function normalizeName(name) {
+   return String(name ?? "")
+     .trim()
+     .toLowerCase()
++    .replace(/[-_.]+/g, " ")
+     .replace(/\s+/g, " ");
+ }
+ 
+@@ -49,7 +50,9 @@ export function scoreSpecificity(name) {
+   const n = raw;
+   const lower = n.toLowerCase();
+ 
+-  // Rank 1 — synthetic / Unknown / MAC encapsulated (OBS-032)
++  // Rank 1 — synthetic / Unknown / MAC encapsulated (OBS-032 / D12)
++  // amazon-<hex>: valore probatorio (seriali Alexa) → Dossier/evidence, NON nome.
++  // Vietato: promuovere rank 1 ad etichetta per anonimi.
+   if (lower === "unknown" || lower === "pc") return 1;
+   if (/^amazon-[0-9a-f]{8,}$/i.test(n)) return 1;
+   // PC 108, PC-68-13-F3-…, PC-192-168-2-* (digits / hex / dots / dashes only)
+@@ -208,6 +211,25 @@ function normalizeConfidence(raw) {
+   return c;
+ }
+ 
++/**
++ * True se la proposta è rumore (D13 parity → D12 rank1 → D3 ≤).
++ * @param {unknown} currentName
++ * @param {unknown} proposedName
++ * @returns {boolean}
++ */
++export function isNoiseProposal(currentName, proposedName) {
++  const current = String(currentName ?? "").trim();
++  const proposed = String(proposedName ?? "").trim();
++  if (!proposed) return false;
++  // D13: prima dei rank — stessa chiave dopo normalizeName
++  if (current && normalizeName(current) === normalizeName(proposed)) return true;
++  const scoreProposed = scoreSpecificity(proposed);
++  // D12: rank 1 sempre rumore (anche su nome attuale vuoto)
++  if (scoreProposed === 1) return true;
++  // D3: parità di rank inclusa
++  return scoreProposed <= scoreSpecificity(current);
++}
++
+ /**
+  * Build triage grid rows for name proposals.
+  *
+@@ -237,8 +259,7 @@ export function buildTriageRows(assets, chassisPayload = {}) {
+     const chassisMember = chassisIds.has(Number(asset.id));
+     const confidence = normalizeConfidence(top.confidence);
+     const moreSpecific = scoreProposed > scoreCurrent;
+-    // D3: parity included → rumore
+-    const isNoise = scoreProposed <= scoreCurrent;
++    const isNoise = isNoiseProposal(currentName, proposedName);
+ 
+     let verdict;
+     let recommendedAction;
+@@ -306,9 +327,9 @@ export function buildTriageRows(assets, chassisPayload = {}) {
+ }
+ 
+ /**
+- * D10 / D5-bis: id di TUTTE le NameProposal pending con score(proposta) ≤ score(nome attuale).
+- * Esclude solo status=ignorato e proposte senza id. I membri chassis NON sono esclusi
+- * (archiviare non rinomina). Nessuna API.
++ * D10 / D5-bis / D12 / D13: id di TUTTE le NameProposal pending rumore
++ * (`isNoiseProposal`). Esclude solo status=ignorato e proposte senza id.
++ * I membri chassis NON sono esclusi (archiviare non rinomina). Nessuna API.
+  *
+  * @param {Array<object>} assets
+  * @param {object} [_chassisPayload] reserved (firma stabile; non usato per esclusione)
+@@ -320,14 +341,13 @@ export function noiseProposalIds(assets, _chassisPayload = {}) {
+   for (const asset of list) {
+     if ((asset?.status || "") === "ignorato") continue;
+     const currentName = String(asset?.name || "").trim();
+-    const scoreCurrent = scoreSpecificity(currentName);
+     const proposals = (asset?.proposals || asset?.name_proposals || []).filter(
+       (p) => (p.status || "pending") === "pending" && p.value,
+     );
+     for (const p of proposals) {
+       const proposedName = String(p.value || "").trim();
+       if (!proposedName) continue;
+-      if (scoreSpecificity(proposedName) > scoreCurrent) continue;
++      if (!isNoiseProposal(currentName, proposedName)) continue;
+       if (p.id == null) continue;
+       ids.push(Number(p.id));
+     }
+@@ -336,7 +356,7 @@ export function noiseProposalIds(assets, _chassisPayload = {}) {
+ }
+ 
+ /**
+- * E2/D10: pending rumore (score ≤ nome attuale) senza id — escluse dalla massa.
++ * E2/D10: pending rumore senza id — escluse dalla massa.
+  * Stessi filtri di noiseProposalIds (ignorato; D5-bis: chassis inclusi).
+  *
+  * @param {Array<object>} assets
+@@ -349,14 +369,13 @@ export function noiseProposalsMissingIdCount(assets, _chassisPayload = {}) {
+   for (const asset of list) {
+     if ((asset?.status || "") === "ignorato") continue;
+     const currentName = String(asset?.name || "").trim();
+-    const scoreCurrent = scoreSpecificity(currentName);
+     const proposals = (asset?.proposals || asset?.name_proposals || []).filter(
+       (p) => (p.status || "pending") === "pending" && p.value,
+     );
+     for (const p of proposals) {
+       const proposedName = String(p.value || "").trim();
+       if (!proposedName) continue;
+-      if (scoreSpecificity(proposedName) > scoreCurrent) continue;
++      if (!isNoiseProposal(currentName, proposedName)) continue;
+       if (p.id == null) n += 1;
+     }
+   }
+diff --git a/observatory/web/src/triageRules.test.js b/observatory/web/src/triageRules.test.js
+index a52bfb6..baf5bc1 100644
+--- a/observatory/web/src/triageRules.test.js
++++ b/observatory/web/src/triageRules.test.js
+@@ -143,9 +143,13 @@ test("OBS-032: MAC incapsulato → rank 1; invarianti non-1", () => {
+   }
+ });
+ 
+-test("normalizeName: lower + spazi collassati (D7)", () => {
++test("normalizeName: lower + spazi + separatori -_. (D7/D13)", () => {
+   assert.equal(normalizeName("  Echo   Cucina  "), "echo cucina");
+   assert.equal(normalizeName("ECHO CUCINA"), "echo cucina");
++  assert.equal(normalizeName("Echo-Cucina"), "echo cucina");
++  assert.equal(normalizeName("Bticino-F454"), "bticino f454");
++  assert.equal(normalizeName("BTicino F454"), "bticino f454");
++  assert.equal(normalizeName("a_b.c"), "a b c");
+   assert.equal(normalizeName(null), "");
+ });
+ 
+@@ -159,6 +163,102 @@ test("countCollisions esclude self e usa normalize", () => {
+   assert.equal(countCollisions("Echo Cucina", assets, 1), 1);
+ });
+ 
++test("D13: collisioni non collassano Sky vs Sky Q", () => {
++  const assets = [
++    { id: 1, name: "Sky" },
++    { id: 2, name: "Sky Q" },
++    { id: 3, name: "sky-q" },
++  ];
++  assert.equal(countCollisions("Sky", assets, 99), 1);
++  assert.equal(countCollisions("Sky Q", assets, 99), 2);
++  assert.notEqual(normalizeName("Sky"), normalizeName("Sky Q"));
++});
++
++test("D12: rank 1 su anonimo → noiseIds, non adotta", () => {
++  const assets = [
++    {
++      id: 99,
++      name: "",
++      status: "nuovo",
++      proposals: [
++        {
++          id: 501,
++          value: "PC-192-168-2-85",
++          status: "pending",
++          confidence: 0.9,
++          source: "fritz",
++        },
++      ],
++    },
++  ];
++  assert.deepEqual(noiseProposalIds(assets, {}), [501]);
++  const rows = buildTriageRows(assets, {});
++  assert.equal(rows.length, 1);
++  assert.equal(rows[0].recommended_action, "archivia");
++  assert.equal(rows[0].is_noise, true);
++  assert.notEqual(rows[0].recommended_action, "adotta");
++});
++
++test("D13: BTicino F454 vs Bticino-F454 e Echo Cucina vs Echo-Cucina → rumore", () => {
++  const assets = [
++    {
++      id: 10,
++      name: "BTicino F454",
++      status: "noto",
++      proposals: [
++        {
++          id: 601,
++          value: "Bticino-F454",
++          status: "pending",
++          confidence: 0.9,
++          source: "dns",
++        },
++      ],
++    },
++    {
++      id: 11,
++      name: "Echo Cucina",
++      status: "noto",
++      proposals: [
++        {
++          id: 602,
++          value: "Echo-Cucina",
++          status: "pending",
++          confidence: 0.9,
++          source: "dns",
++        },
++      ],
++    },
++    {
++      id: 12,
++      name: "Sky",
++      status: "noto",
++      proposals: [
++        {
++          id: 603,
++          value: "Sky Q",
++          status: "pending",
++          confidence: 0.9,
++          source: "dns",
++        },
++      ],
++    },
++  ];
++  const rows = buildTriageRows(assets, {});
++  const bti = rows.find((r) => r.asset_id === 10);
++  const echo = rows.find((r) => r.asset_id === 11);
++  const sky = rows.find((r) => r.asset_id === 12);
++  assert.equal(bti.is_noise, true);
++  assert.equal(bti.recommended_action, "archivia");
++  assert.equal(echo.is_noise, true);
++  assert.equal(echo.recommended_action, "archivia");
++  assert.equal(sky.is_noise, false);
++  assert.notEqual(sky.recommended_action, "archivia");
++  assert.ok(noiseProposalIds(assets, {}).includes(601));
++  assert.ok(noiseProposalIds(assets, {}).includes(602));
++  assert.ok(!noiseProposalIds(assets, {}).includes(603));
++});
++
+ // ---------------------------------------------------------------------------
+ // 7 casi ambigui report 030 (esiti da decisioni D)
+ // ---------------------------------------------------------------------------
+@@ -413,13 +513,13 @@ test("dump 030: 65 righe; rumore definitivo (D3 ≤) vs bozza 26", () => {
+     `parità inclusa deve alzare il rumore oltre 26 (got ${rumoreDefinitivo})`,
+   );
+ 
+-  // Pin dump 030: pre-032 = post-032 (48/9/2/10/46) — MAC-incapsulati
+-  // nel dump erano già rumore (OUI) o fuori ADOTTA; nessuna riga flippa.
+-  assert.equal(rumoreDefinitivo, 48);
+-  assert.equal(summary.adotta, 9);
++  // Pin dump 030 post-033A: 48/9/2/10/46 → 51/8/2/8/49
++  // (+2 D12 anonimi rank1; +1 D13 Loewe bild vs Loewe-bild; adotta/verifica −1/−2)
++  assert.equal(rumoreDefinitivo, 51);
++  assert.equal(summary.adotta, 8);
+   assert.equal(summary.chassis, 2);
+-  assert.equal(summary.verifica, 10);
+-  assert.equal(summary.mass_eligible, 46);
++  assert.equal(summary.verifica, 8);
++  assert.equal(summary.mass_eligible, 49);
+ 
+   // eslint-disable-next-line no-console
+   console.log(
+diff --git a/observatory/web/src/views/Oggi.vue b/observatory/web/src/views/Oggi.vue
+index e6363ce..8d5b907 100644
+--- a/observatory/web/src/views/Oggi.vue
++++ b/observatory/web/src/views/Oggi.vue
+@@ -408,29 +408,38 @@ onMounted(load);
+             </template>
+           </div>
+ 
+-          <div v-if="triageGroups.rumore.length" class="oggi-group oggi-rumore">
+-            <button
+-              type="button"
+-              class="oggi-rumore-toggle"
+-              :aria-expanded="rumoreExpanded"
+-              @click="rumoreExpanded = !rumoreExpanded"
+-            >
+-              {{ triageGroups.rumore.length }} proposte filtrate come rumore
+-              <span class="oggi-rumore-chev">{{ rumoreExpanded ? "▾" : "▸" }}</span>
+-            </button>
++          <div v-if="noiseIds.length" class="oggi-rumore-mass">
+             <div class="oggi-rumore-actions">
+               <button
+                 type="button"
+                 class="oggi-btn"
+-                :disabled="massBusy || !noiseIds.length"
++                :disabled="massBusy"
+                 @click="archiveNoiseMass"
+               >
+                 Archivia rumore ({{ noiseIds.length }})
+               </button>
++              <span
++                v-if="!triageGroups.rumore.length"
++                class="oggi-muted-inline"
++              >
++                proposte non visibili in griglia (chassis / secondo livello)
++              </span>
+               <span v-if="rumoreMissingIds" class="oggi-muted-inline">
+                 {{ rumoreMissingIds }} senza id proposta, escluse
+               </span>
+             </div>
++          </div>
++
++          <div v-if="triageGroups.rumore.length" class="oggi-group oggi-rumore">
++            <button
++              type="button"
++              class="oggi-rumore-toggle"
++              :aria-expanded="rumoreExpanded"
++              @click="rumoreExpanded = !rumoreExpanded"
++            >
++              {{ triageGroups.rumore.length }} proposte filtrate come rumore
++              <span class="oggi-rumore-chev">{{ rumoreExpanded ? "▾" : "▸" }}</span>
++            </button>
+             <div v-if="rumoreExpanded">
+               <div
+                 v-for="row in triageGroups.rumore"
+@@ -641,6 +650,9 @@ onMounted(load);
+   cursor: pointer;
+ }
+ .oggi-rumore-chev { margin-left: auto; color: var(--text-3); }
++.oggi-rumore-mass {
++  margin-top: 8px;
++}
+ .oggi-rumore-actions {
+   display: flex;
+   align-items: center;
