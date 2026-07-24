@@ -1,0 +1,224 @@
+diff --git a/observatory/CHANGELOG.md b/observatory/CHANGELOG.md
+index 7c0efce..85233b9 100644
+--- a/observatory/CHANGELOG.md
++++ b/observatory/CHANGELOG.md
+@@ -1,5 +1,10 @@
+ # Changelog
+ 
++## Unreleased — OBS-DEPLOY-01 (STOP pre-deploy)
++
++- **deploy.sh:** snapshot SQLite solo se `api` è tra i servizi; rotazione keep-3 su `pre-deploy-*.db` nello script.
++- **Retention:** prune tabella legacy `observations` (`OBS_TTL_LEGACY_DAYS`, default 3) nel job orario già esistente. Debito: dual-write legacy+raw resta; VACUUM offline per restringere il file.
++
+ ## 0.10.21 — 2026-07-24
+ 
+ - **OBS-033A (B2 + D12 + D13):** massa «Archivia rumore» segue `noiseIds` anche con griglia rumore vuota; rank 1 sempre rumore (anche su anonimi); `normalizeName` collassa `-_./spazi` e la parità normalizzata è rumore prima dei rank. Debito: `DEBT-NO-RECREATION-GUARD`, `DEBT-VERSION-SILENT-FALLBACK`.
+diff --git a/observatory/api/app/config.py b/observatory/api/app/config.py
+index 790f959..b95747f 100644
+--- a/observatory/api/app/config.py
++++ b/observatory/api/app/config.py
+@@ -80,6 +80,7 @@ class Settings(BaseSettings):
+     # M1 observation store (valori PROVVISORI, finalizzati in M1b su dati reali)
+     obs_dedup_window_s: int = 60
+     obs_ttl_raw_days: int = 7
++    obs_ttl_legacy_days: int = 3  # dual-write presence evidence; ≥ ~24h stale horizon
+     obs_rollup_window_hours: int = 6
+     heartbeat_retention_days: int = 30
+     measure_window_days: int = 14
+diff --git a/observatory/api/app/routers/ingest.py b/observatory/api/app/routers/ingest.py
+index 8ad4cb8..dce50ee 100644
+--- a/observatory/api/app/routers/ingest.py
++++ b/observatory/api/app/routers/ingest.py
+@@ -534,6 +534,7 @@ def ingest_retention_run(
+         rollup_window_hours=settings.obs_rollup_window_hours,
+         heartbeat_retention_days=settings.heartbeat_retention_days,
+         flow_observation_retention_days=settings.flow_observation_retention_days,
++        legacy_observation_retention_days=settings.obs_ttl_legacy_days,
+     )
+     after = store_counts(db)
+     return {"ok": True, "result": result, "before": before, "after": after}
+diff --git a/observatory/api/app/services/retention.py b/observatory/api/app/services/retention.py
+index 1fba46e..35ea359 100644
+--- a/observatory/api/app/services/retention.py
++++ b/observatory/api/app/services/retention.py
+@@ -14,7 +14,13 @@ from typing import Optional
+ from sqlalchemy import delete, func, select
+ from sqlalchemy.orm import Session
+ 
+-from app.models import FlowObservation, Heartbeat, ObservationAggregate, ObservationRaw
++from app.models import (
++    FlowObservation,
++    Heartbeat,
++    Observation,
++    ObservationAggregate,
++    ObservationRaw,
++)
+ 
+ 
+ def _window_start(moment: datetime, window_hours: int) -> datetime:
+@@ -111,6 +117,23 @@ def prune_flow_observations(
+     return int(deleted or 0)
+ 
+ 
++def prune_legacy_observations(
++    db: Session, *, retention_days: int, now: Optional[datetime] = None
++) -> int:
++    """Delete legacy ``observations`` rows older than retention_days.
++
++    Dual-write path (materialize → record_observation) still appends for presence
++    evidence (~24h horizon). TTL must stay ≥ presence stale window; default 3d.
++    Does not VACUUM — file size shrinks only with an offline vacuum.
++    """
++    now = now or datetime.utcnow()
++    cutoff = now - timedelta(days=max(0, retention_days))
++    deleted = db.execute(
++        delete(Observation).where(Observation.seen_at < cutoff)
++    ).rowcount
++    return int(deleted or 0)
++
++
+ def run_retention(
+     db: Session,
+     *,
+@@ -118,6 +141,7 @@ def run_retention(
+     rollup_window_hours: int,
+     heartbeat_retention_days: int,
+     flow_observation_retention_days: int = 30,
++    legacy_observation_retention_days: int = 3,
+     now: Optional[datetime] = None,
+ ) -> dict[str, int]:
+     rollup = rollup_raw_observations(
+@@ -129,11 +153,15 @@ def run_retention(
+     flows = prune_flow_observations(
+         db, retention_days=flow_observation_retention_days, now=now
+     )
++    legacy = prune_legacy_observations(
++        db, retention_days=legacy_observation_retention_days, now=now
++    )
+     db.commit()
+     return {
+         **rollup,
+         "heartbeats_pruned": heartbeats,
+         "flow_observations_pruned": flows,
++        "legacy_observations_pruned": legacy,
+     }
+ 
+ 
+diff --git a/observatory/scripts/deploy.sh b/observatory/scripts/deploy.sh
+index 8ba5ec8..28aa8a8 100755
+--- a/observatory/scripts/deploy.sh
++++ b/observatory/scripts/deploy.sh
+@@ -8,7 +8,8 @@
+ #
+ # Sicurezza cablata (non opzionale):
+ #   - rsync esclude sempre data/ e .env
+-#   - prima del rsync: snapshot SQLite su data/backups/pre-deploy-YYYYmmdd-HHMM.db
++#   - snapshot SQLite pre-deploy SOLO se 'api' è tra i servizi
++#   - dopo snapshot: rotazione keep-3 su pre-deploy-*.db (nello script)
+ #
+ # Post-deploy QA: vedi docs/RELEASE_CHECKLIST.md §7 (igiene assert su asset
+ # sacrificabili / restore nello stesso giro; niente artefatti su record veri).
+@@ -39,8 +40,17 @@ for svc in "${SERVICES[@]}"; do
+   esac
+ done
+ 
+-echo "==> pre-deploy snapshot DB su ${HOST}:${REMOTE_DIR}"
+-ssh "${SSH_OPTS[@]}" "$HOST" sh -s -- "$REMOTE_DIR" <<'REMOTE'
++NEED_SNAPSHOT=0
++for svc in "${SERVICES[@]}"; do
++  if [[ "$svc" == "api" ]]; then
++    NEED_SNAPSHOT=1
++    break
++  fi
++done
++
++if [[ "$NEED_SNAPSHOT" -eq 1 ]]; then
++  echo "==> pre-deploy snapshot DB su ${HOST}:${REMOTE_DIR}"
++  ssh "${SSH_OPTS[@]}" "$HOST" sh -s -- "$REMOTE_DIR" <<'REMOTE'
+ set -eu
+ REMOTE_DIR="$1"
+ cd "$REMOTE_DIR"
+@@ -53,6 +63,8 @@ if [ ! -f "$SRC" ]; then
+ fi
+ python3 - "$DEST" <<'PY'
+ import os, sqlite3, sys
++from pathlib import Path
++
+ src = "data/db/observatory.db"
+ dest = sys.argv[1]
+ dst = sqlite3.connect(dest)
+@@ -61,8 +73,24 @@ src_con.backup(dst)
+ dst.close()
+ src_con.close()
+ print("SNAPSHOT", dest, "size", os.path.getsize(dest))
++
++# Rotazione keep-3 (non dipende da create_backup dell'api)
++root = Path("data/backups")
++files = sorted(root.glob("pre-deploy-*.db"), reverse=True)
++keep = 3
++deleted = 0
++for old in files[keep:]:
++    old.unlink(missing_ok=True)
++    Path(f"{old}-wal").unlink(missing_ok=True)
++    Path(f"{old}-shm").unlink(missing_ok=True)
++    deleted += 1
++    print("ROTATE_DEL", old.name)
++print("ROTATE_KEEP", min(keep, len(files)), "deleted", deleted)
+ PY
+ REMOTE
++else
++  echo "==> snapshot DB saltato (api non nei servizi: ${SERVICES[*]})"
++fi
+ 
+ echo "==> rsync (exclude cablati: data/ .env)"
+ # Mai --delete: gli exclude data/ e .env sono obbligatori e non rimovibili.
+diff --git a/observatory/tests/test_m1_observation_store.py b/observatory/tests/test_m1_observation_store.py
+index 244bf8e..e91ece9 100644
+--- a/observatory/tests/test_m1_observation_store.py
++++ b/observatory/tests/test_m1_observation_store.py
+@@ -297,7 +297,44 @@ def test_retention_prunes_old_heartbeats(db):
+     assert db.scalar(select(func.count()).select_from(Heartbeat)) == 1
+ 
+ 
+-# --- reliability metrics --------------------------------------------------
++def test_retention_prunes_legacy_observations(db):
++    from app.models import Observation
++
++    db.add(
++        Observation(
++            kind="fritz",
++            mac="AA:BB:CC:DD:EE:01",
++            seen_at=datetime.utcnow() - timedelta(days=10),
++        )
++    )
++    db.add(
++        Observation(
++            kind="fritz",
++            mac="AA:BB:CC:DD:EE:02",
++            seen_at=datetime.utcnow() - timedelta(hours=12),
++        )
++    )
++    db.commit()
++    result = run_retention(
++        db,
++        ttl_raw_days=7,
++        rollup_window_hours=6,
++        heartbeat_retention_days=30,
++        legacy_observation_retention_days=3,
++    )
++    assert result["legacy_observations_pruned"] == 1
++    assert db.scalar(select(func.count()).select_from(Observation)) == 1
++
++
++def test_deploy_sh_snapshot_only_for_api():
++    from pathlib import Path
++
++    text = Path("scripts/deploy.sh").read_text(encoding="utf-8")
++    assert "NEED_SNAPSHOT" in text
++    assert 'svc" == "api"' in text or "svc == api" in text or '== "api"' in text
++    assert "snapshot DB saltato" in text
++    assert "ROTATE_KEEP" in text
++    assert "pre-deploy-*.db" in text
+ 
+ def test_compute_reliability_metrics_shape(db):
+     metrics = compute_reliability_metrics(db)
