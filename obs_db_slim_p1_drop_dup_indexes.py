@@ -31,14 +31,12 @@ DROP_INDEXES = (
     "ix_observations_raw_dedup_key",
     # Coppia B: stesso (seen_at); tenere ix_obs_seen (già preferito dal planner)
     "ix_observations_seen_at",
-    # Micro: stesso (taken_at); tenere ix_metric_snapshots_ts
-    "ix_metric_snapshots_taken_at",
+    # ix_metric_snapshots_taken_at escluso: guadagno ~0 e nessuna PROBE dedicata
 )
 
 KEEP = {
     "ix_observations_raw_dedup_key": "sqlite_autoindex_observations_raw_1",
     "ix_observations_seen_at": "ix_obs_seen",
-    "ix_metric_snapshots_taken_at": "ix_metric_snapshots_ts",
 }
 
 PROBES = [
@@ -151,6 +149,13 @@ def main() -> int:
     snap = BACKUP_DIR / f"pre-db-slim-p1-{stamp}.db"
     log(f"==> snapshot → {snap}")
     snapshot(DB, snap)
+    snap_size = snap.stat().st_size
+    # Guard: non procedere al DROP se lo snapshot non è ~file live
+    min_ok = int(size_before * 0.95)
+    if snap_size < min_ok:
+        log(f"ERR snapshot troppo piccolo: {snap_size} < {min_ok} (95% di {size_before})")
+        return 3
+    log(f"SNAPSHOT_OK size={snap_size} (>= {min_ok})")
 
     con = sqlite3.connect(str(DB))
     con.execute("PRAGMA busy_timeout=60000")
@@ -165,21 +170,23 @@ def main() -> int:
             log(f"DROP INDEX {name}")
             con.execute(f'DROP INDEX IF EXISTS "{name}"')
         con.commit()
-    except Exception:
-        con.rollback()
-        raise
-    finally:
         after_plans = explain_all(con, "AFTER")
         assert_no_scan(after_plans, "AFTER")
         # dedup must still hit UNIQUE autoindex
         dedup = " ".join(after_plans["dedup_lookup"])
-        if "sqlite_autoindex_observations_raw_1" not in dedup and "INDEX" not in dedup:
+        if "sqlite_autoindex_observations_raw_1" not in dedup and "USING INDEX" not in dedup and "USING COVERING INDEX" not in dedup:
             raise SystemExit(f"FAIL AFTER dedup not indexed: {after_plans['dedup_lookup']}")
         seen = " ".join(after_plans["seen_at_range"])
         if "ix_obs_seen" not in seen:
             raise SystemExit(f"FAIL AFTER seen_at not on ix_obs_seen: {after_plans['seen_at_range']}")
         fc = con.execute("PRAGMA freelist_count").fetchone()[0]
-        log(f"FREELIST_AFTER {fc} pages (~{fc * page_size} bytes) — file OS still {DB.stat().st_size}")
+        log(f"FREELIST_AFTER {fc} pages (~{fc * page_size} bytes = {fc * page_size / 1024 / 1024:.1f} MiB)")
+        log(f"OS_SIZE_AFTER {DB.stat().st_size} (atteso invariato ~{size_before})")
+        log(f"SNAPSHOT_PATH {snap}")
+    except Exception:
+        con.rollback()
+        raise
+    finally:
         con.close()
 
     log("DONE passo 1 — nessun VACUUM")
