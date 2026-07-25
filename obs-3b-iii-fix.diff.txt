@@ -1,0 +1,453 @@
+diff --git a/observatory/api/app/services/detectors/__init__.py b/observatory/api/app/services/detectors/__init__.py
+index bc9a0a1..8077c58 100644
+--- a/observatory/api/app/services/detectors/__init__.py
++++ b/observatory/api/app/services/detectors/__init__.py
+@@ -2,6 +2,7 @@
+ 
+ from __future__ import annotations
+ 
++import logging
+ from datetime import datetime, timedelta
+ from typing import Any, Callable, Optional
+ 
+@@ -14,6 +15,8 @@ from app.services.findings import finding_from_drifts, upsert_deterministic_find
+ from app.services.macutil import normalize_mac
+ 
+ DetectorFn = Callable[[Session], list[dict[str, Any]]]
++logger = logging.getLogger(__name__)
++_stub_declared: set[str] = set()
+ 
+ 
+ def _enabled(name: str) -> bool:
+@@ -21,6 +24,18 @@ def _enabled(name: str) -> bool:
+     return name in get_settings().detector_list
+ 
+ 
++def _declare_stub(name: str) -> None:
++    """Log once when a stubbed detector is enabled (unknown must declare itself)."""
++    if name in _stub_declared:
++        return
++    _stub_declared.add(name)
++    logger.warning(
++        "[detector] %s STUBBED (3b-iii): sorgente legacy rimossa, "
++        "in attesa di ripuntamento su observations_raw",
++        name,
++    )
++
++
+ def detect_gateway_integrity(db: Session) -> list[dict[str, Any]]:
+     if not _enabled("gateway_integrity"):
+         return []
+@@ -81,8 +96,9 @@ def detect_arp_duplicates(db: Session) -> list[dict[str, Any]]:
+ def detect_unexpected_dhcp_dns(db: Session) -> list[dict[str, Any]]:
+     if not _enabled("unexpected_dhcp_dns"):
+         return []
+-    # OBS-DB-SLIM 3b-iii GATE 5: no Observation legacy read.
+-    # DEBT-DETECTOR-DHCP-DNS: ripuntare su observations_raw / presence quando popolati.
++    # OBS-DB-SLIM 3b-iii GATE 5: no Observation legacy read — stub declared.
++    # DEBT-DETECTOR-OBS-LEGACY: ripuntare su observations_raw / presence.
++    _declare_stub("unexpected_dhcp_dns")
+     _ = db
+     return []
+ 
+@@ -90,8 +106,9 @@ def detect_unexpected_dhcp_dns(db: Session) -> list[dict[str, Any]]:
+ def detect_llmnr_nbns_mdns(db: Session) -> list[dict[str, Any]]:
+     if not _enabled("llmnr_nbns_mdns"):
+         return []
+-    # OBS-DB-SLIM 3b-iii GATE 5: no Observation legacy read.
+-    # DEBT-DETECTOR-NOISE-PROTO: ripuntare su observations_raw quando utile.
++    # OBS-DB-SLIM 3b-iii GATE 5: no Observation legacy read — stub declared.
++    # DEBT-DETECTOR-OBS-LEGACY: ripuntare su observations_raw quando utile.
++    _declare_stub("llmnr_nbns_mdns")
+     _ = db
+     return []
+ 
+diff --git a/observatory/docs/KNOWN_DEBT.md b/observatory/docs/KNOWN_DEBT.md
+index ddf928b..197fd88 100644
+--- a/observatory/docs/KNOWN_DEBT.md
++++ b/observatory/docs/KNOWN_DEBT.md
+@@ -208,10 +208,26 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+ ## DEBT-DETECTOR-OBS-LEGACY
+ 
+ - **Priorità:** bassa — detector M6 `unexpected_dhcp_dns` / `llmnr_nbns_mdns`
+-- **Cosa:** in 3b-iii le SELECT su tabella `observations` sono state **rimosse** (GATE 5). Con `DETECTORS_ENABLED` che li include restano no-op finché non ripuntati.
+-- **Fix quando servirà:** leggere `observations_raw` (o presence) per gli stessi kind.
++- **Cosa:** in 3b-iii le SELECT su tabella `observations` sono state **rimosse** (GATE 5). Restano nel registro; se abilitati via `DETECTORS_ENABLED` loggano una riga `STUBBED` al primo giro e restituiscono `[]` (scelta **(a)**: dichiarare l’ignoto, non silenzio).
++- **Invariante non più coperta da test:** `test_legacy_observation_gated_on_raw_created_multisource` proteggeva «il collapse multi-fonte non gonfia `Finding.occurrence_count`» via detector DHCP su Observation. Dopo lo stub quel ramo del test asserisce solo `[]` — **l’invariante occurrence_count non è più coperto da alcun test**.
++- **Fix quando servirà:** leggere `observations_raw` (o presence) per gli stessi kind + ripristinare un test occurrence_count sul path raw/findings.
+ - **Vietato:** reintrodurre reader sulla tabella legacy `observations`.
+ 
++## DEBT-RETENTION-LEGACY-DROP-BLOCKER
++
++- **Priorità:** bloccante per 4b / DROP — **cantiere futuro**; non toccare ora
++- **Cosa:** `retention.py:131` DELETE e `retention.py:174` COUNT sulla tabella `observations`. Dopo il DROP sollevano `no such table`.
++- **DOMANDA APERTA (rispondere PRIMA di 4b, non ora):** se il sotto-passo legacy solleva, il job `run_retention` aborta anche gli altri sotto-passi? Se sì, si ferma il prune TTL di `observations_raw` (~1.31 GiB in crescita) e il DB torna a gonfiarsi.
++- **Prerequisito 4b:** rimuovere entrambe le occorrenze nello stesso cantiere del DROP.
++- **3b-iii:** DELETE+COUNT restano (drenaggio + telemetria); etichetta GATE 5 = **BLOCKER 4b — ammesso solo fino al DROP**.
++
++## DEBT-ORM-MODEL-RECREATES-TABLE
++
++- **Priorità:** bloccante per 4b / DROP — **cantiere futuro**; non toccare ora
++- **Cosa:** `models.py:303-304` definisce `Observation` con `__tablename__ = "observations"`.
++- **Ipotesi DA VERIFICARE prima di 4b (non ora):** se lo step `schema` del bootstrap usa `Base.metadata.create_all`, dopo il DROP il boot successivo **ricrea la tabella vuota** e il DROP sembra non aver funzionato.
++- **Prerequisito 4b:** rimuovere il modello (o escluderlo dai metadata) nello stesso cantiere del DROP.
++
+ ## DEBT-BACKUP-ASYMMETRY
+ 
+ - **Priorità:** alta per 4b / §13 — **cantiere futuro dedicato**; qui solo evidenze
+diff --git a/observatory/docs/obs-3b-iii-gate5.md b/observatory/docs/obs-3b-iii-gate5.md
+index 964efcc..7e0f855 100644
+--- a/observatory/docs/obs-3b-iii-gate5.md
++++ b/observatory/docs/obs-3b-iii-gate5.md
+@@ -3,9 +3,11 @@
+ **Criterio gate:** zero **READ evidence/prodotto** sulla tabella legacy `observations`.
+ **Esito:** **PASS** (evidence-READ FAIL_COUNT=0).
+ 
+-**Manutenzione ammessa (non evidence; NON modificata in 3b-iii — OBS-BACKUP-ASYMMETRY / no-touch retention):**
+-- DELETE prune TTL su `observations`
+-- COUNT in `store_counts` per report retention-run
++**Manutenzione / BLOCKER 4b — ammesso solo fino al DROP (NON modificata in 3b-iii):**
++- DELETE prune TTL su `observations` (`retention.py:131`) — **BLOCKER 4b — ammesso solo fino al DROP**
++- COUNT in `store_counts` (`retention.py:174`) — **BLOCKER 4b — ammesso solo fino al DROP**
++
++Vedi `DEBT-RETENTION-LEGACY-DROP-BLOCKER` e `DEBT-ORM-MODEL-RECREATES-TABLE` in `KNOWN_DEBT.md`.
+ 
+ **Altro ammesso:** modello ORM, alembic storico, docstring/commenti, test, docs, script una-tantum, payload/API omonimi, `record_observation` no-op.
+ 
+@@ -64,8 +66,8 @@ Totale match (escluso `.venv`): **436**
+ - `observatory/api/app/services/retention.py:5` — **non-runtime (commento/docstring)** — `flow observations, and legacy ``observations`` (dual-write presence evidence).`
+ - `observatory/api/app/services/retention.py:20` — **runtime-IMPORT (solo prune DELETE + count stats)** — `Observation,`
+ - `observatory/api/app/services/retention.py:123` — **non-runtime (commento/docstring)** — `"""Delete legacy ``observations`` rows older than retention_days.`
+-- `observatory/api/app/services/retention.py:131` — **runtime-MANUTENZIONE-DELETE (retention prune; ammesso fino a 4b; NON evidence reader)** — `delete(Observation).where(Observation.seen_at < cutoff)`
+-- `observatory/api/app/services/retention.py:174` — **runtime-MANUTENZIONE-COUNT (retention store_counts; ammesso fino a 4b; NON evidence reader)** — `"observations": db.scalar(select(func.count()).select_from(Observation)) or 0,`
++- `observatory/api/app/services/retention.py:131` — ****BLOCKER 4b — ammesso solo fino al DROP** (retention DELETE; NON evidence reader)** — `delete(Observation).where(Observation.seen_at < cutoff)`
++- `observatory/api/app/services/retention.py:174` — ****BLOCKER 4b — ammesso solo fino al DROP** (retention COUNT; NON evidence reader)** — `"observations": db.scalar(select(func.count()).select_from(Observation)) or 0,`
+ - `observatory/api/app/services/scans.py:89` — **non-runtime (commento/docstring)** — `Does not read Observation legacy. ``db`` kept for call-site compatibility.`
+ - `observatory/api/app/services/topology.py:1331` — **non-runtime (commento/docstring)** — `# Prefer edge (deeper) switches; bump score with recent observations.`
+ - `observatory/api/app/services/trust.py:350` — **non-runtime (commento/docstring)** — `"""Portal first/last from asset fields only — no Observation table read.`
+diff --git a/observatory/docs/obs-3b-iii-r1-equivalenza.md b/observatory/docs/obs-3b-iii-r1-equivalenza.md
+new file mode 100644
+index 0000000..bd1b943
+--- /dev/null
++++ b/observatory/docs/obs-3b-iii-r1-equivalenza.md
+@@ -0,0 +1,160 @@
++# OBS-DB-SLIM 3b-iii — R1 equivalenza portal extent
++**Misura:** READ-ONLY su DB live Cassiopea (0.10.26) · 2026-07-25
++**NEW logic:** inlined `_portal_extent_from_asset` (portal_* + presence_sources portal)
++**OLD logic:** MIN/MAX(`seen_at`) su `observations` per MAC asset, `kind ∈ PORTAL_EVIDENCE`, **piena storia**
++
++## GATE R1 = **PASS**
++
++Criterio 1: zero differenze che cambiano `level` o `structural` (0=0). Diff portal_first/last presenti (103), di cui 11 con `derived_last` invariato e 92 con `derived_last` diverso ma **senza** cambio level/structural → innocue per l’apply trust.
++
++| Metric | Valore |
++|--------|--------|
++| Asset totali | 151 |
++| Diff portal_first/last/has | 103 |
++| Diff che cambiano level/structural | **0** |
++| Diff con derived_last invariato | 11 |
++| Diff con derived_last diverso (level ok) | 92 |
++
++## R2 — call site `record_observation`
++
++| file:riga | chiamata | ritorno |
++|-----------|----------|--------|
++| `identity.py:408` | `record_observation(...)` in `attach_nmap_evidence` | **scartato** (statement; non assegnato) |
++| `materialize.py:82` | `record_observation(...)` in `materialize_host` | **scartato** (statement; non assegnato) |
++| `identity.py:1430` | definizione `record_observation` → sempre `None` | n/a |
++
++**GATE R2 = PASS** (zero usi del ritorno).
++
++## R3 — detector stub
++
++Scelta **(a)**: restano nel registro; se abilitati loggano una riga `STUBBED` al primo giro, poi `return []`.
++Motivo: abilitarli resta possibile per ops, ma l’ignoto si dichiara (niente barra muta).
++
++## R5
++
++- `is_portal_evidence(kind: str, payload: dict | None = None)` — `payload` **opzionale** (default `None`). Chiamata a 1 argomento OK.
++- `latest_portal_observation`: zero chiamanti runtime in `api/` / `collector/`; solo docs storici.
++
++## Previsione drenaggio (R4.4)
++
++| Voce | Valore |
++|------|--------|
++| Righe T0 | **1 056 265** |
++| OBS_LT7D | **0** (tutte entro 7g) |
++| TTL legacy | 7 giorni |
++| Dual-write | spento in 0.10.27 |
++| Tabella attesa ~0 righe | **intorno al 2026-08-01** |
++
++Conseguenza 4b: DROP su tabella vuota (non 0.78 GiB). Lo spazio lo libera la retention giorno per giorno; costo 4b ≈ VACUUM. I 7 giorni sono la finestra naturale per diagnosi ballooning §13.
++
++## Tabella completa differenze (una riga per asset)
++
++| asset_id | name | old_first | new_first | old_last | new_last | old_has | new_has | derived_same | old_level | new_level | old_struct | new_struct | causa |
++|----------|------|-----------|-----------|----------|----------|---------|---------|--------------|-----------|-----------|------------|------------|-------|
++| 1 | FRITZ!Box 5690 Pro | 2026-07-20 01:12:46.528283 | 2026-07-18 03:05:05.390209 | 2026-07-25 11:50:43.582626 | 2026-07-25 11:50:42.966196 | True | True | True | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW < OLD MAX (ps last-only / drift vs dual-write) |
++| 2 | LGS328C | 2026-07-20 01:12:46.547281 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.360985 | 2026-07-25 11:50:42.966196 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW < OLD MAX (ps last-only / drift vs dual-write) |
++| 3 | LGS310C | 2026-07-20 01:12:46.592032 | 2026-07-18 03:05:05.404721 | 2026-07-25 11:50:43.449614 | 2026-07-25 11:50:42.966196 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW < OLD MAX (ps last-only / drift vs dual-write) |
++| 4 | GS308EP | 2026-07-20 01:12:46.613619 | 2026-07-18 03:05:05.408171 | 2026-07-25 11:50:43.517538 | 2026-07-25 11:59:25.009986 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 5 | Cassiopea — NIC 1 | 2026-07-21 14:21:58.835538 | 2026-07-18 03:05:05.396380 | 2026-07-23 14:29:37.419549 | 2026-07-25 11:59:24.965887 | True | True | True | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 6 | Cassiopea — NIC 2 |  | 2026-07-18 03:05:05.405867 |  | 2026-07-25 11:59:25.006438 | False | True | True | confirmed_present | confirmed_present | False | False | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 7 | FRITZ!Powerline 510E |  | 2026-07-20 01:12:54.434847 |  | 2026-07-25 11:59:24.951023 | False | True | False | confirmed_present | confirmed_present | False | False | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 8 | Sky Q principale — Ethernet |  | 2026-07-18 03:05:05.398799 |  | 2026-07-25 11:59:36.343753 | False | True | False | confirmed_present | confirmed_present | False | False | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 9 | SkyBooster1 TECNICO — mesh | 2026-07-20 01:12:46.757578 | 2026-07-18 03:04:16.869465 | 2026-07-25 11:50:43.795047 | 2026-07-25 11:59:36.336183 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 10 | SkyBooster2 BIBLIO — Ethernet |  | 2026-07-20 01:12:54.457514 |  | 2026-07-25 11:59:36.343753 | False | True | False | confirmed_present | confirmed_present | False | False | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 11 | SkyBooster2 BIBLIO — mesh | 2026-07-20 01:12:46.762567 | 2026-07-18 03:05:05.399971 | 2026-07-25 11:50:43.802401 | 2026-07-25 11:59:36.336183 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 12 | DVR Hikvision | 2026-07-20 01:12:46.687651 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.666751 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 13 | Philips Hue Bridge | 2026-07-20 01:12:46.767543 | 2026-07-18 03:04:16.868402 | 2026-07-25 11:50:43.809554 | 2026-07-25 11:59:36.334568 | True | True | True | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 14 | Citofono BTicino C3X | 2026-07-20 01:12:46.698587 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.688157 | 2026-07-25 11:59:24.958413 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 16 | Echo CabinaArmadio | 2026-07-20 01:12:46.819643 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:35:40.010058 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 17 | Echo — Cucina | 2026-07-20 01:12:46.865509 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.942809 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 18 | Echo — SalaPC | 2026-07-20 01:12:46.850366 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.908376 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 19 | Openhab Pi | 2026-07-20 01:12:46.652143 | 2026-07-18 03:05:05.403496 | 2026-07-25 11:50:43.617407 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 20 | HP LaserJet 200 colorMFP M276n | 2026-07-20 01:12:46.793729 | 2026-07-18 03:05:05.407014 | 2026-07-25 11:50:43.844557 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 21 | FRITZ!Repeater SalaPC | 2026-07-20 01:12:46.631100 | 2026-07-18 03:04:16.866287 | 2026-07-25 11:50:43.588529 | 2026-07-25 11:50:42.966196 | True | True | True | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW < OLD MAX (ps last-only / drift vs dual-write) |
++| 22 | FRITZ!Repeater Cucina | 2026-07-20 01:12:46.636569 | 2026-07-18 03:05:05.402341 | 2026-07-25 11:50:43.595857 | 2026-07-25 11:50:42.966196 | True | True | True | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW < OLD MAX (ps last-only / drift vs dual-write) |
++| 23 | FRITZ!Repeater SalettaTV | 2026-07-20 01:12:46.641813 | 2026-07-18 03:05:05.395187 | 2026-07-25 11:50:43.602918 | 2026-07-25 11:50:42.966196 | True | True | True | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW < OLD MAX (ps last-only / drift vs dual-write) |
++| 24 | FRITZ!Repeater CabinaArmadio | 2026-07-20 01:12:46.646929 | 2026-07-18 03:05:05.397635 | 2026-07-25 11:50:43.610304 | 2026-07-25 11:50:42.966196 | True | True | True | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW < OLD MAX (ps last-only / drift vs dual-write) |
++| 25 | BTicino F454 | 2026-07-20 01:12:46.657212 | 2026-07-18 03:05:05.392102 | 2026-07-25 11:50:43.624619 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 26 | BMS Honeywell — Boschetti | 2026-07-20 01:12:46.667322 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.638419 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 27 | BMS Honeywell — Sant'Agostino | 2026-07-20 01:12:46.672515 | 2026-07-18 03:05:05.393574 | 2026-07-25 11:50:43.645555 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 28 | Kraken | 2026-07-20 01:12:46.662265 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.631484 | 2026-07-25 11:59:36.331913 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 29 | TouchBTicino | 2026-07-20 01:12:46.677588 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.652518 | 2026-07-25 11:59:24.951023 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 30 | Allsky 3 | 2026-07-20 01:12:46.682610 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.659553 | 2026-07-25 11:59:24.979551 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 31 | Xiaomi Air Purifier Cabina Armadio | 2026-07-20 01:28:42.620396 | 2026-07-20 01:12:54.448835 | 2026-07-25 11:50:43.674178 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 32 | Amazon Plug | 2026-07-20 01:12:46.693036 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.681322 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 33 | Echo Salone | 2026-07-20 01:12:46.703645 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.694976 | 2026-07-25 11:59:36.268813 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 34 | Petkit - Distributore Cibo Gatto | 2026-07-20 01:12:46.708719 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.701896 | 2026-07-25 11:59:24.958413 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 35 | Echo Camera Beatrice | 2026-07-20 01:12:46.715973 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.708621 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 36 | Robot Roborock | 2026-07-20 01:12:46.721423 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.715326 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 37 | Lavastoviglie Gaggenau | 2026-07-20 01:12:46.726684 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.722051 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 38 | Piano Induzione Gaggenau | 2026-07-20 01:12:46.731757 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.728836 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 39 | Echo Sala TV | 2026-07-20 01:12:46.736992 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.735665 | 2026-07-25 11:59:36.268813 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 40 | Google / Chromecast | 2026-07-20 02:43:50.007159 | 2026-07-20 02:38:13.494640 | 2026-07-25 11:50:43.750542 | 2026-07-25 11:59:36.268813 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 41 | LUMIN | 2026-07-20 01:12:46.742264 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.758310 | 2026-07-25 11:59:36.331913 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 42 | Loewe-bild-7.77 | 2026-07-20 02:43:50.148156 | 2026-07-20 02:38:13.494640 | 2026-07-25 11:50:43.765318 | 2026-07-25 11:59:36.268813 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 43 | Sky | 2026-07-20 03:58:34.517381 | 2026-07-20 03:18:14.254932 | 2026-07-25 11:50:43.772951 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 44 | Marantz-SR8012 | 2026-07-20 01:12:46.747304 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.779995 | 2026-07-25 11:59:36.268813 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 45 | AppleTV Sala | 2026-07-20 01:12:46.752355 | 2026-07-18 03:04:16.871509 | 2026-07-25 11:50:43.787985 | 2026-07-25 11:59:36.341904 | True | True | True | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 46 | ropieee | 2026-07-20 01:12:46.772896 | 2026-07-18 03:04:16.870488 | 2026-07-25 11:50:43.816707 | 2026-07-25 11:59:36.340335 | True | True | True | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 47 | LSX | 2026-07-20 01:12:46.778230 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.823911 | 2026-07-25 11:59:36.331913 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 48 | Amazon Air Quality Monitor | 2026-07-20 01:12:46.783366 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.830838 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 49 | Hub Tapo H100 | 2026-07-20 01:12:46.788487 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.837669 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 50 | ROCK | 2026-07-20 01:12:46.799038 | 2026-07-18 03:05:05.401124 | 2026-07-25 11:50:43.851739 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 51 | allsky3 | 2026-07-20 01:12:46.809321 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:59:43.169982 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW < OLD MAX (ps last-only / drift vs dual-write) |
++| 52 | Echo Salottino | 2026-07-20 01:12:46.814418 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.866598 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 53 | Amazon | 2026-07-20 01:12:46.824700 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.873532 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 54 | Sensore o presa IoT (chip ESP) | 2026-07-20 01:12:46.829906 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.880674 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 55 | Echo Cucina | 2026-07-20 01:12:46.834938 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.887788 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 56 | Echo Lavanderia | 2026-07-20 01:12:46.839996 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.894640 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 57 | Echo Biblioteca | 2026-07-20 01:12:46.845134 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.901417 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 58 | Sky | 2026-07-20 03:43:36.200726 | 2026-07-20 03:02:19.374896 | 2026-07-25 11:50:43.915280 | 2026-07-25 11:59:36.336183 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 59 | ArcherBE3600 | 2026-07-20 01:12:46.855417 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.922397 | 2026-07-25 11:59:24.954976 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 60 | Nintendo Switch | 2026-07-20 01:12:46.860455 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.929151 | 2026-07-25 11:54:24.157198 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 61 | Sky | 2026-07-20 04:14:56.196825 | 2026-07-20 03:18:14.254932 | 2026-07-25 11:50:43.935939 | 2026-07-25 11:59:36.336183 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 62 | Echo Cabina Armadio | 2026-07-20 01:12:46.870829 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.949642 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 63 | Echo Camera Ospiti | 2026-07-20 01:12:46.875950 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.956367 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 64 | Amazon Air Quality Monitor 2 | 2026-07-20 01:12:46.881022 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.964380 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 65 | P105A | 2026-07-20 01:12:46.886105 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.971430 | 2026-07-25 11:59:24.979551 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 66 | Echo Bagno Padronale | 2026-07-20 01:12:46.891145 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.978398 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 67 | Echo Bagno Etnico | 2026-07-20 01:12:46.896384 | 2026-07-20 01:12:46.335228 | 2026-07-25 11:50:43.985266 | 2026-07-25 11:59:36.343753 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 68 | ROMO-A3021K | 2026-07-20 01:58:39.658448 | 2026-07-20 01:12:54.462027 | 2026-07-25 11:50:43.742682 | 2026-07-25 11:59:24.979551 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 69 | Samsung | 2026-07-20 01:28:42.734345 | 2026-07-20 01:12:54.448835 | 2026-07-25 11:35:39.967445 | 2026-07-25 11:59:24.967756 | True | True | False | confirmed_present | confirmed_present | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 70 | AppleTV-5 |  | 2026-07-20 01:12:54.448835 |  | 2026-07-25 11:59:24.967756 | False | True | False | confirmed_present | confirmed_present | False | False | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 73 | Kraken |  | 2026-07-22 00:06:39.773316 |  | 2026-07-22 00:10:50.929777 | False | True | False | known | known | False | False | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 76 | TV LG Saletta TV | 2026-07-20 01:12:46.804069 | 2026-07-20 01:12:46.335228 | 2026-07-23 01:08:12.781524 | 2026-07-23 01:19:12.845660 | True | True | False | known | known | False | False | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 82 | Sky |  | 2026-07-20 01:12:54.448835 |  | 2026-07-25 11:59:36.343753 | False | True | False | confirmed_present | confirmed_present | False | False | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 85 |  |  | 2026-07-24 11:40:47.492019 |  | 2026-07-25 00:32:55.289519 | False | True | False | confirmed_present | confirmed_present | False | False | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 88 | Sky |  | 2026-07-20 03:20:14.164991 |  | 2026-07-25 09:17:29.946827 | False | True | False | confirmed_present | confirmed_present | False | False | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 89 |  | 2026-07-21 18:52:06.464470 | 2026-07-21 03:29:27.690733 | 2026-07-21 18:52:06.464470 | 2026-07-23 21:09:33.562954 | True | True | False | known | known | True | True | first: NEW < OLD MIN (anomalo); last: NEW > OLD MAX (portal_* ahead of obs) |
++| 91 |  |  | 2026-07-21 03:49:32.373640 |  | 2026-07-23 09:05:29.103805 | False | True | False | known | known | True | True | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 94 |  |  | 2026-07-21 03:48:32.386834 |  | 2026-07-21 16:13:22.612768 | False | True | False | known | known | True | True | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 96 |  |  | 2026-07-21 03:42:31.818259 |  | 2026-07-23 21:07:02.614119 | False | True | False | known | known | True | True | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 98 |  |  | 2026-07-20 20:41:29.799376 |  | 2026-07-24 20:45:55.960205 | False | True | False | confirmed_present | confirmed_present | False | False | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 99 |  |  | 2026-07-21 03:29:27.690733 |  | 2026-07-21 19:12:40.997643 | False | True | False | known | known | True | True | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 101 |  |  | 2026-07-21 04:55:38.083007 |  | 2026-07-23 21:09:33.562954 | False | True | False | known | known | True | True | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 105 |  |  | 2026-07-21 03:49:32.403839 |  | 2026-07-21 03:54:43.791117 | False | True | False | known | known | True | True | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 108 | Sky TV |  | 2026-07-20 03:06:13.952672 |  | 2026-07-24 03:56:49.553996 | False | True | False | known | known | True | True | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 110 |  |  | 2026-07-20 03:06:13.952672 |  | 2026-07-21 10:02:00.600060 | False | True | False | stale_unlocated | stale_unlocated | False | False | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 111 |  |  | 2026-07-21 09:56:41.663341 |  | 2026-07-23 07:31:14.883952 | False | True | False | known | known | True | True | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 112 | FritzBox Router |  | 2026-07-20 01:12:54.434847 |  | 2026-07-25 11:59:24.951023 | False | True | False | confirmed_present | confirmed_present | False | False | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 113 |  |  | 2026-07-21 14:30:00.787470 |  | 2026-07-21 14:34:09.570883 | False | True | False | known | known | True | True | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 135 | Sky TV |  | 2026-07-20 03:02:14.009436 |  | 2026-07-25 11:59:36.336183 | False | True | True | confirmed_present | confirmed_present | False | False | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 136 |  |  | 2026-07-20 03:18:14.241152 |  | 2026-07-25 11:59:36.343753 | False | True | False | confirmed_present | confirmed_present | False | False | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 137 |  |  | 2026-07-20 06:19:30.055940 |  | 2026-07-24 18:44:42.077381 | False | True | False | confirmed_present | confirmed_present | False | False | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 138 |  |  | 2026-07-21 03:29:27.690733 |  | 2026-07-21 18:54:53.218585 | False | True | False | stale_unlocated | stale_unlocated | True | True | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 139 |  |  | 2026-07-21 03:48:32.368823 |  | 2026-07-21 18:13:34.797249 | False | True | False | stale_unlocated | stale_unlocated | True | True | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 140 |  |  | 2026-07-21 03:48:32.386834 |  | 2026-07-25 11:59:24.993464 | False | True | False | confirmed_present | confirmed_present | False | False | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 142 |  |  | 2026-07-21 03:49:32.403839 |  | 2026-07-21 16:15:04.882616 | False | True | False | stale_unlocated | stale_unlocated | True | True | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 143 |  |  | 2026-07-21 04:13:33.145523 |  | 2026-07-21 16:13:22.540377 | False | True | False | stale_unlocated | stale_unlocated | True | True | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 144 |  |  | 2026-07-21 04:23:46.598744 |  | 2026-07-21 04:27:52.799795 | False | True | False | stale_unlocated | stale_unlocated | True | True | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 145 |  |  | 2026-07-21 04:48:32.611962 |  | 2026-07-25 11:59:24.993464 | False | True | False | confirmed_present | confirmed_present | False | False | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 146 |  |  | 2026-07-21 04:55:38.083007 |  | 2026-07-23 21:08:33.050910 | False | True | False | stale_unlocated | stale_unlocated | True | True | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 147 |  |  | 2026-07-21 08:33:04.157994 |  | 2026-07-24 03:03:36.592579 | False | True | False | stale_unlocated | stale_unlocated | False | False | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 148 |  |  | 2026-07-21 14:30:00.787470 |  | 2026-07-25 11:59:24.993464 | False | True | False | confirmed_present | confirmed_present | False | False | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 149 |  |  | 2026-07-22 03:20:05.459295 |  | 2026-07-25 09:14:30.214238 | False | True | False | confirmed_present | confirmed_present | False | False | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 150 |  |  | 2026-07-22 05:19:58.637392 |  | 2026-07-22 05:23:33.855666 | False | True | False | known | known | True | True | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++| 151 |  |  | 2026-07-23 01:48:03.345439 |  | 2026-07-24 19:27:48.418633 | False | True | False | confirmed_present | confirmed_present | False | False | first: NEW portal_*/ps, OLD senza obs portal; last: NEW portal_*/ps, OLD senza obs; has: old=False new=True |
++
++### Note `derived_last` (R1.3)
++
++Per ogni riga con `derived_last_same=false` e `level_or_structural_changed=false`: il piano trust calcola lo stesso `level`/`structural` perché `operational_bucket` usa `asset.portal_last_seen` già popolato (ramo `else`), non il solo extent NEW/OLD. Differenze di millisecondi o FDB/`portal_*` ahead of dual-write obs non cambiano il bucket.
+diff --git a/observatory/tests/test_portal_extent_equivalence.py b/observatory/tests/test_portal_extent_equivalence.py
+new file mode 100644
+index 0000000..bde2067
+--- /dev/null
++++ b/observatory/tests/test_portal_extent_equivalence.py
+@@ -0,0 +1,154 @@
++"""Portal extent from asset fields — cases at risk after Observation prefetch removal."""
++
++from __future__ import annotations
++
++from datetime import datetime, timedelta
++
++from sqlalchemy import create_engine
++from sqlalchemy.orm import sessionmaker
++from sqlalchemy.pool import StaticPool
++
++from app.db import Base
++from app.models import Asset, Interface, Switch, SwitchPort
++from app.services.trust import _build_trust_plan, _portal_extent_from_asset
++
++
++def _session(tmp_path):
++    engine = create_engine(
++        f"sqlite:///{tmp_path / 'portal_extent.db'}",
++        connect_args={"check_same_thread": False},
++        poolclass=StaticPool,
++    )
++    Base.metadata.create_all(engine)
++    return sessionmaker(bind=engine)()
++
++
++def test_multi_mac_first_and_last_from_presence_sources(tmp_path):
++    """First on NIC-A, last on NIC-B via presence_sources (not Observation history)."""
++    db = _session(tmp_path)
++    now = datetime.utcnow().replace(microsecond=0)
++    t0 = now - timedelta(days=3)
++    t2 = now - timedelta(hours=1)
++    asset = Asset(
++        uid="multi",
++        status="noto",
++        trust_level="confirmed_present",
++        presence_state="present",
++        # portal_first_seen deliberately older/narrower than presence span
++        portal_first_seen=t0 + timedelta(hours=1),
++        portal_last_seen=t0 + timedelta(hours=2),
++        presence_sources={
++            "icmp": t0.isoformat() + "Z",
++            "nmap": t2.isoformat() + "Z",
++        },
++        meta={"operational_state": "active"},
++    )
++    db.add(asset)
++    db.flush()
++    db.add_all(
++        [
++            Interface(asset_id=asset.id, mac="AA:BB:CC:DD:EE:01"),
++            Interface(asset_id=asset.id, mac="AA:BB:CC:DD:EE:02"),
++        ]
++    )
++    db.commit()
++
++    first, last, has = _portal_extent_from_asset(asset)
++    assert has is True
++    assert first == t0
++    assert last == t2
++
++
++def test_portal_first_null_but_presence_sources_populated(tmp_path):
++    db = _session(tmp_path)
++    now = datetime.utcnow().replace(microsecond=0)
++    seen = now - timedelta(hours=2)
++    asset = Asset(
++        uid="ps-only",
++        status="nuovo",
++        trust_level="known",
++        presence_state="present",
++        portal_first_seen=None,
++        portal_last_seen=None,
++        presence_sources={"nmap": seen.isoformat() + "Z"},
++    )
++    db.add(asset)
++    db.flush()
++    db.add(Interface(asset_id=asset.id, mac="11:22:33:44:55:66"))
++    db.commit()
++
++    first, last, has = _portal_extent_from_asset(asset)
++    assert has is True
++    assert first == seen
++    assert last == seen
++
++
++def test_asset_without_mac_uses_portal_fields(tmp_path):
++    db = _session(tmp_path)
++    now = datetime.utcnow().replace(microsecond=0)
++    t0 = now - timedelta(days=1)
++    t1 = now - timedelta(hours=3)
++    asset = Asset(
++        uid="bare",
++        status="noto",
++        name="Bare",
++        trust_level="known",
++        presence_state="unknown",
++        portal_first_seen=t0,
++        portal_last_seen=t1,
++        presence_sources={},
++        meta={"operational_state": "active"},
++    )
++    db.add(asset)
++    db.commit()
++
++    first, last, has = _portal_extent_from_asset(asset)
++    assert has is True
++    assert first == t0
++    assert last == t1
++
++
++def test_fdb_newer_than_portal_drives_derived_last(tmp_path):
++    db = _session(tmp_path)
++    now = datetime.utcnow().replace(microsecond=0)
++    t_portal = now - timedelta(hours=6)
++    t_fdb = now - timedelta(minutes=10)
++    asset = Asset(
++        uid="fdb",
++        status="noto",
++        name="FDBBox",
++        trust_level="confirmed_present",
++        presence_state="present",
++        portal_first_seen=t_portal,
++        portal_last_seen=t_portal,
++        presence_sources={"icmp": t_portal.isoformat() + "Z"},
++        meta={"operational_state": "active"},
++    )
++    db.add(asset)
++    db.flush()
++    db.add(Interface(asset_id=asset.id, mac="DE:AD:BE:EF:00:01"))
++    sw = Switch(code="sw1", name="sw", ip="192.168.1.8")
++    db.add(sw)
++    db.flush()
++    db.add(
++        SwitchPort(
++            switch_id=sw.id,
++            number=1,
++            asset_id=asset.id,
++            last_fdb_at=t_fdb,
++            source="fdb",
++        )
++    )
++    db.commit()
++
++    first, last, has = _portal_extent_from_asset(asset)
++    assert has is True
++    assert first == t_portal
++    assert last == t_portal
++
++    plan = _build_trust_plan(db, now=now, use_prefetch=True)
++    action = next(a for a in plan["actions"] if a["asset_id"] == asset.id)
++    assert action["portal_first"] == t_portal
++    assert action["portal_last"] == t_portal
++    assert action["derived_last"] == t_fdb
++    assert action["has_portal_rows"] is True
