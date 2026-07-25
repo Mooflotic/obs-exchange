@@ -1,0 +1,1528 @@
+diff --git a/observatory/CHANGELOG.md b/observatory/CHANGELOG.md
+index c911502..aeef36d 100644
+--- a/observatory/CHANGELOG.md
++++ b/observatory/CHANGELOG.md
+@@ -1,5 +1,9 @@
+ # Changelog
+ 
++## 0.10.41 — pending deploy (STOP)
++
++- **OBS-CURRENCY W1:** fondamenta `fact_assertion` — registro dichiarativo (`api/app/facts/registry.py`), resolver unico R-A..R-H (`api/app/facts/resolver.py`), modello + indice unico parziale `(subject_type, subject_id, excl_key) WHERE state='current'`, migrazione Alembic di coerenza. Nessun writer ingest, nessun consumatore modificato, nessuna scrittura su colonne Asset.
++
+ ## 0.10.40 — 2026-07-25
+ 
+ - **OBS-UX fase G (visiva):** allineamento superfici `matrix.css` ai token blu-ardesia (`--bg-*`, `--border`, `--data-idle`); fix responsive invalido `calc(100% - auto)` → `grid-template-rows: auto 1fr` su sidebar mobile.
+diff --git a/observatory/VERSION b/observatory/VERSION
+index 1d8df22..e0cb4bf 100644
+--- a/observatory/VERSION
++++ b/observatory/VERSION
+@@ -1 +1 @@
+-0.10.40
++0.10.41
+diff --git a/observatory/api/app/alembic/versions/m3d4e5f6a7b8_fact_assertions.py b/observatory/api/app/alembic/versions/m3d4e5f6a7b8_fact_assertions.py
+new file mode 100644
+index 0000000..e578504
+--- /dev/null
++++ b/observatory/api/app/alembic/versions/m3d4e5f6a7b8_fact_assertions.py
+@@ -0,0 +1,89 @@
++"""fact_assertions table — OBS-CURRENCY W1
++
++Revision ID: m3d4e5f6a7b8
++Revises: l2c3d4e5f6a7
++Create Date: 2026-07-25 19:05:00.000000
++
++Prod uses create_all; this migration keeps alembic parity only.
++"""
++from __future__ import annotations
++
++from alembic import op
++import sqlalchemy as sa
++
++
++revision = "m3d4e5f6a7b8"
++down_revision = "l2c3d4e5f6a7"
++branch_labels = None
++depends_on = None
++
++
++def upgrade() -> None:
++    op.create_table(
++        "fact_assertions",
++        sa.Column("id", sa.Integer(), nullable=False),
++        sa.Column("subject_type", sa.String(length=16), nullable=False),
++        sa.Column("subject_id", sa.Integer(), nullable=False),
++        sa.Column("fact_key", sa.String(length=64), nullable=False),
++        sa.Column("excl_key", sa.String(length=128), nullable=False),
++        sa.Column("value_norm", sa.String(length=512), nullable=False),
++        sa.Column("value_json", sa.JSON(), nullable=False),
++        sa.Column("source", sa.String(length=32), nullable=False),
++        sa.Column("authority", sa.Integer(), nullable=False),
++        sa.Column("confidence", sa.Float(), nullable=False),
++        sa.Column("observed_at", sa.DateTime(), nullable=False),
++        sa.Column("last_seen_at", sa.DateTime(), nullable=False),
++        sa.Column("valid_from", sa.DateTime(), nullable=False),
++        sa.Column("valid_to", sa.DateTime(), nullable=True),
++        sa.Column("state", sa.String(length=16), nullable=False),
++        sa.Column("superseded_by_id", sa.Integer(), nullable=True),
++        sa.Column("reason", sa.String(length=64), nullable=False),
++        sa.Column("valid_from_truncated", sa.Boolean(), nullable=False),
++        sa.Column("created_at", sa.DateTime(), nullable=False),
++        sa.ForeignKeyConstraint(
++            ["superseded_by_id"], ["fact_assertions.id"], ondelete="SET NULL"
++        ),
++        sa.PrimaryKeyConstraint("id"),
++    )
++    op.create_index(
++        "uq_fact_assertions_current_slot",
++        "fact_assertions",
++        ["subject_type", "subject_id", "excl_key"],
++        unique=True,
++        sqlite_where=sa.text("state='current'"),
++    )
++    op.create_index(
++        "ix_fact_assertions_subject_state",
++        "fact_assertions",
++        ["subject_type", "subject_id", "state"],
++    )
++    op.create_index(
++        "ix_fact_assertions_fact_state",
++        "fact_assertions",
++        ["fact_key", "state"],
++    )
++    op.create_index(
++        op.f("ix_fact_assertions_subject_type"),
++        "fact_assertions",
++        ["subject_type"],
++    )
++    op.create_index(
++        op.f("ix_fact_assertions_subject_id"),
++        "fact_assertions",
++        ["subject_id"],
++    )
++    op.create_index(
++        op.f("ix_fact_assertions_fact_key"),
++        "fact_assertions",
++        ["fact_key"],
++    )
++
++
++def downgrade() -> None:
++    op.drop_index(op.f("ix_fact_assertions_fact_key"), table_name="fact_assertions")
++    op.drop_index(op.f("ix_fact_assertions_subject_id"), table_name="fact_assertions")
++    op.drop_index(op.f("ix_fact_assertions_subject_type"), table_name="fact_assertions")
++    op.drop_index("ix_fact_assertions_fact_state", table_name="fact_assertions")
++    op.drop_index("ix_fact_assertions_subject_state", table_name="fact_assertions")
++    op.drop_index("uq_fact_assertions_current_slot", table_name="fact_assertions")
++    op.drop_table("fact_assertions")
+diff --git a/observatory/api/app/bootstrap.py b/observatory/api/app/bootstrap.py
+index 3210c17..afbaf93 100644
+--- a/observatory/api/app/bootstrap.py
++++ b/observatory/api/app/bootstrap.py
+@@ -16,7 +16,7 @@ from sqlalchemy import select
+ from app.auth import hash_password
+ from app.config import get_settings
+ from app.db import Base, get_engine, _session_factory
+-from app.models import Switch, User
++from app.models import FactAssertion, Switch, User  # noqa: F401 — FactAssertion for create_all
+ from app.services.backup import bootstrap_should_backup, create_backup
+ from app.services.identity import reconcile_known_infrastructure
+ from app.services.migrate import import_legacy
+diff --git a/observatory/api/app/facts/__init__.py b/observatory/api/app/facts/__init__.py
+new file mode 100644
+index 0000000..e322d63
+--- /dev/null
++++ b/observatory/api/app/facts/__init__.py
+@@ -0,0 +1,23 @@
++"""OBS-CURRENCY fact registry and resolver (W1 foundations)."""
++
++from app.facts.registry import AUTHORITY_RANK, FACT_REGISTRY, get_fact_spec
++from app.facts.resolver import (
++    apply_observation,
++    canonical_name_for_entity,
++    current,
++    current_map,
++    history,
++    subject_of,
++)
++
++__all__ = [
++    "AUTHORITY_RANK",
++    "FACT_REGISTRY",
++    "get_fact_spec",
++    "apply_observation",
++    "canonical_name_for_entity",
++    "current",
++    "current_map",
++    "history",
++    "subject_of",
++]
+diff --git a/observatory/api/app/facts/registry.py b/observatory/api/app/facts/registry.py
+new file mode 100644
+index 0000000..c0faf54
+--- /dev/null
++++ b/observatory/api/app/facts/registry.py
+@@ -0,0 +1,278 @@
++"""Declarative fact taxonomy — sole authority for subject scope and I5 ranks."""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++from datetime import timedelta
++from typing import Any, Callable
++
++from app.models import Asset, Chassis, Interface
++
++# I5 — single hierarchy: manual > ai > dhcp(0.95) > fritz(0.90) > oui(0.70)
++AUTHORITY_RANK: dict[str, int] = {
++    "manual": 100,
++    "ai": 90,
++    "dhcp": 85,
++    "fritz": 80,
++    "mgmt": 80,
++    "nmap": 75,
++    "dns": 75,
++    "mdns": 75,
++    "ssdp": 70,
++    "oui": 70,
++    "portal": 65,
++    "fdb": 60,
++    "auto": 50,
++}
++
++AUTHORITY_CONFIDENCE: dict[str, float] = {
++    "manual": 1.0,
++    "ai": 0.96,
++    "dhcp": 0.95,
++    "fritz": 0.90,
++    "oui": 0.70,
++}
++
++
++def _norm_text(value: Any) -> str:
++    return " ".join(str(value or "").strip().split())
++
++
++def _entity_asset(entity: Any) -> Asset | None:
++    if isinstance(entity, Asset):
++        return entity
++    if isinstance(entity, Interface):
++        return entity.asset
++    return None
++
++
++def subject_ref_chassis(entity: Any) -> tuple[str, int]:
++    """NIC → chassis when grouped; else asset row (W0 §0.8)."""
++    asset = _entity_asset(entity)
++    if asset is None:
++        raise ValueError("subject_ref_chassis requires Asset or Interface")
++    if asset.chassis_id:
++        return ("chassis", int(asset.chassis_id))
++    return ("asset", int(asset.id))
++
++
++def subject_ref_asset(entity: Any) -> tuple[str, int]:
++    asset = _entity_asset(entity)
++    if asset is None:
++        raise ValueError("subject_ref_asset requires Asset or Interface")
++    return ("asset", int(asset.id))
++
++
++def excl_key_fixed(key: str) -> Callable[..., str]:
++    def _fn(_subject: tuple[str, int], _entity: Any, _value: Any) -> str:
++        return key
++
++    return _fn
++
++
++def excl_key_iface_ip(_subject: tuple[str, int], entity: Any, _value: Any) -> str:
++    """Per-MAC/interface exclusivity (W0 §0.3 — sequential same MAC)."""
++    if isinstance(entity, Interface):
++        return f"ip:{entity.id}"
++    asset = _entity_asset(entity)
++    if asset and asset.interfaces:
++        primary = next((i for i in asset.interfaces if i.is_primary), asset.interfaces[0])
++        return f"ip:{primary.id}"
++    raise ValueError("excl_key_iface_ip requires Interface or Asset with interfaces")
++
++
++def excl_key_port_fdb(_subject: tuple[str, int], _entity: Any, value: Any) -> str:
++    if isinstance(value, dict):
++        switch = value.get("switch") or value.get("switch_code") or ""
++        port = value.get("port") or ""
++        mac = value.get("mac") or ""
++        return f"fdb:{switch}:{port}:{mac}"
++    return f"fdb:{_norm_text(value)}"
++
++
++def excl_key_name_proposal(_subject: tuple[str, int], _entity: Any, value: Any) -> str:
++    return f"proposal:{_norm_text(value).casefold()}"
++
++
++@dataclass(frozen=True)
++class FactSpec:
++    fact_key: str
++    subject_scope: str  # chassis | asset | port | relation
++    subject_ref: Callable[[Any], tuple[str, int]]
++    cardinality: str  # single | multi | scoped
++    excl_key: Callable[[tuple[str, int], Any, Any], str]
++    sources: frozenset[str]
++    ttl_window: timedelta | None
++    consumers: tuple[str, ...]
++
++
++FACT_REGISTRY: dict[str, FactSpec] = {
++    "asset.name": FactSpec(
++        fact_key="asset.name",
++        subject_scope="chassis",
++        subject_ref=subject_ref_chassis,
++        cardinality="single",
++        excl_key=excl_key_fixed("name"),
++        sources=frozenset({"manual", "ai", "dhcp", "fritz", "oui", "dns", "mdns", "ssdp"}),
++        ttl_window=None,
++        consumers=("oggi", "dossier", "inventory", "adopt-name"),
++    ),
++    "iface.alias": FactSpec(
++        fact_key="iface.alias",
++        subject_scope="asset",
++        subject_ref=subject_ref_asset,
++        cardinality="single",
++        excl_key=excl_key_fixed("alias"),
++        sources=frozenset({"manual"}),
++        ttl_window=None,
++        consumers=("dossier", "plant"),
++    ),
++    "asset.iface_ip": FactSpec(
++        fact_key="asset.iface_ip",
++        subject_scope="asset",
++        subject_ref=subject_ref_asset,
++        cardinality="single",
++        excl_key=excl_key_iface_ip,
++        sources=frozenset({"mgmt", "dhcp", "fritz", "nmap", "manual"}),
++        ttl_window=timedelta(hours=2),
++        consumers=("elect_interface_primary", "topology", "scans", "monitoring"),
++    ),
++    "asset.mgmt_ip": FactSpec(
++        fact_key="asset.mgmt_ip",
++        subject_scope="asset",
++        subject_ref=subject_ref_asset,
++        cardinality="single",
++        excl_key=excl_key_fixed("mgmt_ip"),
++        sources=frozenset({"mgmt", "manual", "fritz", "nmap"}),
++        ttl_window=timedelta(hours=2),
++        consumers=("monitoring", "plant"),
++    ),
++    "presence.portal": FactSpec(
++        fact_key="presence.portal",
++        subject_scope="asset",
++        subject_ref=subject_ref_asset,
++        cardinality="single",
++        excl_key=excl_key_fixed("presence"),
++        sources=frozenset({"portal"}),
++        ttl_window=timedelta(hours=24),
++        consumers=("trust", "inventory"),
++    ),
++    "port.fdb_mac": FactSpec(
++        fact_key="port.fdb_mac",
++        subject_scope="port",
++        subject_ref=lambda _e: ("port", 0),  # resolved by caller in W2+
++        cardinality="scoped",
++        excl_key=excl_key_port_fdb,
++        sources=frozenset({"fdb"}),
++        ttl_window=None,
++        consumers=("topology", "presence"),
++    ),
++    "rel.physical_link": FactSpec(
++        fact_key="rel.physical_link",
++        subject_scope="relation",
++        subject_ref=lambda _e: ("relation", 0),
++        cardinality="scoped",
++        excl_key=excl_key_fixed("physical_link"),
++        sources=frozenset({"manual", "auto"}),
++        ttl_window=None,
++        consumers=("plant", "topology"),
++    ),
++    "os.guess": FactSpec(
++        fact_key="os.guess",
++        subject_scope="asset",
++        subject_ref=subject_ref_asset,
++        cardinality="single",
++        excl_key=excl_key_fixed("os"),
++        sources=frozenset({"manual", "nmap"}),
++        ttl_window=None,
++        consumers=("dossier",),
++    ),
++    "name_proposal": FactSpec(
++        fact_key="name_proposal",
++        subject_scope="chassis",
++        subject_ref=subject_ref_chassis,
++        cardinality="multi",
++        excl_key=excl_key_name_proposal,
++        sources=frozenset({"ai", "dhcp", "fritz", "oui", "dns", "mdns", "ssdp"}),
++        ttl_window=None,
++        consumers=("oggi",),
++    ),
++}
++
++
++def get_fact_spec(fact_key: str) -> FactSpec:
++    try:
++        return FACT_REGISTRY[fact_key]
++    except KeyError as exc:
++        raise KeyError(f"unknown fact_key: {fact_key}") from exc
++
++
++def authority_for(source: str) -> int:
++    return AUTHORITY_RANK.get(str(source or "").lower(), 20)
++
++
++def default_confidence(source: str) -> float:
++    return AUTHORITY_CONFIDENCE.get(str(source or "").lower(), 0.5)
++
++
++# W0 §0.13 — typed incompatible pairs (only measured families; no heuristics).
++_OS_FAMILY_NEEDLES: tuple[tuple[str, str], ...] = (
++    ("android", "windows"),
++    ("android", "microsoft windows"),
++    ("ios", "windows"),
++    ("ios", "microsoft windows"),
++    ("linux", "ios"),
++    ("linux", "android"),
++)
++
++_NAME_OS_CONTRADICTIONS: tuple[tuple[str, str], ...] = _OS_FAMILY_NEEDLES
++
++
++def os_family(value: str) -> str | None:
++    v = _norm_text(value).casefold()
++    for needle in ("android", "windows", "microsoft windows", "ios", "linux", "darwin", "macos"):
++        if needle in v:
++            return needle
++    return None
++
++
++def name_implies_os_family(name: str) -> str | None:
++    v = _norm_text(name).casefold()
++    for needle in ("android", "iphone", "ipad", "ios", "windows", "linux"):
++        if needle in v:
++            if needle == "iphone" or needle == "ipad":
++                return "ios"
++            if needle == "windows":
++                return "windows"
++            return needle
++    return None
++
++
++def families_contradict(a: str | None, b: str | None) -> bool:
++    if not a or not b:
++        return False
++    pair = tuple(sorted((a, b)))
++    return pair in {(x, y) for x, y in _OS_FAMILY_NEEDLES} or pair in {
++        tuple(sorted((x, y))) for x, y in _NAME_OS_CONTRADICTIONS
++    }
++
++
++def semantic_contradiction(
++    *,
++    incumbent_fact_key: str,
++    incumbent_value: str,
++    new_fact_key: str,
++    new_value: str,
++) -> bool:
++    """R-H predicate table — only W0-measured families (K3 elsewhere)."""
++    if incumbent_fact_key == "asset.name" and new_fact_key == "os.guess":
++        name_family = name_implies_os_family(incumbent_value)
++        os_fam = os_family(new_value)
++        return families_contradict(name_family, os_fam)
++    if incumbent_fact_key == "os.guess" and new_fact_key == "asset.name":
++        os_fam = os_family(incumbent_value)
++        name_family = name_implies_os_family(new_value)
++        return families_contradict(name_family, os_fam)
++    if incumbent_fact_key == new_fact_key == "os.guess":
++        return families_contradict(os_family(incumbent_value), os_family(new_value))
++    return False
+diff --git a/observatory/api/app/facts/resolver.py b/observatory/api/app/facts/resolver.py
+new file mode 100644
+index 0000000..d2d795a
+--- /dev/null
++++ b/observatory/api/app/facts/resolver.py
+@@ -0,0 +1,520 @@
++"""Single resolver for fact currency — R-A..R-H live here only."""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++from datetime import datetime, timedelta
++from typing import Any
++
++from sqlalchemy import and_, select
++from sqlalchemy.orm import Session
++
++from app.facts.registry import (
++    authority_for,
++    default_confidence,
++    get_fact_spec,
++    semantic_contradiction,
++)
++from app.models import Asset, FactAssertion, Interface, utcnow
++
++READMISSION_COOLDOWN = timedelta(hours=4)
++
++# R-C observability (W2 will expose per fact_key/source).
++weak_evidence_count = 0
++conflict_review_count = 0
++
++
++@dataclass
++class ApplyResult:
++    action: str
++    assertion: FactAssertion | None = None
++    incumbent: FactAssertion | None = None
++    conflict: dict[str, Any] | None = None
++
++
++def _norm_value(value: Any) -> str:
++    return " ".join(str(value or "").strip().split())
++
++
++def subject_of(fact_key: str, entity: Any) -> tuple[str, int]:
++    spec = get_fact_spec(fact_key)
++    return spec.subject_ref(entity)
++
++
++def _base_query(
++    subject_type: str,
++    subject_id: int,
++    fact_key: str | None = None,
++    *,
++    state: str | None = None,
++    excl_key: str | None = None,
++):
++    clauses = [
++        FactAssertion.subject_type == subject_type,
++        FactAssertion.subject_id == subject_id,
++    ]
++    if fact_key is not None:
++        clauses.append(FactAssertion.fact_key == fact_key)
++    if state is not None:
++        clauses.append(FactAssertion.state == state)
++    if excl_key is not None:
++        clauses.append(FactAssertion.excl_key == excl_key)
++    return select(FactAssertion).where(and_(*clauses))
++
++
++def _incumbent_current(
++    db: Session,
++    subject_type: str,
++    subject_id: int,
++    fact_key: str,
++    excl_key: str,
++) -> FactAssertion | None:
++    return db.scalars(
++        _base_query(subject_type, subject_id, fact_key, state="current", excl_key=excl_key)
++        .order_by(FactAssertion.id.desc())
++        .limit(1)
++    ).first()
++
++
++def _related_subjects(entity: Any) -> list[tuple[str, int]]:
++    asset: Asset | None
++    if isinstance(entity, Asset):
++        asset = entity
++    elif isinstance(entity, Interface):
++        asset = entity.asset
++    else:
++        return []
++    subjects = [("asset", int(asset.id))]
++    if asset.chassis_id:
++        subjects.append(("chassis", int(asset.chassis_id)))
++    return subjects
++
++
++def _cross_fact_incumbents(
++    db: Session,
++    entity: Any,
++    applying_fact_key: str,
++) -> list[FactAssertion]:
++    """Current rows on related subjects for R-H (name vs os, etc.)."""
++    seen: set[tuple[str, int, str, str]] = set()
++    rows: list[FactAssertion] = []
++    for subject_type, subject_id in _related_subjects(entity):
++        for row in db.scalars(
++            _base_query(subject_type, subject_id, state="current").order_by(
++                FactAssertion.id.desc()
++            )
++        ).all():
++            if row.fact_key == applying_fact_key:
++                continue
++            key = (row.subject_type, row.subject_id, row.fact_key, row.excl_key)
++            if key in seen:
++                continue
++            seen.add(key)
++            rows.append(row)
++    return rows
++
++
++def current(
++    db: Session,
++    subject_type: str,
++    subject_id: int,
++    fact_key: str,
++    *,
++    excl_key: str | None = None,
++    apply_ttl: bool = False,
++) -> FactAssertion | None:
++    """R-G: absent → None (caller must declare I2)."""
++    spec = get_fact_spec(fact_key)
++    if excl_key is not None:
++        row = _incumbent_current(db, subject_type, subject_id, fact_key, excl_key)
++        if row and apply_ttl:
++            _maybe_stale(db, row, spec)
++        return row
++
++    rows = list(
++        db.scalars(
++            _base_query(subject_type, subject_id, fact_key, state="current").order_by(
++                FactAssertion.id.desc()
++            )
++        ).all()
++    )
++    if not rows:
++        return None
++    if spec.cardinality == "single" and len(rows) > 1:
++        # single cardinality: prefer highest authority then newest
++        rows.sort(key=lambda r: (r.authority, r.id), reverse=True)
++    row = rows[0]
++    if apply_ttl:
++        _maybe_stale(db, row, spec)
++    return row
++
++
++def current_map(
++    db: Session,
++    subject_type: str,
++    subject_ids: list[int],
++    fact_keys: list[str],
++) -> dict[tuple[int, str], FactAssertion | None]:
++    if not subject_ids or not fact_keys:
++        return {}
++    rows = db.scalars(
++        select(FactAssertion).where(
++            FactAssertion.subject_type == subject_type,
++            FactAssertion.subject_id.in_(subject_ids),
++            FactAssertion.fact_key.in_(fact_keys),
++            FactAssertion.state == "current",
++        )
++    ).all()
++    grouped: dict[tuple[int, str], list[FactAssertion]] = {}
++    for row in rows:
++        grouped.setdefault((row.subject_id, row.fact_key), []).append(row)
++    out: dict[tuple[int, str], FactAssertion | None] = {}
++    for sid in subject_ids:
++        for fk in fact_keys:
++            bucket = grouped.get((sid, fk))
++            if not bucket:
++                out[(sid, fk)] = None
++                continue
++            spec = get_fact_spec(fk)
++            if spec.cardinality == "single" and len(bucket) > 1:
++                bucket.sort(key=lambda r: (r.authority, r.id), reverse=True)
++            out[(sid, fk)] = bucket[0]
++    return out
++
++
++def history(
++    db: Session,
++    subject_type: str,
++    subject_id: int,
++    fact_key: str,
++    *,
++    excl_key: str | None = None,
++) -> list[FactAssertion]:
++    q = _base_query(subject_type, subject_id, fact_key, excl_key=excl_key).order_by(
++        FactAssertion.valid_from.asc(),
++        FactAssertion.id.asc(),
++    )
++    return list(db.scalars(q).all())
++
++
++def _maybe_stale(db: Session, row: FactAssertion, spec) -> None:
++    """R-E: mark stale when ttl_window exceeded for this fact/source."""
++    if spec.ttl_window is None:
++        return
++    ttl = spec.ttl_window
++    if row.last_seen_at and utcnow() - row.last_seen_at > ttl:
++        row.state = "stale"
++        row.valid_to = utcnow()
++        db.flush()
++
++
++def _new_assertion(
++    *,
++    subject_type: str,
++    subject_id: int,
++    fact_key: str,
++    excl_key: str,
++    value_norm: str,
++    value_json: dict | None,
++    source: str,
++    authority: int,
++    confidence: float,
++    observed_at: datetime,
++    state: str,
++    reason: str = "",
++    valid_from_truncated: bool = False,
++) -> FactAssertion:
++    now = observed_at or utcnow()
++    return FactAssertion(
++        subject_type=subject_type,
++        subject_id=subject_id,
++        fact_key=fact_key,
++        excl_key=excl_key,
++        value_norm=value_norm,
++        value_json=value_json or {},
++        source=source,
++        authority=authority,
++        confidence=confidence,
++        observed_at=now,
++        last_seen_at=now,
++        valid_from=now,
++        valid_to=None,
++        state=state,
++        reason=reason,
++        valid_from_truncated=valid_from_truncated,
++        created_at=utcnow(),
++    )
++
++
++def _check_rh_conflict(
++    db: Session,
++    entity: Any,
++    fact_key: str,
++    value_norm: str,
++    authority: int,
++    *,
++    human_confirm: bool,
++) -> ApplyResult | None:
++    global conflict_review_count
++    if human_confirm:
++        return None
++    for other in _cross_fact_incumbents(db, entity, fact_key):
++        if not semantic_contradiction(
++            incumbent_fact_key=other.fact_key,
++            incumbent_value=other.value_norm,
++            new_fact_key=fact_key,
++            new_value=value_norm,
++        ):
++            continue
++        if authority < other.authority or other.source == "manual":
++            conflict_review_count += 1
++            return ApplyResult(
++                action="conflict_review",
++                incumbent=other,
++                conflict={
++                    "incumbent_fact_key": other.fact_key,
++                    "incumbent_value": other.value_norm,
++                    "incumbent_source": other.source,
++                    "incumbent_authority": other.authority,
++                    "new_fact_key": fact_key,
++                    "new_value": value_norm,
++                },
++            )
++    return None
++
++
++def _within_readmission_cooldown(
++    db: Session,
++    subject_type: str,
++    subject_id: int,
++    fact_key: str,
++    excl_key: str,
++    value_norm: str,
++    observed_at: datetime,
++    new_authority: int,
++) -> FactAssertion | None:
++    """R-F: block weak re-admission shortly after stronger supersession."""
++    recent = db.scalars(
++        select(FactAssertion)
++        .where(
++            FactAssertion.subject_type == subject_type,
++            FactAssertion.subject_id == subject_id,
++            FactAssertion.fact_key == fact_key,
++            FactAssertion.excl_key == excl_key,
++            FactAssertion.value_norm == value_norm,
++            FactAssertion.state == "superseded",
++        )
++        .order_by(FactAssertion.valid_to.desc(), FactAssertion.id.desc())
++        .limit(1)
++    ).first()
++    if not recent or not recent.valid_to:
++        return None
++    superseder = None
++    if recent.superseded_by_id:
++        superseder = db.get(FactAssertion, recent.superseded_by_id)
++    if superseder and superseder.authority >= new_authority:
++        if observed_at - recent.valid_to < READMISSION_COOLDOWN:
++            return superseder
++    return None
++
++
++def apply_observation(
++    db: Session,
++    *,
++    fact_key: str,
++    entity: Asset | Interface | Any,
++    value: Any,
++    source: str,
++    observed_at: datetime | None = None,
++    confidence: float | None = None,
++    value_json: dict | None = None,
++    human_confirm: bool = False,
++) -> ApplyResult:
++    """Atomic, idempotent fact transition (R-A..R-H)."""
++    global weak_evidence_count
++
++    spec = get_fact_spec(fact_key)
++    src = str(source or "").lower()
++    if src not in spec.sources and src != "manual":
++        raise ValueError(f"source {source!r} not allowed for {fact_key}")
++
++    subject_type, subject_id = subject_of(fact_key, entity)
++    excl_key = spec.excl_key(subject_type, entity, value)
++    value_norm = _norm_value(value)
++    authority = authority_for(src)
++    conf = confidence if confidence is not None else default_confidence(src)
++    when = observed_at or utcnow()
++
++    incumbent = _incumbent_current(db, subject_type, subject_id, fact_key, excl_key)
++
++    rh = _check_rh_conflict(
++        db, entity, fact_key, value_norm, authority, human_confirm=human_confirm
++    )
++    if rh is not None:
++        return rh
++
++    if incumbent is None:
++        row = _new_assertion(
++            subject_type=subject_type,
++            subject_id=subject_id,
++            fact_key=fact_key,
++            excl_key=excl_key,
++            value_norm=value_norm,
++            value_json=value_json,
++            source=src,
++            authority=authority,
++            confidence=conf,
++            observed_at=when,
++            state="current",
++        )
++        db.add(row)
++        db.flush()
++        return ApplyResult(action="created", assertion=row)
++
++    # R-A refresh
++    if incumbent.value_norm == value_norm and incumbent.source == src:
++        incumbent.last_seen_at = when
++        incumbent.observed_at = when
++        if confidence is not None:
++            incumbent.confidence = conf
++        db.flush()
++        return ApplyResult(action="refresh", assertion=incumbent, incumbent=incumbent)
++
++    # R-H same-slot contradiction against manual name claims
++    if (
++        incumbent.fact_key == fact_key
++        and semantic_contradiction(
++            incumbent_fact_key=incumbent.fact_key,
++            incumbent_value=incumbent.value_norm,
++            new_fact_key=fact_key,
++            new_value=value_norm,
++        )
++        and authority < incumbent.authority
++        and not human_confirm
++    ):
++        conflict_review_count += 1
++        return ApplyResult(
++            action="conflict_review",
++            incumbent=incumbent,
++            conflict={
++                "incumbent_value": incumbent.value_norm,
++                "incumbent_source": incumbent.source,
++                "new_value": value_norm,
++                "new_source": src,
++            },
++        )
++
++    # R-D manual pinned
++    if incumbent.source == "manual" and src != "manual" and not human_confirm:
++        weak = _new_assertion(
++            subject_type=subject_type,
++            subject_id=subject_id,
++            fact_key=fact_key,
++            excl_key=excl_key,
++            value_norm=value_norm,
++            value_json=value_json,
++            source=src,
++            authority=authority,
++            confidence=conf,
++            observed_at=when,
++            state="historical",
++            reason="weak_evidence",
++        )
++        db.add(weak)
++        weak_evidence_count += 1
++        db.flush()
++        return ApplyResult(action="weak_evidence", assertion=weak, incumbent=incumbent)
++
++    # R-F readmission cooldown (anti-flap)
++    cooled = _within_readmission_cooldown(
++        db, subject_type, subject_id, fact_key, excl_key, value_norm, when, authority
++    )
++    if cooled is not None and authority < cooled.authority:
++        weak = _new_assertion(
++            subject_type=subject_type,
++            subject_id=subject_id,
++            fact_key=fact_key,
++            excl_key=excl_key,
++            value_norm=value_norm,
++            value_json=value_json,
++            source=src,
++            authority=authority,
++            confidence=conf,
++            observed_at=when,
++            state="historical",
++            reason="cooldown",
++        )
++        db.add(weak)
++        db.flush()
++        return ApplyResult(action="cooldown", assertion=weak, incumbent=cooled)
++
++    # R-C weak evidence
++    if authority < incumbent.authority and not human_confirm:
++        weak = _new_assertion(
++            subject_type=subject_type,
++            subject_id=subject_id,
++            fact_key=fact_key,
++            excl_key=excl_key,
++            value_norm=value_norm,
++            value_json=value_json,
++            source=src,
++            authority=authority,
++            confidence=conf,
++            observed_at=when,
++            state="historical",
++            reason="weak_evidence",
++        )
++        db.add(weak)
++        weak_evidence_count += 1
++        db.flush()
++        return ApplyResult(action="weak_evidence", assertion=weak, incumbent=incumbent)
++
++    # R-B supersession — demote incumbent before inserting new current (partial unique index).
++    incumbent.valid_to = when
++    incumbent.state = "superseded"
++    db.flush()
++
++    new_row = _new_assertion(
++        subject_type=subject_type,
++        subject_id=subject_id,
++        fact_key=fact_key,
++        excl_key=excl_key,
++        value_norm=value_norm,
++        value_json=value_json,
++        source=src,
++        authority=authority,
++        confidence=conf,
++        observed_at=when,
++        state="current",
++    )
++    db.add(new_row)
++    db.flush()
++
++    incumbent.superseded_by_id = new_row.id
++    db.flush()
++    return ApplyResult(action="superseded", assertion=new_row, incumbent=incumbent)
++
++
++def canonical_name_for_entity(db: Session, entity: Asset | Interface) -> str | None:
++    """Chassis-level canonical name for a NIC member (W1 read helper)."""
++    subject_type, subject_id = subject_of("asset.name", entity)
++    row = current(db, subject_type, subject_id, "asset.name")
++    return row.value_norm if row else None
++
++
++def expire_stale_facts(db: Session, *, now: datetime | None = None) -> int:
++    """R-E batch: mark expired currents as stale (ttl_window None → skip)."""
++    when = now or utcnow()
++    changed = 0
++    rows = db.scalars(select(FactAssertion).where(FactAssertion.state == "current")).all()
++    for row in rows:
++        spec = get_fact_spec(row.fact_key)
++        if spec.ttl_window is None:
++            continue
++        if row.last_seen_at and when - row.last_seen_at > spec.ttl_window:
++            row.state = "stale"
++            row.valid_to = when
++            changed += 1
++    if changed:
++        db.flush()
++    return changed
+diff --git a/observatory/api/app/models.py b/observatory/api/app/models.py
+index 24647bc..1c9b0d3 100644
+--- a/observatory/api/app/models.py
++++ b/observatory/api/app/models.py
+@@ -14,6 +14,7 @@ from sqlalchemy import (
+     String,
+     Text,
+     UniqueConstraint,
++    text,
+ )
+ from sqlalchemy.orm import Mapped, mapped_column, relationship
+ 
+@@ -151,6 +152,48 @@ class NameProposal(Base):
+     asset: Mapped[Asset] = relationship(back_populates="name_proposals")
+ 
+ 
++class FactAssertion(Base):
++    """Authoritative fact store with supersession history (OBS-CURRENCY W1)."""
++
++    __tablename__ = "fact_assertions"
++    __table_args__ = (
++        Index(
++            "uq_fact_assertions_current_slot",
++            "subject_type",
++            "subject_id",
++            "excl_key",
++            unique=True,
++            sqlite_where=text("state='current'"),
++        ),
++        Index("ix_fact_assertions_subject_state", "subject_type", "subject_id", "state"),
++        Index("ix_fact_assertions_fact_state", "fact_key", "state"),
++    )
++
++    id: Mapped[int] = mapped_column(Integer, primary_key=True)
++    subject_type: Mapped[str] = mapped_column(String(16), index=True)
++    subject_id: Mapped[int] = mapped_column(Integer, index=True)
++    fact_key: Mapped[str] = mapped_column(String(64), index=True)
++    excl_key: Mapped[str] = mapped_column(String(128), default="")
++    value_norm: Mapped[str] = mapped_column(String(512), default="")
++    value_json: Mapped[dict] = mapped_column(JSON, default=dict)
++    source: Mapped[str] = mapped_column(String(32), default="")
++    authority: Mapped[int] = mapped_column(Integer, default=0)
++    confidence: Mapped[float] = mapped_column(Float, default=0.0)
++    observed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
++    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
++    valid_from: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
++    valid_to: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
++    state: Mapped[str] = mapped_column(
++        String(16), default="current"
++    )  # current|stale|superseded|historical
++    superseded_by_id: Mapped[Optional[int]] = mapped_column(
++        ForeignKey("fact_assertions.id", ondelete="SET NULL"), nullable=True
++    )
++    reason: Mapped[str] = mapped_column(String(64), default="")
++    valid_from_truncated: Mapped[bool] = mapped_column(Boolean, default=False)
++    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
++
++
+ class FingerprintFact(Base):
+     """Structured classification signal (OS/class/model) — never auto-applies to Asset."""
+ 
+diff --git a/observatory/tests/test_facts_resolver.py b/observatory/tests/test_facts_resolver.py
+new file mode 100644
+index 0000000..1ea304c
+--- /dev/null
++++ b/observatory/tests/test_facts_resolver.py
+@@ -0,0 +1,480 @@
++"""OBS-CURRENCY W1 — fact_assertion resolver unit tests."""
++
++from __future__ import annotations
++
++import sqlite3
++import sys
++import uuid
++from datetime import datetime, timedelta
++from pathlib import Path
++
++import pytest
++from sqlalchemy import create_engine, func, select
++from sqlalchemy.exc import IntegrityError
++from sqlalchemy.orm import sessionmaker
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
++
++from app.db import Base
++from app.facts import resolver as facts_resolver
++from app.facts.registry import get_fact_spec
++from app.facts.resolver import (
++    apply_observation,
++    canonical_name_for_entity,
++    current,
++    expire_stale_facts,
++    history,
++    subject_of,
++)
++from app.models import Asset, Chassis, FactAssertion, Interface, IpAddress
++
++MAC_A = "D8:EC:5E:CC:1C:05"
++MAC_B = "D8:EC:5E:CC:1C:08"
++MAC_C = "D8:EC:5E:C5:7E:C7"
++MAC_GS308 = "54:07:7D:1E:4F:B9"
++MAC_CASSIO_1 = "60:B5:8D:6C:6D:53"
++MAC_CASSIO_2 = "24:4B:FE:84:6A:02"
++
++
++@pytest.fixture()
++def db(tmp_path):
++    engine = create_engine(f"sqlite:///{tmp_path / 'facts.db'}")
++    Base.metadata.create_all(engine)
++    Session = sessionmaker(bind=engine)
++    session = Session()
++    yield session
++    session.close()
++
++
++def _ts(offset_s: int = 0) -> datetime:
++    return datetime(2026, 7, 25, 12, 0, 0) + timedelta(seconds=offset_s)
++
++
++def _asset_iface(
++    db,
++    *,
++    mac: str,
++    name: str = "",
++    chassis: Chassis | None = None,
++    ip: str | None = None,
++):
++    asset = Asset(
++        uid=str(uuid.uuid4()),
++        name=name,
++        category="unknown",
++        status="nuovo",
++        chassis_id=chassis.id if chassis else None,
++    )
++    db.add(asset)
++    db.flush()
++    iface = Interface(asset_id=asset.id, mac=mac, is_primary=True)
++    db.add(iface)
++    db.flush()
++    if ip:
++        db.add(
++            IpAddress(
++                interface_id=iface.id,
++                ip=ip,
++                is_current=True,
++                source="test",
++                first_seen=_ts(),
++                last_seen=_ts(),
++            )
++        )
++    db.commit()
++    db.refresh(asset)
++    db.refresh(iface)
++    return asset, iface
++
++
++def test_partial_unique_index_exists(tmp_path):
++    engine = create_engine(f"sqlite:///{tmp_path / 'idx.db'}")
++    Base.metadata.create_all(engine)
++    con = sqlite3.connect(str(tmp_path / "idx.db"))
++    try:
++        row = con.execute(
++            "SELECT sql FROM sqlite_master WHERE name='uq_fact_assertions_current_slot'"
++        ).fetchone()
++    finally:
++        con.close()
++    assert row is not None
++    assert "state='current'" in row[0]
++
++
++def test_apply_idempotent_refresh(db):
++    asset, iface = _asset_iface(db, mac="AA:BB:CC:DD:EE:01")
++    t0 = _ts()
++    t1 = _ts(60)
++    r1 = apply_observation(
++        db,
++        fact_key="asset.iface_ip",
++        entity=iface,
++        value="192.168.1.10",
++        source="fritz",
++        observed_at=t0,
++    )
++    db.commit()
++    r2 = apply_observation(
++        db,
++        fact_key="asset.iface_ip",
++        entity=iface,
++        value="192.168.1.10",
++        source="fritz",
++        observed_at=t1,
++    )
++    db.commit()
++    assert r1.action == "created"
++    assert r2.action == "refresh"
++    rows = db.scalars(select(FactAssertion)).all()
++    assert len(rows) == 1
++    assert rows[0].last_seen_at == t1
++    assert rows[0].valid_from == t0
++
++
++def test_atomic_supersession(db):
++    asset, iface = _asset_iface(db, mac="AA:BB:CC:DD:EE:02")
++    apply_observation(
++        db,
++        fact_key="asset.iface_ip",
++        entity=iface,
++        value="192.168.3.20",
++        source="fritz",
++        observed_at=_ts(),
++    )
++    db.commit()
++    r2 = apply_observation(
++        db,
++        fact_key="asset.iface_ip",
++        entity=iface,
++        value="192.168.1.8",
++        source="dhcp",
++        observed_at=_ts(120),
++    )
++    db.commit()
++    assert r2.action == "superseded"
++    old = db.scalars(select(FactAssertion).where(FactAssertion.value_norm == "192.168.3.20")).one()
++    new = db.scalars(select(FactAssertion).where(FactAssertion.value_norm == "192.168.1.8")).one()
++    assert old.state == "superseded"
++    assert old.valid_to == _ts(120)
++    assert old.superseded_by_id == new.id
++    assert new.state == "current"
++    currents = db.scalars(select(FactAssertion).where(FactAssertion.state == "current")).all()
++    assert len(currents) == 1
++
++
++def test_unique_index_violation_impossible(db):
++    asset, iface = _asset_iface(db, mac="AA:BB:CC:DD:EE:03")
++    apply_observation(
++        db,
++        fact_key="asset.iface_ip",
++        entity=iface,
++        value="192.168.1.1",
++        source="fritz",
++        observed_at=_ts(),
++    )
++    db.commit()
++    dup = FactAssertion(
++        subject_type="asset",
++        subject_id=asset.id,
++        fact_key="asset.iface_ip",
++        excl_key=f"ip:{iface.id}",
++        value_norm="192.168.1.2",
++        value_json={},
++        source="nmap",
++        authority=75,
++        confidence=0.5,
++        observed_at=_ts(1),
++        last_seen_at=_ts(1),
++        valid_from=_ts(1),
++        state="current",
++    )
++    db.add(dup)
++    with pytest.raises(IntegrityError):
++        db.commit()
++    db.rollback()
++
++
++def test_weak_evidence_does_not_override_manual(db):
++    chassis = Chassis(label="manual-device")
++    db.add(chassis)
++    db.flush()
++    asset, iface = _asset_iface(db, mac="AA:BB:CC:DD:EE:04", chassis=chassis)
++    apply_observation(
++        db,
++        fact_key="asset.name",
++        entity=iface,
++        value="LGS310C",
++        source="manual",
++        observed_at=_ts(),
++    )
++    db.commit()
++    r = apply_observation(
++        db,
++        fact_key="asset.name",
++        entity=iface,
++        value="Switch Linksys",
++        source="oui",
++        confidence=0.85,
++        observed_at=_ts(30),
++    )
++    db.commit()
++    assert r.action == "weak_evidence"
++    cur = current(db, "chassis", chassis.id, "asset.name")
++    assert cur is not None
++    assert cur.value_norm == "LGS310C"
++    assert cur.source == "manual"
++
++
++def test_anti_flap_no_oscillation(db):
++    asset, iface = _asset_iface(db, mac="AA:BB:CC:DD:EE:05")
++    apply_observation(
++        db,
++        fact_key="asset.iface_ip",
++        entity=iface,
++        value="192.168.1.100",
++        source="dhcp",
++        observed_at=_ts(),
++    )
++    apply_observation(
++        db,
++        fact_key="asset.iface_ip",
++        entity=iface,
++        value="192.168.1.101",
++        source="dhcp",
++        observed_at=_ts(60),
++    )
++    r3 = apply_observation(
++        db,
++        fact_key="asset.iface_ip",
++        entity=iface,
++        value="192.168.1.100",
++        source="fritz",
++        observed_at=_ts(90),
++    )
++    db.commit()
++    assert r3.action in {"cooldown", "weak_evidence"}
++    cur = current(db, "asset", asset.id, "asset.iface_ip", excl_key=f"ip:{iface.id}")
++    assert cur.value_norm == "192.168.1.101"
++
++
++def test_ttl_none_does_not_expire(db):
++    chassis = Chassis(label="immortal")
++    db.add(chassis)
++    db.flush()
++    asset, iface = _asset_iface(db, mac="AA:BB:CC:DD:EE:06", chassis=chassis)
++    row = apply_observation(
++        db,
++        fact_key="asset.name",
++        entity=iface,
++        value="Immortal",
++        source="manual",
++        observed_at=_ts(-86400 * 30),
++    ).assertion
++    db.commit()
++    assert get_fact_spec("asset.name").ttl_window is None
++    changed = expire_stale_facts(db, now=_ts(86400))
++    db.commit()
++    assert changed == 0
++    db.refresh(row)
++    assert row.state == "current"
++
++
++def test_history_never_deleted(db):
++    asset, iface = _asset_iface(db, mac="AA:BB:CC:DD:EE:07")
++    for i, ip in enumerate(["10.0.0.1", "10.0.0.2", "10.0.0.3"]):
++        apply_observation(
++            db,
++            fact_key="asset.iface_ip",
++            entity=iface,
++            value=ip,
++            source="dhcp",
++            observed_at=_ts(i * 60),
++        )
++    db.commit()
++    rows = history(db, "asset", asset.id, "asset.iface_ip", excl_key=f"ip:{iface.id}")
++    assert len(rows) == 3
++    assert db.scalar(select(func.count()).select_from(FactAssertion)) == 3
++
++
++def test_multi_excl_key_no_collide(db):
++    asset1, iface1 = _asset_iface(db, mac=MAC_CASSIO_1, ip="192.168.1.3")
++    asset2, iface2 = _asset_iface(db, mac=MAC_CASSIO_2, ip="192.168.3.24")
++    apply_observation(
++        db,
++        fact_key="asset.iface_ip",
++        entity=iface1,
++        value="192.168.1.3",
++        source="fritz",
++        observed_at=_ts(),
++    )
++    apply_observation(
++        db,
++        fact_key="asset.iface_ip",
++        entity=iface2,
++        value="192.168.3.24",
++        source="fritz",
++        observed_at=_ts(),
++    )
++    db.commit()
++    c1 = current(db, "asset", asset1.id, "asset.iface_ip", excl_key=f"ip:{iface1.id}")
++    c2 = current(db, "asset", asset2.id, "asset.iface_ip", excl_key=f"ip:{iface2.id}")
++    assert c1 and c1.value_norm == "192.168.1.3" and c1.state == "current"
++    assert c2 and c2.value_norm == "192.168.3.24" and c2.state == "current"
++
++
++def test_subject_of_name_canonicalizes_to_chassis_not_alias(db):
++    chassis = Chassis(label="lgs")
++    db.add(chassis)
++    db.flush()
++    asset, iface = _asset_iface(db, mac=MAC_A, chassis=chassis)
++    assert subject_of("asset.name", iface) == ("chassis", chassis.id)
++    assert subject_of("asset.name", asset) == ("chassis", chassis.id)
++    assert subject_of("iface.alias", iface) == ("asset", asset.id)
++    assert subject_of("iface.alias", asset) == ("asset", asset.id)
++
++
++def test_gs308ep_sequential_ip_supersession(db):
++    asset, iface = _asset_iface(db, mac=MAC_GS308, ip="192.168.3.20")
++    apply_observation(
++        db,
++        fact_key="asset.iface_ip",
++        entity=iface,
++        value="192.168.3.20",
++        source="fritz",
++        observed_at=_ts(),
++    )
++    apply_observation(
++        db,
++        fact_key="asset.iface_ip",
++        entity=iface,
++        value="192.168.1.8",
++        source="fritz",
++        observed_at=_ts(300),
++    )
++    db.commit()
++    old = db.scalars(
++        select(FactAssertion).where(FactAssertion.value_norm == "192.168.3.20")
++    ).one()
++    new = db.scalars(
++        select(FactAssertion).where(FactAssertion.value_norm == "192.168.1.8")
++    ).one()
++    assert old.state == "superseded"
++    assert new.state == "current"
++    hist = history(db, "asset", asset.id, "asset.iface_ip", excl_key=f"ip:{iface.id}")
++    assert len(hist) == 2
++    assert {h.state for h in hist} == {"superseded", "current"}
++
++
++def test_lgs310c_synthetic_fixture(db):
++    """Fixture 1.7 — synthetic chassis (live DB fusion ambiguous per W0)."""
++    facts_resolver.weak_evidence_count = 0
++    chassis = Chassis(label="LGS310C-synthetic")
++    db.add(chassis)
++    db.flush()
++    asset_a, iface_a = _asset_iface(db, mac=MAC_A, chassis=chassis)
++    asset_b, iface_b = _asset_iface(db, mac=MAC_B, chassis=chassis)
++    asset_c, iface_c = _asset_iface(
++        db, mac=MAC_C, chassis=chassis, ip="192.168.1.7", name="LGS310C"
++    )
++
++    sub_a = subject_of("asset.name", iface_a)
++    sub_b = subject_of("asset.name", iface_b)
++    sub_c = subject_of("asset.name", iface_c)
++    assert sub_a == sub_b == sub_c == ("chassis", chassis.id)
++
++    apply_observation(
++        db,
++        fact_key="asset.name",
++        entity=iface_c,
++        value="LGS310C",
++        source="manual",
++        observed_at=_ts(),
++    )
++    r_oui = apply_observation(
++        db,
++        fact_key="asset.name",
++        entity=iface_a,
++        value="Switch Linksys",
++        source="oui",
++        confidence=0.85,
++        observed_at=_ts(10),
++    )
++    apply_observation(
++        db,
++        fact_key="iface.alias",
++        entity=iface_b,
++        value="uplink-B",
++        source="manual",
++        observed_at=_ts(20),
++    )
++    db.commit()
++
++    currents = db.scalars(
++        select(FactAssertion).where(
++            FactAssertion.subject_type == "chassis",
++            FactAssertion.subject_id == chassis.id,
++            FactAssertion.fact_key == "asset.name",
++            FactAssertion.state == "current",
++        )
++    ).all()
++    assert len(currents) == 1
++    assert currents[0].value_norm == "LGS310C"
++    assert currents[0].source == "manual"
++
++    assert r_oui.action == "weak_evidence"
++    supers = db.scalars(
++        select(FactAssertion).where(FactAssertion.state == "superseded")
++    ).all()
++    assert len(supers) == 0
++
++    operational_switch = db.scalars(
++        select(FactAssertion).where(
++            FactAssertion.subject_type == "chassis",
++            FactAssertion.subject_id == chassis.id,
++            FactAssertion.fact_key == "asset.name",
++            FactAssertion.value_norm == "Switch Linksys",
++            FactAssertion.state == "current",
++        )
++    ).all()
++    assert operational_switch == []
++
++    assert canonical_name_for_entity(db, iface_a) == "LGS310C"
++    assert canonical_name_for_entity(db, iface_b) == "LGS310C"
++    assert canonical_name_for_entity(db, iface_c) == "LGS310C"
++
++    alias = current(db, "asset", asset_b.id, "iface.alias")
++    assert alias is not None
++    assert alias.value_norm == "uplink-B"
++    name_on_b = current(db, "chassis", chassis.id, "asset.name")
++    assert name_on_b.value_norm == "LGS310C"
++    assert alias.value_norm != name_on_b.value_norm
++
++
++def test_conflict_review_android_vs_windows(db):
++    facts_resolver.conflict_review_count = 0
++    asset, iface = _asset_iface(db, mac="AA:BB:CC:DD:EE:08")
++    apply_observation(
++        db,
++        fact_key="asset.name",
++        entity=iface,
++        value="Android",
++        source="manual",
++        observed_at=_ts(),
++    )
++    db.commit()
++    before = db.scalar(select(func.count()).select_from(FactAssertion))
++    r = apply_observation(
++        db,
++        fact_key="os.guess",
++        entity=iface,
++        value="Microsoft Windows 11",
++        source="nmap",
++        observed_at=_ts(30),
++    )
++    db.commit()
++    assert r.action == "conflict_review"
++    assert current(db, "asset", asset.id, "asset.name").value_norm == "Android"
++    assert current(db, "asset", asset.id, "os.guess") is None
++    after = db.scalar(select(func.count()).select_from(FactAssertion))
++    assert after == before
++    assert facts_resolver.conflict_review_count >= 1
+diff --git a/observatory/web/package.json b/observatory/web/package.json
+index dc4ae43..24266b6 100644
+--- a/observatory/web/package.json
++++ b/observatory/web/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "lan-observatory-web",
+   "private": true,
+-  "version": "0.10.40",
++  "version": "0.10.41",
+   "type": "module",
+   "scripts": {
+     "dev": "vite",
