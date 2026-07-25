@@ -1,0 +1,486 @@
+diff --git a/observatory/CHANGELOG.md b/observatory/CHANGELOG.md
+index 677f6ee..5179910 100644
+--- a/observatory/CHANGELOG.md
++++ b/observatory/CHANGELOG.md
+@@ -1,8 +1,24 @@
+ # Changelog
+ 
++## 0.10.45 — W-D: sblocco gate W2 (T-b, T-e, T-f)
++
++- **T-b:** `entity_key_for` MAC-scoped quando MAC noto; IP-only provisional (`identity_provisional`) + DEBT-PROVISIONAL-IDENTITY-MERGE.
++- **T-e/T-f:** demotion IP chiude `last_seen=now` → `resolve_asset_by_ip_at` trova il detentore storico.
++- **D.0.b:** `lift_fritz_quarantine_on_active` (trust) — quarantena non assorbente; inventory resta bloccata.
++- **Debiti:** DEBT-DOUBLE-CURRENT-IP; Cassiopea ri-caratterizzata chassis (W4a/W4b); alembic unificato in DEBT-ALEMBIC-BASELINE-LEGACY-TABLE. W2 writers → **0.10.46** dopo review diff.
++- Report: [`docs/obs-wd.md`](docs/obs-wd.md).
++
++## 0.10.44 — F1-bis: DEBT-RECONCILE-CHURN-1 + riqualifica gate F1
++
++- **W-C:** `inventory_may_set_operational_state` non solleva/smasha `trust_quarantine` (`fritz_historical`) — chiude DEBT-RECONCILE-CHURN-1 (classe, non asset 116). Test zero-iface obbligatorio.
++- **W-B.3:** script una-tantum `scripts/normalize_empty_manual_names.py` (asset 98/150 name manual vuoto → assenza; no bump).
++- **Debiti:** DEBT-IP-CURRENT-SCOPE-PER-ASSET (Cassiopea asset 6). W2 slitta a **0.10.45** (poi rinumerato → **0.10.46** in W-D).
++- Report: [`docs/obs-f1bis.md`](docs/obs-f1bis.md).
++
+ ## 0.10.43 — OBS-IDENTITY W1.5-bis gate closure
+ 
+-- **W1.5-bis:** rimossa soglia E3 inventata (`mac_count_threshold` solo se misurata); test limiti E5-physical (D.2); tool RO `obs_identity_linker_dryrun.py`. Nessun writer identity acceso. W2 shadow writers slitta a **0.10.44**. Debiti: DEBT-RECONCILE-CHURN-1 (asset 116), DEBT-E3-AVAILABLE-FALSE.
++- **W1.5-bis:** rimossa soglia E3 inventata (`mac_count_threshold` solo se misurata); test limiti E5-physical (D.2); tool RO `obs_identity_linker_dryrun.py`. Nessun writer identity acceso. W2 shadow writers slitta a **0.10.44** (poi rinumerato → **0.10.45** in F1-bis). Debiti: DEBT-RECONCILE-CHURN-1 (asset 116), DEBT-E3-AVAILABLE-FALSE.
++- **MAC↔IP (fixture):** classifier puro `mac_ip_policy.py` + 9 test contratto; **non** wired a reconcile/trust (DEBT-MAC-IP-POLICY-WIRE → W7).
+ 
+ ## 0.10.42 — W1.5 identity-evidence (deployata)
+ 
+diff --git a/observatory/VERSION b/observatory/VERSION
+index a548662..213d183 100644
+--- a/observatory/VERSION
++++ b/observatory/VERSION
+@@ -1 +1 @@
+-0.10.43
++0.10.45
+diff --git a/observatory/api/app/services/identity.py b/observatory/api/app/services/identity.py
+index 834f44f..457be63 100644
+--- a/observatory/api/app/services/identity.py
++++ b/observatory/api/app/services/identity.py
+@@ -922,6 +922,12 @@ def elect_interface_primary(
+     for addr in addresses:
+         was_current = addr.is_current
+         addr.is_current = elected is not None and addr.id == elected.id
++        if was_current and not addr.is_current:
++            # Close binding interval at demotion time so resolve_asset_by_ip_at
++            # can answer first_seen <= T <= last_seen for historical holders
++            # (T-e/T-f / DEBT-IP-MIGRATION-NONETYPE).
++            if addr.last_seen is None or addr.last_seen < now:
++                addr.last_seen = now
+         if addr.is_current:
+             if mgmt_ip and addr.ip == mgmt_ip and (addr.role or "") in ("", "secondario"):
+                 addr.role = "mgmt"
+diff --git a/observatory/api/app/services/inventory.py b/observatory/api/app/services/inventory.py
+index 5601616..c7b781d 100644
+--- a/observatory/api/app/services/inventory.py
++++ b/observatory/api/app/services/inventory.py
+@@ -61,6 +61,10 @@ def update_fritz_evidence(
+     discovery["mac_private"] = is_locally_administered(mac)
+     meta["discovery"] = discovery
+     asset.meta = meta
++    if active is True:
++        from app.services.trust import lift_fritz_quarantine_on_active
++
++        lift_fritz_quarantine_on_active(asset, at=now)
+     if db is not None:
+         from app.services.watch import maybe_emit_watch_sighting, note_fritz_active_edge
+ 
+@@ -160,8 +164,8 @@ def inventory_may_set_operational_state(
+     inventory_presence (default active ↔ stale_unlocated)
+ 
+     Regole (inventory scrive solo se coerente):
+-    1. Non smashare ``fritz_historical`` → ``stale_unlocated`` (ping-pong vs trust).
+-       Promozione a ``active`` solo con evidenza ``reliable``.
++    1. ``trust_quarantine`` (op_state o trust_level ``fritz_historical``): inventory
++       NON solleva la quarantena né la smash a ``stale_unlocated`` — solo trust.
+     2. ``known``|``confirmed_present``: mai auto-hide a ``stale_unlocated``.
+     3. ``trust_level=stale_unlocated``: mai auto-unhide a ``active`` senza ``reliable``.
+     4. Altrimenti inventory possiede active ↔ stale.
+@@ -171,10 +175,10 @@ def inventory_may_set_operational_state(
+     current = (current_state or "active").strip()
+     desired = (new_state or "").strip()
+ 
+-    if current == "fritz_historical" and desired == "stale_unlocated":
+-        return False
+-    if current == "fritz_historical" and desired == "active":
+-        return bool(reliable)
++    # trust_quarantine > inventory_presence: no lift / no smash by inventory.
++    if current == "fritz_historical" or level == "fritz_historical":
++        if desired in {"active", "stale_unlocated"}:
++            return False
+     if level in {"known", "confirmed_present"} and desired == "stale_unlocated":
+         return False
+     if level == "stale_unlocated" and desired == "active" and not reliable:
+diff --git a/observatory/api/app/services/observations_store.py b/observatory/api/app/services/observations_store.py
+index 90003b3..e0cfc7f 100644
+--- a/observatory/api/app/services/observations_store.py
++++ b/observatory/api/app/services/observations_store.py
+@@ -38,9 +38,12 @@ def _parse_dt(value: Any) -> datetime:
+ 
+ 
+ def entity_key_for(envelope: dict) -> str:
+-    """Most specific stable key available: endpoint > mac|ip > mac > ip.
++    """Identity key: endpoint (service) > MAC (host) > IP (provisional).
+ 
+-    L3 multi-IP on the same MAC must not collapse (DEBT-TOPO-IP-CONTEXTUAL).
++    Ruling W-D / DEBT-ENTITY-KEY-MAC-IP: the identity anchor is the MAC (or
++    chassis); IP is a mutable fact on the entity, never a component of the key
++    when MAC is known. IP-only keys are provisional — see
++    ``entity_key_is_provisional`` / DEBT-PROVISIONAL-IDENTITY-MERGE.
+     """
+     endpoint = envelope.get("endpoint") or {}
+     ip = (endpoint.get("ip") or (envelope.get("l3") or {}).get("ip") or "").strip()
+@@ -49,8 +52,6 @@ def entity_key_for(envelope: dict) -> str:
+     if ip and port:
+         return f"{ip}:{port}/{proto}"
+     mac = normalize_mac((envelope.get("l2") or {}).get("mac") or "")
+-    if len(mac) == 17 and ip:
+-        return f"{mac}|{ip}"
+     if len(mac) == 17:
+         return mac
+     if ip:
+@@ -58,6 +59,18 @@ def entity_key_for(envelope: dict) -> str:
+     return ""
+ 
+ 
++def entity_key_is_provisional(envelope: dict) -> bool:
++    """True when entity_key is IP-only (MAC unknown) — provisional identity."""
++    endpoint = envelope.get("endpoint") or {}
++    if endpoint.get("ip") and endpoint.get("port"):
++        return False
++    mac = normalize_mac((envelope.get("l2") or {}).get("mac") or "")
++    if len(mac) == 17:
++        return False
++    ip = (endpoint.get("ip") or (envelope.get("l3") or {}).get("ip") or "").strip()
++    return bool(ip)
++
++
+ def compute_dedup_key(envelope: dict, *, window_s: int = DEDUP_WINDOW_S) -> str:
+     """Cross-source collapse: source is outside the key; sensor_id+kind stay inside."""
+     sensor_id = envelope.get("sensor_id") or ""
+@@ -128,6 +141,9 @@ def upsert_observation_raw(
+     payload = _merge_provenance_sources(envelope, source)
+     if source and not payload.get("source"):
+         payload["source"] = source
++    if entity_key_is_provisional(envelope):
++        # Mark for later MAC discovery → merge (DEBT-PROVISIONAL-IDENTITY-MERGE).
++        payload["identity_provisional"] = True
+ 
+     values = {
+         "dedup_key": dedup_key,
+diff --git a/observatory/api/app/services/trust.py b/observatory/api/app/services/trust.py
+index ed057c6..51002d9 100644
+--- a/observatory/api/app/services/trust.py
++++ b/observatory/api/app/services/trust.py
+@@ -122,6 +122,40 @@ def observe_fritz(asset: Asset, at: datetime, *, source: str = "fritz_hostlist")
+         asset.presence_state = "fritz_only"
+ 
+ 
++def lift_fritz_quarantine_on_active(asset: Asset, *, at: datetime | None = None) -> bool:
++    """Trust-layer exit from fritz_historical when Fritz reports active again (D.0.b).
++
++    Inventory must not perform this lift (inventory_may_set blocks it). Returns True
++    if quarantine meta/trust_level were changed.
++    """
++    meta = dict(asset.meta or {})
++    in_quarantine = meta.get("operational_state") == "fritz_historical" or (
++        asset.trust_level or ""
++    ) == "fritz_historical"
++    if not in_quarantine:
++        return False
++    now = at or _utc_now()
++    asset.trust_level = "confirmed_present"
++    meta.update(
++        {
++            "operational_state": "active",
++            "inventory_hidden": False,
++            "inventory_hidden_auto": False,
++            "inventory_hidden_reason": "",
++        }
++    )
++    trust = dict(meta.get("trust") or {})
++    trust["level"] = "confirmed_present"
++    evidence = list(trust.get("evidence") or [])
++    evidence.append(
++        {"kind": "fritz_active", "at": now.isoformat() + "Z", "confidence": 0.9}
++    )
++    trust["evidence"] = evidence[-30:]
++    meta["trust"] = trust
++    asset.meta = meta
++    return True
++
++
+ def classify_asset(asset: Asset, *, now: datetime | None = None, stale_hours: int = 24) -> str:
+     now = now or _utc_now()
+     protected = bool(
+diff --git a/observatory/docs/KNOWN_DEBT.md b/observatory/docs/KNOWN_DEBT.md
+index 3fe6739..e4f0b1d 100644
+--- a/observatory/docs/KNOWN_DEBT.md
++++ b/observatory/docs/KNOWN_DEBT.md
+@@ -4,18 +4,92 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+ 
+ ## DEBT-RECONCILE-CHURN-1
+ 
+-- **Priorità:** media (bootstrap regime) — aperto in W1.5-bis 2026-07-25
+-- **Cosa:** asset **116** ha `trust_level=fritz_historical` ma `meta.operational_state=active`. Ogni boot1 con `needs_apply=true` / `structural=1` / `T_backup≈80s`; apply trust corregge; `inventory.reconcile_asset_presence` ripristina `active`.
+-- **Attribuzione:** churn preesistente (backup pre-0.10.42), **non** indotto da `identity_evidence`.
+-- **Vietato:** tollerarlo silenziosamente come “regime ok”; sostituire la misura del boot1 con un boot successivo senza dichiararlo.
+-- **Fix quando:** ownership `operational_state` per `fritz_historical` — inventory non deve smashare la quarantena trust senza evidenza reliable; oppure heal one-shot + guard.
++- **Priorità:** media (bootstrap regime) — **CHIUSO in F1-bis / 0.10.44** (2026-07-26)
++- **Cosa:** asset **116** aveva `trust_level=fritz_historical` ma `meta.operational_state=active`. Boot1 `needs_apply=true` / `structural=1` / `T_backup≈80s` perché `inventory_may_set_operational_state` permetteva `fritz_historical`→`active` se `reliable=True` (anche con 0 interfacce via reachability).
++- **Fix:** inventory non solleva né smasha `trust_quarantine` (`fritz_historical` op_state o trust_level) — gerarchia invariata `archived > trust_quarantine > trust_protected > inventory_presence`. Test `test_quarantine_zero_interfaces_inventory_cannot_set_active`.
++- **Vietato (storico):** tollerarlo come “regime ok”; caso speciale su `asset_id=116`.
++
++## DEBT-IP-CURRENT-SCOPE-PER-ASSET → ri-caratterizzato come IDENTITÀ CHASSIS (W-D)
++
++- **Priorità:** W4a/W4b (consolidamento chassis) — riaperto/riscritto F1-bis→W-D 2026-07-26
++- **Fatto:** Cassiopea è modellata come **due asset record** — asset **5** «Cassiopea — NIC 1» tiene `192.168.1.3` CURRENT (id 9); asset **6** tiene `192.168.3.24` CURRENT (id 855). L’IP di management non è perso: è sull’altro record. Il ping fallito su `.3.24` dal container api è atteso (lato SPAN), non un sintomo.
++- **Test di non-regressione (da chiudere in W4a/W4b):** dopo consolidamento, Cassiopea = **UN** apparato con **DUE** interfacce; entrambi gli IP correnti ciascuno sulla propria interfaccia; un solo nome canonico.
++- **Vietato ora:** patch dati che forzi due current sullo stesso asset_id / stessa iface.
++- **Doc:** [`docs/obs-f1bis.md`](obs-f1bis.md) · [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-DOUBLE-CURRENT-IP
++
++- **Priorità:** pre-condizione **W3** — aperto W-D 2026-07-26
++- **Cosa:** stesso IP con >1 riga `is_current=1` (stesso asset o asset diversi). Al backfill W3 collideranno con `uq_fact_assertions_current_slot`.
++- **Casi enumerati (live):**
++  - `192.168.1.2` — id **3** (asset 2, mgmt) + id **153** (asset 2, fritz)
++  - `192.168.2.108` — id **15** (asset 11) + id **853** (asset 138)
++- **Nota:** W3 richiede una **regola di risoluzione dichiarata PRIMA** del backfill. **NON** collassare ora.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-PROVISIONAL-IDENTITY-MERGE
++
++- **Priorità:** post W-D (quando MAC sconosciuto → poi scoperto) — aperto W-D 2026-07-26
++- **Cosa:** `entity_key` IP-only è marcato `payload.identity_provisional=true`, ma non esiste ancora un percorso di **fusione** quando il MAC viene scoperto in seguito (evitare duplicato).
++- **Vietato:** inventare il merge in questa ondata.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
+ 
+ ## DEBT-E3-AVAILABLE-FALSE
+ 
+ - **Priorità:** bloccante per E3 finché SNMP non è misurabile
+ - **Cosa:** E3-topological richiede access_port + mac_count misurato + soglia **esplicita** + simultaneità. Con poll SNMP in timeout, E3 = **available=false** (degrada a E2). Nessuna soglia inventata.
+ - **Vincolo:** non promuovere E3 finché `fdb_poll.ok` / misure porta non tornano.
+-- **Ripresa:** W2+ quando SNMP/LLDP writers misurano.
++- **Ripresa:** W2+ quando SNMP/LLDP writers misurano; requisiti accesso/poll in **DEBT-FDB-LLDP-PASSIVE**.
++
++## DEBT-FDB-LLDP-PASSIVE
++
++- **Priorità:** wave futura post W1.5-bis (writers SNMP / presenza) — **non** interrompe W1.5-bis
++- **Cosa:** implementazione iniziale **passiva/read-only** FDB+LLDP: presenza/posizione L2, **non** identità; FDB ≠ ownership; LLDP/CDP solo corroborante (spoofabile). LGS310C/328C: SNMPv3 authPriv, RO, ACL solo Cassiopea, view Bridge/LLDP/ENTITY, no SET, segreti fuori repo/log, timeout/rate limit; LLDP/CDP non abilitato dove non serve. ObservationRaw: switch_id, port, VLAN/bridge-domain, timestamp, age/last_seen, acquisition_method, failure_state; dedupe per **transizione** non per poll. Alert «nuovo MAC su access» solo dopo classificazione misurata access/trunk/uplink/AP/powerline, inizialmente informativo; **niente** quarantena/shutdown auto. Spoof / MAC move / CAM flood / randomized MAC previsti; assenza alert ≠ sicurezza.
++- **Doc:** [`docs/obs-fdb-lldp-passive.md`](obs-fdb-lldp-passive.md)
++- **Vietato:** usarlo come scorciatoia identity/merge; SET SNMP; enforcement automatico porte; dichiarare “rete sicura” perché non ci sono alert.
++
++## DEBT-ENTITY-KEY-MAC-IP
++
++- **Priorità:** era bloccante W2 — **CHIUSO in W-D / 0.10.45** (2026-07-26)
++- **Fix:** `entity_key_for` → MAC quando MAC noto; IP-only → provisional (`identity_provisional`). Test T-b verde.
++- **Residuo correlato (non collassare):** righe IP duplicate / refresh-as-transition — vedi B.2 / DEBT-DOUBLE-CURRENT-IP.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-IP-MIGRATION-NONETYPE
++
++- **Priorità:** era bloccante W2 — **CHIUSO in W-D / 0.10.45** (2026-07-26)
++- **Causa:** `elect_interface_primary` demoteva senza chiudere `last_seen` → `resolve_asset_by_ip_at` tornava `None` a T intermedio.
++- **Fix:** alla demotion, `last_seen = now` se mancante/precedente. T-e / T-f verdi.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-ALEMBIC-BASELINE-LEGACY-TABLE
++
++- **Priorità:** bassa (igiene CI; Alembic **non** gira in prod) — unificato W-D 2026-07-26
++- **Ex:** DEBT-ALEMBIC-MIGRATION-TESTS + baseline disallineata da tabella `observations` droppata.
++- **Sintomi test:** `ix_observations_seen_at`, `assets.chassis_id`, `assets.printer_first_seen` su fixture/alembic.
++- **Vietato:** inseguirli come fix runtime; schema prod = `create_all`.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-IPP-PRECEDENCE (T-c / T-d)
++
++- **Priorità:** media (autorità naming) — registrato W-D 2026-07-26, **non** corretto in questa ondata
++- **Test:** `test_ipp_precedence_and_human_category_override` (T-c); `test_snmp_enrichment_creates_proposal_without_overwriting_name` (T-d)
++- **Osservato T-c:** `best_guess` → `('HP123','fritz')` invece di `('Stampante Studio','ipp')`
++- **Osservato T-d:** proposal snmp assente / lista vuota vs atteso `[('snmp','HP LaserJet M404dn')]`
++- **Nota:** non risolti come collaterale di D.1. I5 / gerarchia naming — ondata dedicata.
++
++## DEBT-FDB-UPLINK-PORTAL (T-a)
++
++- **Priorità:** media — registrato W-D 2026-07-26 (preesistente), **non** corretto qui
++- **Test:** `test_m2_discovery.py::test_fdb_skips_observe_portal_on_uplink_role`
++- **Osservato:** `portal_last_seen` valorizzato invece di `None` su ruolo uplink.
++
++## DEBT-MAC-IP-POLICY-WIRE
++
++- **Priorità:** prossima wave presence (W7 / post W1.5-bis)
++- **Cosa:** policy dominio MAC↔IP (chassis ≥1 IP corrente; eccezione powerline/510E; `present_l2_unaddressed`; supersession binding) — classifier in `api/app/services/mac_ip_policy.py` + test contratto. **Non ancora** collegata a `reconcile_asset_presence` / trust.
++- **Doc:** [`docs/obs-currency-mac-ip-policy.md`](obs-currency-mac-ip-policy.md)
++- **Vietato:** usarla come scorciatoia di fusione chassis; inventare management IP.
+ 
+ ## DEBT-MIRROR-SOURCES
+ 
+diff --git a/observatory/tests/test_m1_observation_store.py b/observatory/tests/test_m1_observation_store.py
+index ad0b8f3..cfb25e3 100644
+--- a/observatory/tests/test_m1_observation_store.py
++++ b/observatory/tests/test_m1_observation_store.py
+@@ -81,16 +81,17 @@ def test_entity_key_precedence():
+     assert entity_key_for({"endpoint": {"ip": "10.0.0.5", "port": 443, "proto": "tcp"}}) == "10.0.0.5:443/tcp"
+     assert entity_key_for({"l2": {"mac": "aa:bb:cc:dd:ee:ff"}}) == "AA:BB:CC:DD:EE:FF"
+     assert entity_key_for({"l3": {"ip": "10.0.0.9"}}) == "10.0.0.9"
++    # MAC known → MAC-scoped (IP is a mutable fact, not identity)
+     assert (
+         entity_key_for(
+             {"l2": {"mac": "aa:bb:cc:dd:ee:ff"}, "l3": {"ip": "192.168.1.1"}}
+         )
+-        == "AA:BB:CC:DD:EE:FF|192.168.1.1"
++        == "AA:BB:CC:DD:EE:FF"
+     )
+ 
+ 
+-def test_dedup_key_mac_plus_ip_keeps_multi_ip(db):
+-    """Five envelopes same MAC different IPs → five raw rows (independent hit_count)."""
++def test_dedup_key_mac_scoped_collapses_multi_ip(db):
++    """Same MAC + different IPs → one entity_key (MAC); dedup collapses in-window."""
+     mac = "60:B5:8D:6C:6D:53"
+     base_at = datetime(2026, 7, 21, 10, 0, 0)
+     ips = [f"192.168.1.{i}" for i in (1, 4, 5, 6, 9)]
+@@ -105,10 +106,9 @@ def test_dedup_key_mac_plus_ip_keeps_multi_ip(db):
+         upsert_observation_raw(db, env)
+     db.commit()
+     rows = list(db.scalars(select(ObservationRaw)).all())
+-    assert len(rows) == 5
+-    assert {row.hit_count for row in rows} == {1}
+-    keys = {entity_key_for(row.payload) for row in rows}
+-    assert keys == {f"{mac.upper()}|{ip}" for ip in ips}
++    assert len(rows) == 1
++    assert rows[0].hit_count == 5
++    assert entity_key_for(rows[0].payload) == mac.upper()
+ 
+ 
+ def test_dedup_key_stable_within_window():
+@@ -229,7 +229,7 @@ def test_scan_batch_dual_write_and_idempotency(db):
+     assert db.scalar(select(func.count()).select_from(ObservationRaw)) == 2
+     row = db.scalar(
+         select(ObservationRaw).where(
+-            ObservationRaw.entity_key == "60:B5:8D:11:22:33|10.0.0.5"
++            ObservationRaw.entity_key == "60:B5:8D:11:22:33"
+         )
+     )
+     assert row.hit_count == 2
+diff --git a/observatory/tests/test_trust_converge.py b/observatory/tests/test_trust_converge.py
+index cc0b726..4859a52 100644
+--- a/observatory/tests/test_trust_converge.py
++++ b/observatory/tests/test_trust_converge.py
+@@ -74,7 +74,13 @@ def test_hierarchy_matrix():
+         current_state="fritz_historical",
+         new_state="active",
+         reliable=True,
+-    )
++    ) is False
++    assert inventory_may_set_operational_state(
++        trust_level="fritz_historical",
++        current_state="active",
++        new_state="active",
++        reliable=True,
++    ) is False
+     assert inventory_may_set_operational_state(
+         trust_level="stale_unlocated",
+         current_state="stale_unlocated",
+@@ -189,3 +195,105 @@ def test_t4_undeclared_state_not_invented():
+         new_state="stale_unlocated",
+         reliable=False,
+     ) is False
++
++
++def test_quarantine_zero_interfaces_inventory_cannot_set_active(db):
++    """trust_quarantine + 0 interfacce: inventory non riporta ad active (DEBT-RECONCILE-CHURN-1)."""
++    asset = Asset(
++        uid=str(uuid.uuid4()),
++        name="",
++        trust_level="fritz_historical",
++        meta={
++            "operational_state": "fritz_historical",
++            "reachability": {"status": "reachable"},
++            "discovery": {"fritz": {"active": False}},
++        },
++    )
++    db.add(asset)
++    db.flush()
++    # zero interfaces — classe che bypassava la gerarchia via reliable=True
++    assert list(asset.interfaces) == []
++    plan = {
++        "actions": [
++            {
++                "asset_id": asset.id,
++                "level": "fritz_historical",
++                "expected_state": "fritz_historical",
++                "has_portal_rows": False,
++                "portal_first": None,
++                "portal_last": None,
++                "derived_last": None,
++                "archive_proposal_ids": [],
++                "structural": True,
++                "timestamp_refresh": False,
++            }
++        ],
++        "report": {},
++    }
++    _apply_trust_plan(db, plan, now=datetime.utcnow())
++    assert asset.meta["operational_state"] == "fritz_historical"
++    reconcile_asset_presence(db, asset)
++    assert asset.meta["operational_state"] == "fritz_historical"
++    plan2 = _build_trust_plan(db, now=datetime.utcnow(), use_prefetch=True)
++    struct2 = [x for x in plan2["actions"] if x.get("structural") and x["asset_id"] == asset.id]
++    assert struct2 == []
++
++
++def test_fritz_historical_lifts_on_new_fritz_active(db):
++    """D.0.b: quarantena non assorbente — evidenza Fritz active → trust solleva."""
++    from app.services.inventory import update_fritz_evidence
++    from app.services.trust import observe_portal
++
++    now = datetime.utcnow()
++    asset = Asset(
++        uid=str(uuid.uuid4()),
++        name="",
++        trust_level="fritz_historical",
++        meta={
++            "operational_state": "fritz_historical",
++            "inventory_hidden": True,
++            "inventory_hidden_auto": True,
++            "discovery": {
++                "fritz": {
++                    "active": False,
++                    "hostname": "ghost",
++                    "last_observed_at": (now - timedelta(days=30)).isoformat() + "Z",
++                }
++            },
++        },
++    )
++    db.add(asset)
++    db.flush()
++    update_fritz_evidence(
++        asset,
++        active=True,
++        hostname="back-online",
++        seen_at=now,
++        db=db,
++    )
++    assert asset.trust_level == "confirmed_present"
++    assert asset.meta["operational_state"] == "active"
++    assert asset.meta.get("inventory_hidden") is False
++    # percorso portal indipendente (nmap/icmp/…)
++    asset2 = Asset(
++        uid=str(uuid.uuid4()),
++        name="",
++        trust_level="fritz_historical",
++        meta={
++            "operational_state": "fritz_historical",
++            "inventory_hidden": True,
++            "inventory_hidden_auto": True,
++        },
++    )
++    db.add(asset2)
++    db.flush()
++    observe_portal(asset2, "nmap", now, db=db)
++    assert asset2.trust_level == "confirmed_present"
++    assert asset2.meta["operational_state"] == "active"
++    # inventory still cannot smash quarantine class when still quarantined
++    assert inventory_may_set_operational_state(
++        trust_level="fritz_historical",
++        current_state="fritz_historical",
++        new_state="active",
++        reliable=True,
++    ) is False
+diff --git a/observatory/web/package.json b/observatory/web/package.json
+index 1de1bf7..0eac7c4 100644
+--- a/observatory/web/package.json
++++ b/observatory/web/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "lan-observatory-web",
+   "private": true,
+-  "version": "0.10.43",
++  "version": "0.10.45",
+   "type": "module",
+   "scripts": {
+     "dev": "vite",
