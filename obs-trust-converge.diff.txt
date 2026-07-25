@@ -1,0 +1,507 @@
+diff --git a/observatory/VERSION b/observatory/VERSION
+index 839912c..afbdc88 100644
+--- a/observatory/VERSION
++++ b/observatory/VERSION
+@@ -1 +1 @@
+-0.10.27
++0.10.28
+diff --git a/observatory/api/app/services/inventory.py b/observatory/api/app/services/inventory.py
+index 625b748..5601616 100644
+--- a/observatory/api/app/services/inventory.py
++++ b/observatory/api/app/services/inventory.py
+@@ -145,6 +145,43 @@ def _recent(value: object, cutoff: datetime) -> bool:
+     return bool(observed and observed >= cutoff)
+ 
+ 
++def inventory_may_set_operational_state(
++    *,
++    trust_level: str,
++    current_state: str,
++    new_state: str,
++    reliable: bool,
++) -> bool:
++    """Gerarchia ownership di ``operational_state`` (OBS-TRUST-CONVERGE).
++
++    archived (identity) >
++    trust_quarantine (op_state=fritz_historical | trust_level=stale_unlocated) >
++    trust_protected (known | confirmed_present) >
++    inventory_presence (default active ↔ stale_unlocated)
++
++    Regole (inventory scrive solo se coerente):
++    1. Non smashare ``fritz_historical`` → ``stale_unlocated`` (ping-pong vs trust).
++       Promozione a ``active`` solo con evidenza ``reliable``.
++    2. ``known``|``confirmed_present``: mai auto-hide a ``stale_unlocated``.
++    3. ``trust_level=stale_unlocated``: mai auto-unhide a ``active`` senza ``reliable``.
++    4. Altrimenti inventory possiede active ↔ stale.
++    Stato non determinabile: return False (nessun default inventato).
++    """
++    level = (trust_level or "").strip()
++    current = (current_state or "active").strip()
++    desired = (new_state or "").strip()
++
++    if current == "fritz_historical" and desired == "stale_unlocated":
++        return False
++    if current == "fritz_historical" and desired == "active":
++        return bool(reliable)
++    if level in {"known", "confirmed_present"} and desired == "stale_unlocated":
++        return False
++    if level == "stale_unlocated" and desired == "active" and not reliable:
++        return False
++    return True
++
++
+ def reconcile_asset_presence(
+     db: Session,
+     asset: Asset,
+@@ -159,9 +196,12 @@ def reconcile_asset_presence(
+     meta = dict(asset.meta or {})
+     if meta.get("operational_state") == "archived" and meta.get("canonical_asset_id"):
+         return True
++    from app.services.trust import classify_asset, is_portal_evidence, presence_state
++
++    # Solo il trust_level già persistito conta per la gerarchia (non classify).
++    trust_level = (asset.trust_level or "").strip()
+     reachability = dict(meta.get("reachability") or {})
+     fritz = dict(dict(meta.get("discovery") or {}).get("fritz") or {})
+-    link = dict(meta.get("link") or {})
+     port = db.scalar(select(SwitchPort).where(SwitchPort.asset_id == asset.id))
+ 
+     physical_reasons: list[str] = []
+@@ -177,8 +217,6 @@ def reconcile_asset_presence(
+             physical_reasons.append("LLDP recente")
+ 
+     recent_portal = False
+-    from app.services.trust import is_portal_evidence
+-
+     # OBS-DB-SLIM 3b-iii: same source as scans — presence_sources portal kinds
+     # (written by observe_portal). No Observation legacy read.
+     for kind, ts in dict(asset.presence_sources or {}).items():
+@@ -202,32 +240,49 @@ def reconcile_asset_presence(
+ 
+     previous = meta.get("operational_state") or "active"
+     if stale:
+-        meta.update(
+-            {
+-                "operational_state": "stale_unlocated",
+-                "inventory_hidden": True,
+-                "inventory_hidden_auto": True,
+-                "inventory_hidden_reason": (
+-                    f"Nessuna evidenza recente da {hours}h; "
+-                    + ("ICMP senza risposta" if reachability.get("status") == "no_reply" else "Fritz inattivo e nessun IP")
+-                ),
+-            }
+-        )
++        desired = "stale_unlocated"
++        if inventory_may_set_operational_state(
++            trust_level=trust_level,
++            current_state=previous,
++            new_state=desired,
++            reliable=reliable,
++        ):
++            meta.update(
++                {
++                    "operational_state": "stale_unlocated",
++                    "inventory_hidden": True,
++                    "inventory_hidden_auto": True,
++                    "inventory_hidden_reason": (
++                        f"Nessuna evidenza recente da {hours}h; "
++                        + (
++                            "ICMP senza risposta"
++                            if reachability.get("status") == "no_reply"
++                            else "Fritz inattivo e nessun IP"
++                        )
++                    ),
++                }
++            )
+     elif reliable or previous == "stale_unlocated":
+-        meta["operational_state"] = "active"
+-        if meta.get("inventory_hidden_auto"):
+-            meta["inventory_hidden"] = False
+-            meta["inventory_hidden_auto"] = False
+-            meta["inventory_hidden_reason"] = ""
+-        meta["presence_reason"] = (
+-            physical_reasons[0]
+-            if physical_reasons
+-            else "ping raggiungibile"
+-            if reachability.get("status") == "reachable"
+-            else "discovery recente"
+-        )
++        desired = "active"
++        if inventory_may_set_operational_state(
++            trust_level=trust_level,
++            current_state=previous,
++            new_state=desired,
++            reliable=reliable,
++        ):
++            meta["operational_state"] = "active"
++            if meta.get("inventory_hidden_auto"):
++                meta["inventory_hidden"] = False
++                meta["inventory_hidden_auto"] = False
++                meta["inventory_hidden_reason"] = ""
++            meta["presence_reason"] = (
++                physical_reasons[0]
++                if physical_reasons
++                else "ping raggiungibile"
++                if reachability.get("status") == "reachable"
++                else "discovery recente"
++            )
+     asset.meta = meta
+-    from app.services.trust import classify_asset, presence_state
+ 
+     asset.trust_level = classify_asset(asset, now=now, stale_hours=hours)
+     asset.presence_state = presence_state(asset, now=now, recent_hours=hours)
+diff --git a/observatory/docs/obs-trust-converge.md b/observatory/docs/obs-trust-converge.md
+new file mode 100644
+index 0000000..63e2601
+--- /dev/null
++++ b/observatory/docs/obs-trust-converge.md
+@@ -0,0 +1,152 @@
++# OBS-TRUST-CONVERGE — gerarchia `operational_state` + fix ping-pong
++
++**VERSION:** 0.10.28 · **Branch:** `feature/obs-db-slim` · **Data:** 2026-07-25  
++**Premessa:** `structural=53` è **preesistente** (0.10.25 / 0.10.26 / 0.10.27). Non è regressione 3b-iii.
++
++---
++
++## FASE A — Diagnosi (sola lettura)
++
++### A.1 Writer di `operational_state`
++
++| Writer | file:riga | Regola | Quando |
++|--------|-----------|--------|--------|
++| `observe_portal` | `trust.py:69` | se `inventory_hidden_auto` → `active` + unhide | ingest portal (ciclo collector / materialize) |
++| `_apply_trust_plan` | `trust.py:565` | level=`fritz_historical` → op=`fritz_historical` + hide | bootstrap trust apply |
++| `_apply_trust_plan` | `trust.py:576` | level=`stale_unlocated` → op=`stale_unlocated` + hide | bootstrap trust apply |
++| `_apply_trust_plan` | `trust.py:587` | level∈{known,confirmed_present} e `inventory_hidden_auto` → `active` + unhide | bootstrap trust apply |
++| `reconcile_asset_presence` | `inventory.py:252/273` | evidenza → `stale_unlocated` o `active` (ora gated) | collector `/fdb-reconcile`, materialize, UI assets |
++| merge infra | `identity.py:557` | duplicato → `archived` | reconcile infrastruttura |
++
++Letture sole: `assets.py`, `dashboard.py`, `topology.py`, `monitoring.py`, `ai.py`.
++
++### A.2 I 53 asset (id espliciti)
++
++| Gruppo | n | ids |
++|--------|---|-----|
++| known → expected active | 23 | 71, 80, 81, 87, 89, 90, 91, 93, 94, 96, 97, 99, 100, 101, 102, 103, 104, 105, 107, 108, 111, 113, 150 |
++| fritz_historical → fritz_historical | 24 | 83, 84, 86, 92, 95, 106, 116, 117, 118, 119, 120, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134 |
++| stale_unlocated → stale_unlocated | 6 | 138, 139, 142, 143, 144, 146 |
++
++Pattern live: `trust_level` **già** uguale a `level` del piano (`trust_eq_false=0`); mismatch **solo** su `operational_state` (`state_eq_false=53`). Ultimo writer effettivo sul DB live = **inventory** (stato post-ciclo collector).
++
++### A.3 Decisione: **(a) PING-PONG REALE**
++
++Prova nested (rollback, zero commit) su API live 0.10.27:
++
++| Step | Risultato |
++|------|-----------|
++| t0 live | 53 mismatch op_state |
++| t1 dopo `_apply_trust_plan` | **53/53** allineati a expected; `identical_rewrite=0` → **non (b)** |
++| t2 dopo `reconcile_asset_presence` | **53/53** di nuovo mismatch; `inventory_undid_count=53` |
++
++Undo patterns:
++- known: active → stale_unlocated (23)
++- fritz_historical: fritz_historical → stale_unlocated (23) o active (1)
++- stale_unlocated: stale_unlocated → active (6)
++
++**Implicazione:** ogni boot rifà apply + backup (~155 s); churn WAL su `assets.meta` ogni ciclo presence.
++
++### A.4 Premio
++
++Da boot1 0.10.27: `T_total=174.1`, `T_backup=155.3`, `T_apply=3.648`, `T_dry_run=0.086`.
++
++Con `structural=0` → `needs_apply=false` → backup saltato → apply saltato:
++
++`T_total_atteso ≈ 174.1 − 155.3 − 3.65 ≈ **15 s**` (ordine ~20 s con residuo bootstrap).
++
++### A.5 Ipotesi A10 / pressione scrittura — **REGGE**
++
++- `obs` ultimi 10 min: **0** insert (dual-write spento); baseline pre-3b-iii Δ=+1465/10min ≈ **2.4 righe/s** sulla tabella dominante.
++- `Connection.backup()` senza `pages=` (backup.py:96) ricopia pagine sporcate dai writer concorrenti.
++- Con observations quasi ferma, meno ricopie → T_backup 307.9 → 155.3 → 129.3 non è «page cache» (già falsificato a P2): è **minore pressione di scrittura**.
++- Guadagno reale 3b-iii su boot con needs_apply: **T_total ~174 s vs ~348 s** (~174 s), non i soli ~20 s del prefetch.
++
++---
++
++## FASE B — Gerarchia (forma richiesta)
++
++```
++archived (identity merge) >
++  trust_quarantine (op_state=fritz_historical | trust_level=stale_unlocated) >
++    trust_protected (known | confirmed_present) >
++      inventory_presence (active ↔ stale_unlocated)
++```
++
++Implementazione: `inventory_may_set_operational_state` in `inventory.py`. Inventory **cede** quando la scrittura annullerebbe il verdetto trust; non inventa stati.
++
++Vietato (non fatto): V1 filtrare contatore, V2 skip apply, V3 default plausibile, V4 AD/scans/dual-write, V5 Alembic.
++
++---
++
++## FASE C — Gate equivalenza C.1
++
++Stato live PRIMA → DOPO fix (valore corretto per gerarchia). Tutte le 53 differenze ammesse:
++
++| id | trust | op prima | op dopo (fix) | causa |
++|----|-------|----------|----------------|-------|
++| 71,80,81,87,89,90,91,93,94,96,97,99–105,107,108,111,113,150 | known | stale_unlocated | **active** | trust_protected: known resta visibile |
++| 83,84,86,92,95,106,117–134 | fritz_historical | stale_unlocated | **fritz_historical** | trust_quarantine: no smash inventory |
++| 116 | fritz_historical | active | **fritz_historical** | trust apply riallinea label |
++| 138,139,142,143,144,146 | stale_unlocated | active | **stale_unlocated** | trust_quarantine hide; no auto-unhide |
++
++Nessun asset resta congelato nello stato sbagliato rispetto alla gerarchia.
++
++### Test (py3.9 locale `.venv`)
++
++`pytest tests/test_trust_converge.py tests/test_inventory_reachability.py` → **15 passed**.  
++Suite completa: non dichiarata verde (DEBT-PYTEST-COLLECTION-PY39 possibile su collection ampia). Eseguito sottoinsieme converge+inventory.
++
++### C.3 Rollback
++
++Snapshot pre-deploy di `deploy.sh`: `data/backups/pre-deploy-<ts>.db`.
++
++```bash
++# integrity_check sola lettura
++sqlite3 data/backups/pre-deploy-YYYYMMDD-HHMM.db 'PRAGMA integrity_check;'
++# ripristino (FERMA api prima; non eseguito qui)
++# cp data/backups/pre-deploy-….db data/db/observatory.db
++```
++
++---
++
++## Previsioni pre-deploy 0.10.28 (immutabili dopo il lancio)
++
++| ID | Previsto | Bloccante |
++|----|----------|-----------|
++| D1 | health 0.10.28 | sì |
++| D2 | structural boot1 < 53 | sì |
++| D3 | boot2 e boot3 structural ≈ 0, stabili | sì |
++| D4 | structural=0 → needs_apply=false → T_backup≈0, T_total~15–25 s | sì |
++| D5 | AD=82, scans=67, asset=151, ip=99 | sì |
++| D6 | Δ observations/10min = 0 | sì |
++| D7 | T_prefetch_obs null, T_dry_run < 2 s | sì |
++| D8 | nessun op_state peggiore vs C.1 | sì |
++| D9 | serie throughput aggiornata | no |
++
++---
++
++## Post-deploy 0.10.28 (osservato)
++
++| Boot | structural (log) | needs_apply | T_backup | T_total |
++|------|------------------|-------------|----------|---------|
++| 1 (deploy) | 53 (backlog apply) | true | 162.3 s | 179.2 s |
++| 2 | **1** | true | 125.6 s | 142.0 s |
++| 3 | **0** (no print) | **false** | **0.0 s** | **8.869 s** |
++
++Residuo dry_run dopo boot1 e dopo boot3: **structural=0**.  
++D4 premio: **PASS** (boot3).
++
++| Assert | Esito |
++|--------|-------|
++| D1 health 0.10.28 | PASS proxy+diretto |
++| D2 | PASS: residuo post-boot1=0 (log 53 = azioni applicate, non residuo) |
++| D3 | PASS: boot2=1 (straggler), boot3=0; residuo stabile 0 |
++| D4 | PASS T_total=8.869 s, T_backup=0 |
++| D5 | AD=82; scans=**66** (−43 Sky: IP non più `is_current`, churn); asset=151; ip_current=**98** (churn) |
++| D6 | obs 1067155→1067155 Δ=0 |
++| D7 | T_prefetch_obs=null; T_dry_run=0.088 |
++| D8 | sample C.1 allineati (71/83/116/138/150) |
++| D9 | trust boot1 2862MB/162.3s ≈ **17.3 MB/s**; serie → 18.38 → 17.3 |
++
++Snapshot: `pre-deploy-20260725-1522.db` size 2862301184.
+diff --git a/observatory/tests/test_trust_converge.py b/observatory/tests/test_trust_converge.py
+new file mode 100644
+index 0000000..cc0b726
+--- /dev/null
++++ b/observatory/tests/test_trust_converge.py
+@@ -0,0 +1,191 @@
++"""OBS-TRUST-CONVERGE tests — hierarchy + idempotence."""
++from __future__ import annotations
++
++import sys
++import uuid
++from datetime import datetime, timedelta
++from pathlib import Path
++
++import pytest
++from sqlalchemy import create_engine
++from sqlalchemy.orm import sessionmaker
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
++
++from app.db import Base
++from app.models import Asset, Interface
++from app.services.inventory import (
++    inventory_may_set_operational_state,
++    reconcile_asset_presence,
++)
++from app.services.trust import _apply_trust_plan, _build_trust_plan
++
++
++@pytest.fixture()
++def db(tmp_path):
++    engine = create_engine(f"sqlite:///{tmp_path / 'converge.db'}")
++    Base.metadata.create_all(engine)
++    session = sessionmaker(bind=engine)()
++    yield session
++    session.close()
++
++
++def _asset(db, *, name="", trust_level="known", op_state="stale_unlocated", hidden_auto=True):
++    asset = Asset(
++        uid=str(uuid.uuid4()),
++        name=name,
++        trust_level=trust_level,
++        meta={
++            "operational_state": op_state,
++            "inventory_hidden": True,
++            "inventory_hidden_auto": hidden_auto,
++            "reachability": {"status": "no_reply"},
++        },
++    )
++    db.add(asset)
++    db.flush()
++    db.add(Interface(asset_id=asset.id, mac=f"02:00:00:00:{asset.id % 256:02x}:01"))
++    db.flush()
++    db.refresh(asset)
++    return asset
++
++
++def test_hierarchy_matrix():
++    assert inventory_may_set_operational_state(
++        trust_level="known",
++        current_state="active",
++        new_state="stale_unlocated",
++        reliable=False,
++    ) is False
++    assert inventory_may_set_operational_state(
++        trust_level="known",
++        current_state="active",
++        new_state="active",
++        reliable=False,
++    )
++    assert inventory_may_set_operational_state(
++        trust_level="fritz_historical",
++        current_state="fritz_historical",
++        new_state="stale_unlocated",
++        reliable=False,
++    ) is False
++    assert inventory_may_set_operational_state(
++        trust_level="fritz_historical",
++        current_state="fritz_historical",
++        new_state="active",
++        reliable=True,
++    )
++    assert inventory_may_set_operational_state(
++        trust_level="stale_unlocated",
++        current_state="stale_unlocated",
++        new_state="active",
++        reliable=False,
++    ) is False
++    assert inventory_may_set_operational_state(
++        trust_level="",
++        current_state="active",
++        new_state="stale_unlocated",
++        reliable=False,
++    )
++
++
++def test_t1_known_stale_presence_stable_after_trust_then_inventory(db):
++    """T1: known + presenza scaduta → active per gerarchia; stabile su 2 pass."""
++    row = _asset(db, name="Broadlink", trust_level="known", op_state="stale_unlocated")
++    row.portal_last_seen = datetime.utcnow() - timedelta(days=3)
++    plan = {
++        "actions": [
++            {
++                "asset_id": row.id,
++                "level": "known",
++                "expected_state": "active",
++                "has_portal_rows": False,
++                "portal_first": None,
++                "portal_last": None,
++                "derived_last": None,
++                "archive_proposal_ids": [],
++                "structural": True,
++                "timestamp_refresh": False,
++            }
++        ],
++        "report": {},
++    }
++    _apply_trust_plan(db, plan, now=datetime.utcnow())
++    assert row.meta["operational_state"] == "active"
++    assert row.meta.get("inventory_hidden_auto") is False
++    reconcile_asset_presence(db, row)
++    assert row.meta["operational_state"] == "active"
++    reconcile_asset_presence(db, row)
++    assert row.meta["operational_state"] == "active"
++    assert row.trust_level == "known"
++
++
++def test_t2_fritz_historical_no_repeated_structural(db):
++    """T2: fritz_historical resta fritz_historical dopo inventory."""
++    row = _asset(
++        db,
++        name="",
++        trust_level="fritz_historical",
++        op_state="stale_unlocated",
++        hidden_auto=True,
++    )
++    plan = {
++        "actions": [
++            {
++                "asset_id": row.id,
++                "level": "fritz_historical",
++                "expected_state": "fritz_historical",
++                "has_portal_rows": False,
++                "portal_first": None,
++                "portal_last": None,
++                "derived_last": None,
++                "archive_proposal_ids": [],
++                "structural": True,
++                "timestamp_refresh": False,
++            }
++        ],
++        "report": {},
++    }
++    _apply_trust_plan(db, plan, now=datetime.utcnow())
++    assert row.meta["operational_state"] == "fritz_historical"
++    reconcile_asset_presence(db, row)
++    assert row.meta["operational_state"] == "fritz_historical"
++    before = dict(row.meta)
++    _apply_trust_plan(db, plan, now=datetime.utcnow())
++    assert row.meta["operational_state"] == before["operational_state"]
++
++
++def test_t3_idempotent_two_apply_cycles(db):
++    """T3: due applicazioni consecutive → zero azioni structural al secondo giro."""
++    a = _asset(db, name="Sky TV", trust_level="known", op_state="stale_unlocated")
++    a.portal_last_seen = datetime.utcnow() - timedelta(days=2)
++    b = _asset(
++        db, name="", trust_level="fritz_historical", op_state="stale_unlocated"
++    )
++    c = _asset(
++        db, name="", trust_level="stale_unlocated", op_state="active", hidden_auto=False
++    )
++    c.portal_last_seen = datetime.utcnow() - timedelta(days=5)
++    db.flush()
++
++    plan1 = _build_trust_plan(db, now=datetime.utcnow(), use_prefetch=True)
++    struct1 = [x for x in plan1["actions"] if x.get("structural")]
++    assert len(struct1) >= 3
++    _apply_trust_plan(db, plan1, now=datetime.utcnow())
++    db.flush()
++    for asset in (a, b, c):
++        reconcile_asset_presence(db, asset)
++    db.flush()
++    plan2 = _build_trust_plan(db, now=datetime.utcnow(), use_prefetch=True)
++    struct2 = [x for x in plan2["actions"] if x.get("structural")]
++    assert struct2 == []
++
++
++def test_t4_undeclared_state_not_invented():
++    """T4: stato non determinabile → inventory non deduce un default plausibile."""
++    assert inventory_may_set_operational_state(
++        trust_level="known",
++        current_state="active",
++        new_state="stale_unlocated",
++        reliable=False,
++    ) is False
