@@ -1,0 +1,1420 @@
+diff --git a/observatory/CHANGELOG.md b/observatory/CHANGELOG.md
+index 0e52316..e5f9eba 100644
+--- a/observatory/CHANGELOG.md
++++ b/observatory/CHANGELOG.md
+@@ -1,5 +1,9 @@
+ # Changelog
+ 
++## 0.10.27 — 2026-07-25
++
++- **OBS-DB-SLIM 3b-iii:** elimina trust prefetch Observation; `active_discovery` da `presence_sources`; rimuove DNS hysteresis legacy e SELECT detector su `observations`; spegne dual-write (`record_observation` no-op). `T_prefetch_obs` → `null`. Retention/raw intatti. 4b congelato.
++
+ ## 0.10.25 — 2026-07-25
+ 
+ - **OBS-DB-SLIM 3b-i:** `scans` legge evidenza portal da `presence_sources` + IP current (niente Observation legacy). Sticky rank `IpAddress.source` invariato; dual-write host resta acceso. Verifica pre-GO: +5 asset = solo recupero sticky (mono-IP); nessun cambio semantica multi-IP live.
+diff --git a/observatory/VERSION b/observatory/VERSION
+index 61012ac..839912c 100644
+--- a/observatory/VERSION
++++ b/observatory/VERSION
+@@ -1 +1 @@
+-0.10.26
++0.10.27
+diff --git a/observatory/api/app/bootstrap.py b/observatory/api/app/bootstrap.py
+index 5cc84a6..4e9ff89 100644
+--- a/observatory/api/app/bootstrap.py
++++ b/observatory/api/app/bootstrap.py
+@@ -176,10 +176,17 @@ def main() -> None:
+         trust_preview = reconcile_trust_history(db, dry_run=True)
+         dry_s = time.perf_counter() - t_sub
+         scan = trust_preview.get("scan_stats") or {}
+-        t_prefetch_obs = float(scan.get("t_prefetch_obs_s") or 0.0)
++        t_prefetch_obs_raw = scan.get("t_prefetch_obs_s")
++        t_prefetch_obs = (
++            float(t_prefetch_obs_raw) if t_prefetch_obs_raw is not None else None
++        )
+         t_prefetch_fdb = float(scan.get("t_prefetch_fdb_s") or 0.0)
+         t_plan_loop = float(scan.get("t_plan_loop_s") or 0.0)
+-        t_dry_residuo = dry_s - (t_prefetch_obs + t_prefetch_fdb + t_plan_loop)
++        # Residuo dry_run: only subtract measured components (null obs ≠ 0).
++        measured = t_prefetch_fdb + t_plan_loop
++        if t_prefetch_obs is not None:
++            measured += t_prefetch_obs
++        t_dry_residuo = dry_s - measured
+         print(
+             f"[bootstrap] trust dry_run: {dry_s:.1f}s "
+             f"mode={scan.get('mode', '?')} queries={scan.get('queries', '?')}"
+@@ -241,7 +248,9 @@ def main() -> None:
+                         "needs_apply": bool(needs_apply),
+                         "T_trust": round(t_trust, 3),
+                         "T_dry_run": round(dry_s, 3),
+-                        "T_prefetch_obs": round(t_prefetch_obs, 3),
++                        "T_prefetch_obs": (
++                            round(t_prefetch_obs, 3) if t_prefetch_obs is not None else None
++                        ),
+                         "T_prefetch_fdb": round(t_prefetch_fdb, 3),
+                         "T_plan_loop": round(t_plan_loop, 3),
+                         "T_dry_residuo": round(t_dry_residuo, 3),
+diff --git a/observatory/api/app/services/detectors/__init__.py b/observatory/api/app/services/detectors/__init__.py
+index cb6d364..bc9a0a1 100644
+--- a/observatory/api/app/services/detectors/__init__.py
++++ b/observatory/api/app/services/detectors/__init__.py
+@@ -9,9 +9,9 @@ from sqlalchemy import select
+ from sqlalchemy.orm import Session
+ 
+ from app.config import get_settings
+-from app.models import Asset, Event, Interface, IpAddress, Observation, TlsCertificate
++from app.models import Asset, Interface, IpAddress, TlsCertificate
+ from app.services.findings import finding_from_drifts, upsert_deterministic_finding
+-from app.services.macutil import is_virtual_mac, normalize_mac
++from app.services.macutil import normalize_mac
+ 
+ DetectorFn = Callable[[Session], list[dict[str, Any]]]
+ 
+@@ -81,56 +81,19 @@ def detect_arp_duplicates(db: Session) -> list[dict[str, Any]]:
+ def detect_unexpected_dhcp_dns(db: Session) -> list[dict[str, Any]]:
+     if not _enabled("unexpected_dhcp_dns"):
+         return []
+-    out = []
+-    # Heuristic: observations of kind dhcp/dns from non-infrastructure hosts
+-    since = datetime.utcnow() - timedelta(hours=24)
+-    for kind in ("dhcp", "dns_server"):
+-        rows = db.scalars(
+-            select(Observation).where(Observation.kind == kind, Observation.seen_at >= since)
+-        ).all()
+-        for obs in rows:
+-            mac = normalize_mac(obs.mac or "")
+-            if not mac or is_virtual_mac(mac):
+-                continue
+-            iface = db.scalar(select(Interface).where(Interface.mac == mac))
+-            if not iface or not iface.asset:
+-                continue
+-            if iface.asset.category == "infrastruttura":
+-                continue
+-            f = upsert_deterministic_finding(
+-                db,
+-                category="unexpected_service",
+-                title=f"{kind} inatteso su {iface.asset.name or mac}",
+-                asset_id=iface.asset_id,
+-                severity=0.7,
+-                evidence={"kind": kind, "mac": mac, "ip": obs.ip},
+-            )
+-            out.append({"detector": "unexpected_dhcp_dns", "finding_uid": f.uid})
+-    return out
++    # OBS-DB-SLIM 3b-iii GATE 5: no Observation legacy read.
++    # DEBT-DETECTOR-DHCP-DNS: ripuntare su observations_raw / presence quando popolati.
++    _ = db
++    return []
+ 
+ 
+ def detect_llmnr_nbns_mdns(db: Session) -> list[dict[str, Any]]:
+     if not _enabled("llmnr_nbns_mdns"):
+         return []
+-    out = []
+-    since = datetime.utcnow() - timedelta(hours=24)
+-    for kind in ("llmnr", "nbns", "mdns", "ssdp"):
+-        n = db.scalar(
+-            select(Observation).where(Observation.kind == kind, Observation.seen_at >= since).limit(1)
+-        )
+-        if n:
+-            # Shadow finding via composite path would go through drifts; here deterministic info log
+-            db.add(
+-                Event(
+-                    type="detector.noise_protocol",
+-                    severity="info",
+-                    title=f"Protocollo rumoroso osservato: {kind}",
+-                    detail="shadow/info — attivare finding composito solo se calibrated",
+-                    evidence={"kind": kind, "shadowed": True},
+-                )
+-            )
+-            out.append({"detector": "llmnr_nbns_mdns", "kind": kind, "shadowed": True})
+-    return out
++    # OBS-DB-SLIM 3b-iii GATE 5: no Observation legacy read.
++    # DEBT-DETECTOR-NOISE-PROTO: ripuntare su observations_raw quando utile.
++    _ = db
++    return []
+ 
+ 
+ def detect_cleartext(db: Session) -> list[dict[str, Any]]:
+diff --git a/observatory/api/app/services/identity.py b/observatory/api/app/services/identity.py
+index c6381f7..d1e5bc5 100644
+--- a/observatory/api/app/services/identity.py
++++ b/observatory/api/app/services/identity.py
+@@ -1370,21 +1370,13 @@ def mark_missing(
+             str(meta["missing_candidate"]["first_at"]).replace("Z", "")
+         )
+         timed_out = now - first_at >= missing_timeout
+-        dns_recent = bool(
+-            db.scalar(
+-                select(Observation.id).where(
+-                    Observation.mac == iface.mac,
+-                    Observation.kind == "dns",
+-                    Observation.seen_at >= now - timedelta(hours=1),
+-                )
+-            )
+-        )
++        # DNS hysteresis legacy Observation read removed (OBS-DB-SLIM 3b-iii).
++        # DEBT-DNS-HYST-LEGACY-NOOP: re-point to observe_portal("dns") when populated.
+         if (
+             (cycles < 2 and not timed_out)
+             or reachability.get("status") != "no_reply"
+             or physical_recent
+             or fdb_recent
+-            or dns_recent
+         ):
+             continue
+         # skip if we already logged a missing event recently for this asset
+@@ -1445,16 +1437,20 @@ def record_observation(
+     vendor: str = "",
+     payload: Optional[dict] = None,
+     scan_run_id: Optional[int] = None,
+-) -> Observation:
+-    obs = Observation(
+-        kind=kind,
+-        mac=normalize_mac(mac) if mac else "",
+-        ip=ip,
+-        hostname=hostname,
+-        vendor=vendor,
+-        payload=payload or {},
+-        scan_run_id=scan_run_id,
+-        seen_at=datetime.utcnow(),
+-    )
+-    db.add(obs)
+-    return obs
++) -> Optional[Observation]:
++    # OBS-DB-SLIM 3b-iii: dual-write to legacy ``observations`` OFF (GATE 5 PASS).
++    # Rollback: restore the Observation(...) + db.add(obs) body below.
++    _ = (db, kind, mac, ip, hostname, vendor, payload, scan_run_id)
++    return None
++    # obs = Observation(
++    #     kind=kind,
++    #     mac=normalize_mac(mac) if mac else "",
++    #     ip=ip,
++    #     hostname=hostname,
++    #     vendor=vendor,
++    #     payload=payload or {},
++    #     scan_run_id=scan_run_id,
++    #     seen_at=datetime.utcnow(),
++    # )
++    # db.add(obs)
++    # return obs
+diff --git a/observatory/api/app/services/inventory.py b/observatory/api/app/services/inventory.py
+index 5eac2ca..625b748 100644
+--- a/observatory/api/app/services/inventory.py
++++ b/observatory/api/app/services/inventory.py
+@@ -12,7 +12,7 @@ from typing import Any
+ from sqlalchemy import select
+ from sqlalchemy.orm import Session
+ 
+-from app.models import Asset, Monitor, Observation, Switch, SwitchPort
++from app.models import Asset, Monitor, Switch, SwitchPort
+ from app.services.macutil import is_locally_administered, normalize_mac
+ 
+ _GENERIC_PC = re.compile(r"^PC-([0-9A-F]{2}-){5}[0-9A-F]{2}$", re.IGNORECASE)
+@@ -162,7 +162,6 @@ def reconcile_asset_presence(
+     reachability = dict(meta.get("reachability") or {})
+     fritz = dict(dict(meta.get("discovery") or {}).get("fritz") or {})
+     link = dict(meta.get("link") or {})
+-    macs = [interface.mac for interface in asset.interfaces]
+     port = db.scalar(select(SwitchPort).where(SwitchPort.asset_id == asset.id))
+ 
+     physical_reasons: list[str] = []
+@@ -177,21 +176,18 @@ def reconcile_asset_presence(
+         if poll.get("lldp") and _recent(poll.get("at"), cutoff):
+             physical_reasons.append("LLDP recente")
+ 
+-    recent_observations = (
+-        db.scalars(
+-            select(Observation).where(
+-                Observation.mac.in_(macs), Observation.seen_at >= cutoff
+-            )
+-        ).all()
+-        if macs
+-        else []
+-    )
++    recent_portal = False
+     from app.services.trust import is_portal_evidence
+ 
+-    active_discovery = any(
+-        is_portal_evidence(observation.kind, observation.payload)
+-        for observation in recent_observations
+-    )
++    # OBS-DB-SLIM 3b-iii: same source as scans — presence_sources portal kinds
++    # (written by observe_portal). No Observation legacy read.
++    for kind, ts in dict(asset.presence_sources or {}).items():
++        if not is_portal_evidence(str(kind)):
++            continue
++        if _recent(ts, cutoff):
++            recent_portal = True
++            break
++    active_discovery = recent_portal
+     reliable = (
+         reachability.get("status") == "reachable"
+         or bool(physical_reasons)
+diff --git a/observatory/api/app/services/trust.py b/observatory/api/app/services/trust.py
+index 47657d0..ed057c6 100644
+--- a/observatory/api/app/services/trust.py
++++ b/observatory/api/app/services/trust.py
+@@ -8,7 +8,7 @@ from typing import Iterator
+ from sqlalchemy import event, func, select
+ from sqlalchemy.orm import Session
+ 
+-from app.models import Asset, Event, NameProposal, Observation, SwitchPort
++from app.models import Asset, Event, NameProposal, SwitchPort
+ from app.services.inventory import is_synthetic_fritz_name
+ 
+ 
+@@ -320,31 +320,6 @@ def _count_db_queries(db: Session) -> Iterator[dict[str, int]]:
+         event.remove(bind, "before_cursor_execute", _before)
+ 
+ 
+-def _prefetch_portal_first_last_by_mac(
+-    db: Session,
+-) -> dict[str, tuple[datetime, datetime]]:
+-    """One aggregate: MIN/MAX seen_at per MAC for portal-evidence kinds.
+-
+-    Equivalence with the legacy loop: that loop loads all Observation rows for
+-    the asset MACs ordered by seen_at, filters with ``is_portal_evidence``
+-    (kind only — payload unused), then takes [0] / [-1]. Across multiple MACs
+-    that is global min/max seen_at. Per-MAC MIN/MAX then min/max across the
+-    asset's MAC list yields the same first/last. No temporal window in either
+-    path (full history).
+-    """
+-    kinds = sorted(PORTAL_EVIDENCE)
+-    rows = db.execute(
+-        select(
+-            Observation.mac,
+-            func.min(Observation.seen_at),
+-            func.max(Observation.seen_at),
+-        )
+-        .where(func.lower(Observation.kind).in_(kinds))
+-        .group_by(Observation.mac)
+-    ).all()
+-    return {mac: (first, last) for mac, first, last in rows if mac is not None}
+-
+-
+ def _prefetch_fdb_last_by_asset(db: Session) -> dict[int, datetime]:
+     """One aggregate: MAX(last_fdb_at) per asset_id (non-null only)."""
+     rows = db.execute(
+@@ -358,41 +333,40 @@ def _prefetch_fdb_last_by_asset(db: Session) -> dict[int, datetime]:
+     return {int(asset_id): last_at for asset_id, last_at in rows if asset_id is not None}
+ 
+ 
+-def _portal_extent_from_mac_index(
+-    macs: list[str],
+-    portal_by_mac: dict[str, tuple[datetime, datetime]],
+-) -> tuple[datetime | None, datetime | None, bool]:
+-    firsts: list[datetime] = []
+-    lasts: list[datetime] = []
+-    for mac in macs:
+-        extent = portal_by_mac.get(mac)
+-        if extent is None:
+-            continue
+-        firsts.append(extent[0])
+-        lasts.append(extent[1])
+-    if not firsts:
+-        return None, None, False
+-    return min(firsts), max(lasts), True
++def _parse_presence_ts(raw: object) -> datetime | None:
++    text = str(raw or "").strip()
++    if not text:
++        return None
++    try:
++        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
++    except ValueError:
++        return None
++    return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+ 
+ 
+-def _portal_extent_nplus1(
+-    db: Session, macs: list[str]
++def _portal_extent_from_asset(
++    asset: Asset,
+ ) -> tuple[datetime | None, datetime | None, bool]:
+-    """Legacy per-asset Observation scan (kept for equivalence tests)."""
+-    if not macs:
+-        return None, None, False
+-    portal_rows = [
+-        row
+-        for row in db.scalars(
+-            select(Observation)
+-            .where(Observation.mac.in_(macs))
+-            .order_by(Observation.seen_at)
+-        ).all()
+-        if is_portal_evidence(row.kind, row.payload)
+-    ]
+-    if not portal_rows:
+-        return None, None, False
+-    return portal_rows[0].seen_at, portal_rows[-1].seen_at, True
++    """Portal first/last from asset fields only — no Observation table read.
++
++    OBS-DB-SLIM 3b-iii: legacy Observation prefetch eliminated. Live state lives in
++    ``portal_*`` and ``presence_sources`` (written by ``observe_portal``).
++    """
++    first = asset.portal_first_seen
++    last = asset.portal_last_seen
++    has = bool(first or last)
++    for kind, ts in dict(asset.presence_sources or {}).items():
++        if not is_portal_evidence(str(kind)):
++            continue
++        seen = _parse_presence_ts(ts)
++        if seen is None:
++            continue
++        has = True
++        if first is None or seen < first:
++            first = seen
++        if last is None or seen > last:
++            last = seen
++    return first, last, has
+ 
+ 
+ def _fdb_last_nplus1(db: Session, asset_id: int) -> datetime | None:
+@@ -409,19 +383,14 @@ def _build_trust_plan(
+ ) -> dict:
+     """Build trust report + apply actions.
+ 
+-    Default: 1× assets + 2× aggregates (portal-by-mac, fdb-by-asset), then a
+-    pure in-memory loop. ``use_prefetch=False`` keeps the legacy ~2N Observation
+-    / FDB queries for equivalence tests only.
++    Portal extent: asset ``portal_*`` / ``presence_sources`` (no Observation).
++    FDB: one aggregate prefetch by default; ``use_prefetch=False`` uses per-asset
++    FDB queries (tests only).
+     """
+     with _count_db_queries(db) as qstats:
+-        portal_by_mac: dict[str, tuple[datetime, datetime]] | None = None
+         fdb_by_asset: dict[int, datetime] | None = None
+-        t_prefetch_obs = 0.0
+         t_prefetch_fdb = 0.0
+         if use_prefetch:
+-            t0 = time.perf_counter()
+-            portal_by_mac = _prefetch_portal_first_last_by_mac(db)
+-            t_prefetch_obs = time.perf_counter() - t0
+             t0 = time.perf_counter()
+             fdb_by_asset = _prefetch_fdb_last_by_asset(db)
+             t_prefetch_fdb = time.perf_counter() - t0
+@@ -431,15 +400,11 @@ def _build_trust_plan(
+         actions: list[dict] = []
+         for asset in db.scalars(select(Asset)).all():
+             report["assets_total"] += 1
+-            macs = [interface.mac for interface in asset.interfaces]
++            portal_first, portal_last, has_portal_rows = _portal_extent_from_asset(asset)
+             if use_prefetch:
+-                assert portal_by_mac is not None and fdb_by_asset is not None
+-                portal_first, portal_last, has_portal_rows = _portal_extent_from_mac_index(
+-                    macs, portal_by_mac
+-                )
++                assert fdb_by_asset is not None
+                 fdb_at = fdb_by_asset.get(asset.id)
+             else:
+-                portal_first, portal_last, has_portal_rows = _portal_extent_nplus1(db, macs)
+                 fdb_at = _fdb_last_nplus1(db, asset.id)
+ 
+             derived_last = portal_last
+@@ -534,10 +499,10 @@ def _build_trust_plan(
+ 
+         t_plan = time.perf_counter() - t_plan0
+         scan_stats = {
+-            "mode": "prefetch" if use_prefetch else "nplus1",
++            "mode": "asset_fields+fdb_prefetch" if use_prefetch else "asset_fields+fdb_nplus1",
+             "queries": qstats["queries"],
+-            # Timing only (OBS-TIMING-034b). Parents: *_obs/fdb/loop ⊂ T_dry_run ⊂ T_trust.
+-            "t_prefetch_obs_s": round(t_prefetch_obs, 3),
++            # T_prefetch_obs eliminated (3b-iii) — null, never 0.0.
++            "t_prefetch_obs_s": None,
+             "t_prefetch_fdb_s": round(t_prefetch_fdb, 3),
+             "t_plan_loop_s": round(t_plan, 3),
+         }
+@@ -652,7 +617,8 @@ def reconcile_trust_history(
+     Callers outside bootstrap that pass ``plan`` must uphold the same
+     single-writer window.
+ 
+-    ``use_prefetch=False`` forces the legacy per-asset N+1 scan (tests only).
++    ``use_prefetch=False`` forces per-asset FDB queries (tests only). Portal
++    extent never reads Observation (OBS-DB-SLIM 3b-iii).
+     """
+     now = now or _utc_now()
+     if plan is not None:
+@@ -669,15 +635,3 @@ def reconcile_trust_history(
+         report["scan_stats"] = built.get("scan_stats") or {}
+         return report
+     return _apply_trust_plan(db, built, now=now)
+-
+-
+-def latest_portal_observation(db: Session, asset: Asset) -> Observation | None:
+-    macs = [interface.mac for interface in asset.interfaces]
+-    if not macs:
+-        return None
+-    rows = db.scalars(
+-        select(Observation)
+-        .where(Observation.mac.in_(macs))
+-        .order_by(Observation.seen_at.desc())
+-    ).all()
+-    return next((row for row in rows if is_portal_evidence(row.kind, row.payload)), None)
+diff --git a/observatory/docs/KNOWN_DEBT.md b/observatory/docs/KNOWN_DEBT.md
+index 898d341..ddf928b 100644
+--- a/observatory/docs/KNOWN_DEBT.md
++++ b/observatory/docs/KNOWN_DEBT.md
+@@ -197,3 +197,30 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+     - **2786009088 B** = **2.595 GiB** (post-C1.4)
+     - Δ ~9 h sui primi tre ≈ **+190 MiB/giorno** se il ritmo regge. Rilevante per §13 e dimensionamento 4b.
+ - **Vietato in cantieri timing:** modificare `deploy.sh`, `backup.py`, rotazione o retention.
++
++## DEBT-DNS-HYST-LEGACY-NOOP
++
++- **Priorità:** bassa — funzionalità DNS hysteresis su `endpoint.missing`
++- **Cosa:** la lettura legacy `Observation(kind=dns)` è stata **rimossa** in OBS-DB-SLIM 3b-iii (0 righe utili: GATE vacuo). La hysteresis non ha più segnale DNS finché `observe_portal("dns")` non popola `presence_sources["dns"]`.
++- **Fix quando servirà:** ripuntare il check su `presence_sources["dns"]` (o equivalente caldo) quando la sorgente portal dns sarà viva.
++- **Vietato:** reintrodurre una query runtime su tabella `observations`.
++
++## DEBT-DETECTOR-OBS-LEGACY
++
++- **Priorità:** bassa — detector M6 `unexpected_dhcp_dns` / `llmnr_nbns_mdns`
++- **Cosa:** in 3b-iii le SELECT su tabella `observations` sono state **rimosse** (GATE 5). Con `DETECTORS_ENABLED` che li include restano no-op finché non ripuntati.
++- **Fix quando servirà:** leggere `observations_raw` (o presence) per gli stessi kind.
++- **Vietato:** reintrodurre reader sulla tabella legacy `observations`.
++
++## DEBT-BACKUP-ASYMMETRY
++
++- **Priorità:** alta per 4b / §13 — **cantiere futuro dedicato**; qui solo evidenze
++- **Cosa:** stesso meccanismo dichiarato (`sqlite3.Connection.backup`), throughput molto diverso tra snapshot `deploy.sh` e backup trust bootstrap.
++- **EVIDENZA 2026-07-25 (OBS-TIMING-034e):**
++  - **13:19** `pre-deploy-20260725-1319.db` = **2816585728 B** entro wall `deploy.sh` **≤112 s** → ≥ **~25 MB/s**. Valore **INFERITO** (deploy.sh non ha timer sul solo snapshot; wall include rsync+build+start).
++  - **13:21** backup trust `observatory-20260725-132129-521288.db` = **2817433600 B** in **T_backup=307.942 s** → **9.15 MB/s**, **MISURATO**.
++  - Rapporto throughput ~**2.7×**, stesso ordine di grandezza del file, ~2 minuti di distanza, stessa API `backup()`.
++  - Accoppiamento a **due copie per deploy** confermato 3/3: `01:23→01:25`, `09:34→09:36`, `13:19→13:21` (pre-deploy poi observatory-* trust).
++  - **Ipotesi NON verificata:** `Connection.backup(pages=N, sleep=…)` a passi con attesa nel path bootstrap vs copia “in un colpo” in `deploy.sh`.
++  - **Serie throughput trust (MISURATO):** 10.37 → 9.22 → 9.15 MB/s (taglia in crescita, throughput in calo).
++- **Vietato ora (3b-iii):** modificare `deploy.sh`, `backup.py`, rotazione, retention; indagare oltre la registrazione.
+diff --git a/observatory/docs/obs-3b-iii-baseline-pre.md b/observatory/docs/obs-3b-iii-baseline-pre.md
+new file mode 100644
+index 0000000..7516a0c
+--- /dev/null
++++ b/observatory/docs/obs-3b-iii-baseline-pre.md
+@@ -0,0 +1,70 @@
++# OBS-DB-SLIM 3b-iii — baseline pre-spegnimento (PASSO 1)
++
++**Host:** Cassiopea · live al momento della misura: **0.10.26**  
++**Branch:** `feature/obs-db-slim` · target VERSION: **0.10.27**  
++**Misura T0:** 2026-07-25T11:33:37Z · **T1:** +10 min
++
++## 1.1 Dual-write baseline (assert 8.6)
++
++| Istante | `COUNT(*)` su `observations` |
++|---------|------------------------------|
++| T0 | **1 056 265** |
++| T1 (+10 min) | **1 057 730** |
++| **Δ 10 min** | **+1 465** |
++
++Questo Δ è il metro per l’assert post-deploy «nuove righe / 10 min = 0». Non usare il vecchio «~1700».
++
++## 1.2 Censimento tabella / file
++
++| Voce | Valore |
++|------|--------|
++| Righe totali `observations` (T0) | **1 056 265** |
++| Righe `seen_at` > 7g (`OBS_LT7D`) | **0** (tutte within 7d) |
++| Size DB (byte) | **2 819 690 496** (sessione passo 1) |
++| Size WAL (byte) | **7 556 112** |
++
++## 1.3 Insiemi asset (liste)
++
++### `active_discovery` = True (logica legacy Observation@MAC, 24h portal) — **63** id
++
++```
++[1, 2, 3, 4, 9, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69]
++```
++
++### `scans` candidati (già su `presence_sources` da 3b-i) — **67** id
++
++```
++[1, 2, 3, 4, 5, 6, 9, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 85, 98]
++```
++
++## Verifica semantica PASSO 3 (pre-deploy, logica nuova vs 1.3)
++
++Logica nuova AD: `presence_sources` portal kinds freschi &lt;24h (stesso pattern scans).
++
++| Confronto | Esito |
++|-----------|--------|
++| A \ B (legacy − nuovo) | **[]** — nessun asset perso (GATE A\B=0) |
++| B \ A (nuovo − legacy) | **19** id: `5,6,7,8,10,70,82,85,88,98,112,135,136,137,140,145,148,149,151` |
++| Multi-IP nel delta | **[]** — nessun STOP |
++
++**Scomposizione B\A (ogni id):** tutti e 19 hanno `presence_sources["fdb"]` fresco; **nessuno** ha Observation portal by-MAC nelle 24h (`legacy_obs_portal_24h=false`). Cause tipiche:
++
++- FDB scritto via `observe_portal("fdb")` → `presence_sources`, mentre la legacy AD leggeva solo `Observation` by MAC (kind fdb assente o non linkato).
++- In `reconcile_asset_presence`, FDB recente entrava già in `physical_reasons` (`SwitchPort.last_fdb_at`); il booleano `active_discovery` diventa True in più, ma `reliable` era già spesso True.
++
++Scans: insieme 1.3 invariato dalla migrazione AD (già su presence_sources).
++
++## Previsioni post-deploy (dichiarate PRIMA del GO)
++
++| # | Assert | Previsto |
++|---|--------|----------|
++| 8.1 | health | **0.10.27** |
++| 8.2 F1 | `T_prefetch_obs` | **assente o `null`** (non ≈0) |
++| 8.3 F2 | `T_dry_run` | **&lt; 2 s** |
++| 8.4 | `T_backup` | ≈ invariato (4b non fatto); calo = ANOMALIA |
++| 8.5 | letture runtime evidence | **0** |
++| 8.6 | Δ `observations` / 10 min | **0** (vs baseline **+1465**) |
++| 8.7 | AD / scans | AD: set post = presence_sources (A\B=0 + B\A documentato); scans = lista 1.3 |
++| 8.8 F3 | guadagno `T_total` | intervallo ~**15–25 s** su ~348 s (indicativo) |
++| 8.9 F4 | confronti | solo stesso `needs_apply` |
++| 8.10 | throughput backup | solo osservazione → DEBT-BACKUP-ASYMMETRY |
+diff --git a/observatory/docs/obs-3b-iii-gate5.md b/observatory/docs/obs-3b-iii-gate5.md
+new file mode 100644
+index 0000000..964efcc
+--- /dev/null
++++ b/observatory/docs/obs-3b-iii-gate5.md
+@@ -0,0 +1,455 @@
++# OBS-DB-SLIM 3b-iii — GATE 5 grep esaustivo
++
++**Criterio gate:** zero **READ evidence/prodotto** sulla tabella legacy `observations`.
++**Esito:** **PASS** (evidence-READ FAIL_COUNT=0).
++
++**Manutenzione ammessa (non evidence; NON modificata in 3b-iii — OBS-BACKUP-ASYMMETRY / no-touch retention):**
++- DELETE prune TTL su `observations`
++- COUNT in `store_counts` per report retention-run
++
++**Altro ammesso:** modello ORM, alembic storico, docstring/commenti, test, docs, script una-tantum, payload/API omonimi, `record_observation` no-op.
++
++Totale match (escluso `.venv`): **436**
++
++## Elenco completo (file:riga + classificazione)
++
++- `observatory/CHANGELOG.md:5` — **non-runtime (docs)** — `- **OBS-DB-SLIM 3b-i:** `scans` legge evidenza portal da `presence_sources` + IP current (niente Observation legacy). Sticky rank `IpAddress`
++- `observatory/CHANGELOG.md:9` — **non-runtime (docs)** — `- **OBS-DB-SLIM passo 3a:** stop append `Observation` per `fritz_wlan_assoc`/`fritz_mesh`; `materialize_wifi_association` (meta.link) resta.`
++- `observatory/CHANGELOG.md:13` — **non-runtime (docs)** — `- **OBS-DB-SLIM passo 2:** prune tabella legacy `observations` nel job retention orario (`OBS_TTL_LEGACY_DAYS`, default **7**, allineato al `
++- `observatory/CHANGELOG.md:17` — **non-runtime (docs)** — `- **OBS-DEPLOY-01 (split):** `deploy.sh` — snapshot SQLite pre-deploy solo se `api` è tra i servizi; rotazione keep-3 su `data/backups/pre-d`
++- `observatory/CHANGELOG.md:109` — **non-runtime (docs)** — `- **Fix perdita ora chiusa su timeout POST flow:** batch N=100 su `POST /api/ingest/flows`, retry con ack per chunk (pending resta se fail),`
++- `observatory/CHANGELOG.md:231` — **non-runtime (docs)** — `- Nmap #4 chiuso come provider dual: `NmapHostsProvider` → `/observations` (MAC upsert + dedup con `scan-batch:ping`); ping-only resta misur`
++- `observatory/CHANGELOG.md:236` — **non-runtime (docs)** — `- Nmap #4 Fase 2a (misura): `NmapHostsProvider` dual → `/observations` + `SensorRun(source=nmap)`; MAC upsert; ping-only solo contatori (`ke`
++- `observatory/CHANGELOG.md:262` — **non-runtime (docs)** — `- LEVA 1: sul path Fritz topology, `reconcile_all_asset_presence` solo ogni 3 cicli; materialize host resta ogni tick. Flag `reconcile_prese`
++- `observatory/CHANGELOG.md:275` — **non-runtime (docs)** — `- Printer #3 provider: envelope `kind=printer` / `entity_key=IP` via `/observations` (dual con `enrich_printer_hosts`).`
++- `observatory/CHANGELOG.md:287` — **non-runtime (docs)** — `- SSDP #2 provider: envelope `kind=ssdp` / `entity_key=IP` via `/observations` (dual con proposals nmap).`
++- `observatory/CHANGELOG.md:302` — **non-runtime (docs)** — `- Path ingest unico: `/observations` materializza lo stato derivato; `scan-batch` è adattatore sottile.`
++- `observatory/CHANGELOG.md:304` — **non-runtime (docs)** — `- Legacy `Observation`: append solo quando il raw crea una riga nuova (`record_legacy=created`), così il cablaggio multi-fonte non gonfia `F`
++- `observatory/CHANGELOG.md:322` — **non-runtime (docs)** — `- Endpoint ingest v2 `POST /api/ingest/observations` idempotente; `scan-batch` invariato con dual-write nello store grezzo.`
++- `observatory/README.md:33` — **non-runtime (docs)** — `- Nmap #4 chiuso: `NmapHostsProvider` dual → `/observations`; MAC upsert + dedup con batch; ping-only misura/raw-only. Debito cutover: [`DEB`
++- `observatory/README.md:42` — **non-runtime (docs)** — `- Observation store M1 + Alembic; identity fusion / presenza; findings in shadow finché `SCORING_CALIBRATED=false`.`
++- `observatory/README.md:247` — **non-runtime (docs)** — `## Observation store e migrazioni (M1)`
++- `observatory/README.md:249` — **non-runtime (docs)** — `Le osservazioni normalizzate (envelope v2) arrivano su `POST /api/ingest/observations``
++- `observatory/api/app/alembic/versions/a0c674f1553b_baseline_schema.py:462` — **non-runtime (migrazione storica)** — `op.create_table('observations',`
++- `observatory/api/app/alembic/versions/a0c674f1553b_baseline_schema.py:475` — **non-runtime (migrazione storica)** — `with op.batch_alter_table('observations', schema=None) as batch_op:`
++- `observatory/api/app/alembic/versions/a0c674f1553b_baseline_schema.py:588` — **non-runtime (migrazione storica)** — `with op.batch_alter_table('observations', schema=None) as batch_op:`
++- `observatory/api/app/alembic/versions/a0c674f1553b_baseline_schema.py:594` — **non-runtime (migrazione storica)** — `op.drop_table('observations')`
++- `observatory/api/app/models.py:303` — **runtime-MODEL (definizione schema; nessuna query)** — `class Observation(Base):`
++- `observatory/api/app/models.py:304` — **runtime-MODEL (definizione schema; nessuna query)** — `__tablename__ = "observations"`
++- `observatory/api/app/models.py:592` — **non-runtime (commento/docstring)** — `# Additive landing zone; the existing Observation/ScanRun path is unchanged.`
++- `observatory/api/app/models.py:644` — **non-runtime (commento/docstring)** — `"""Downsampled rollup of raw observations older than the raw TTL."""`
++- `observatory/api/app/routers/ingest.py:141` — **non-runtime-name (campo request body)** — `observations: list[dict[str, Any]] = Field(default_factory=list)`
++- `observatory/api/app/routers/ingest.py:462` — **non-runtime-name (Pydantic/API envelope /observations)** — `@router.post("/observations")`
++- `observatory/api/app/routers/ingest.py:479` — **non-runtime-name (Pydantic/API envelope /observations)** — `body.observations,`
++- `observatory/api/app/services/detectors/__init__.py:84` — **non-runtime (commento/docstring)** — `# OBS-DB-SLIM 3b-iii GATE 5: no Observation legacy read.`
++- `observatory/api/app/services/detectors/__init__.py:93` — **non-runtime (commento/docstring)** — `# OBS-DB-SLIM 3b-iii GATE 5: no Observation legacy read.`
++- `observatory/api/app/services/identity.py:23` — **runtime-IMPORT/type (solo per no-op record_observation)** — `Observation,`
++- `observatory/api/app/services/identity.py:933` — **non-runtime (commento/docstring)** — `"""Resolve management observations to configured infrastructure by exact IP."""`
++- `observatory/api/app/services/identity.py:1373` — **non-runtime (commento/docstring)** — `# DNS hysteresis legacy Observation read removed (OBS-DB-SLIM 3b-iii).`
++- `observatory/api/app/services/identity.py:1440` — **runtime-IMPORT/type (solo per no-op record_observation)** — `) -> Optional[Observation]:`
++- `observatory/api/app/services/identity.py:1441` — **non-runtime (commento/docstring)** — `# OBS-DB-SLIM 3b-iii: dual-write to legacy ``observations`` OFF (GATE 5 PASS).`
++- `observatory/api/app/services/identity.py:1442` — **runtime-WRITE-NOOP (dual-write spento 3b-iii)** — `# Rollback: restore the Observation(...) + db.add(obs) body below.`
++- `observatory/api/app/services/identity.py:1445` — **runtime-WRITE-NOOP (dual-write spento 3b-iii)** — `# obs = Observation(`
++- `observatory/api/app/services/inventory.py:30` — **non-runtime (commento/docstring)** — `"""Historical Fritz rows remain observations, not new active assets."""`
++- `observatory/api/app/services/inventory.py:183` — **non-runtime (commento/docstring)** — `# (written by observe_portal). No Observation legacy read.`
++- `observatory/api/app/services/materialize.py:1` — **non-runtime (commento/docstring)** — `"""Single write-path materialization: envelopes → derived Asset/Interface/Observation state."""`
++- `observatory/api/app/services/materialize.py:51` — **non-runtime (commento/docstring)** — `"""Materialize one host observation into derived state (legacy Observation + assets).`
++- `observatory/api/app/services/materialize.py:75` — **non-runtime (altra entità: Raw/Aggregate/Flow)** — `# Legacy Observation append is gated on ObservationRaw.created (see write_and_materialize).`
++- `observatory/api/app/services/materialize.py:226` — **runtime-WRITE-NOOP (dual-write spento 3b-iii)** — `# OBS-DB-SLIM 3a: do NOT append Observation(kind=fritz_wlan_assoc|fritz_mesh).`
++- `observatory/api/app/services/materialize.py:278` — **non-runtime (commento/docstring)** — `# Gate: legacy Observation append only when raw insert creates a new row.`
++- `observatory/api/app/services/physical_links.py:62` — **non-runtime-name (variabile locale LLDP, non tabella)** — `observations = _fresh_lldp_observations(switches, cutoff)`
++- `observatory/api/app/services/physical_links.py:65` — **non-runtime-name (variabile locale LLDP, non tabella)** — `for key, observation in observations.items():`
++- `observatory/api/app/services/physical_links.py:66` — **non-runtime-name (variabile locale LLDP, non tabella)** — `reverse = observations.get(`
++- `observatory/api/app/services/retention.py:3` — **non-runtime (commento/docstring)** — `Compresses raw observations older than the raw TTL into per-(source, window)`
++- `observatory/api/app/services/retention.py:5` — **non-runtime (commento/docstring)** — `flow observations, and legacy ``observations`` (dual-write presence evidence).`
++- `observatory/api/app/services/retention.py:20` — **runtime-IMPORT (solo prune DELETE + count stats)** — `Observation,`
++- `observatory/api/app/services/retention.py:123` — **non-runtime (commento/docstring)** — `"""Delete legacy ``observations`` rows older than retention_days.`
++- `observatory/api/app/services/retention.py:131` — **runtime-MANUTENZIONE-DELETE (retention prune; ammesso fino a 4b; NON evidence reader)** — `delete(Observation).where(Observation.seen_at < cutoff)`
++- `observatory/api/app/services/retention.py:174` — **runtime-MANUTENZIONE-COUNT (retention store_counts; ammesso fino a 4b; NON evidence reader)** — `"observations": db.scalar(select(func.count()).select_from(Observation)) or 0,`
++- `observatory/api/app/services/scans.py:89` — **non-runtime (commento/docstring)** — `Does not read Observation legacy. ``db`` kept for call-site compatibility.`
++- `observatory/api/app/services/topology.py:1331` — **non-runtime (commento/docstring)** — `# Prefer edge (deeper) switches; bump score with recent observations.`
++- `observatory/api/app/services/trust.py:350` — **non-runtime (commento/docstring)** — `"""Portal first/last from asset fields only — no Observation table read.`
++- `observatory/api/app/services/trust.py:352` — **non-runtime (commento/docstring)** — `OBS-DB-SLIM 3b-iii: legacy Observation prefetch eliminated. Live state lives in`
++- `observatory/api/app/services/trust.py:386` — **non-runtime (commento/docstring)** — `Portal extent: asset ``portal_*`` / ``presence_sources`` (no Observation).`
++- `observatory/api/app/services/trust.py:621` — **non-runtime (commento/docstring)** — `extent never reads Observation (OBS-DB-SLIM 3b-iii).`
++- `observatory/api/app/services/watch.py:138` — **non-runtime (commento)** — `Observation only: never changes status, never creates EventMute.`
++- `observatory/collector/collector/main.py:264` — **non-runtime-name (campo payload `.observations` → API)** — `# SSDP #2 / Printer #3 dual: typed envelopes via /observations.`
++- `observatory/collector/collector/main.py:311` — **non-runtime-name (campo payload `.observations` → API)** — `f"mark_missing={int(do_mark_missing)} → observations"`
++- `observatory/collector/collector/main.py:331` — **non-runtime-name (campo payload `.observations` → API)** — `f"hosts={len(ssdp_result.observations)} → observations"`
++- `observatory/collector/collector/main.py:355` — **non-runtime-name (campo payload `.observations` → API)** — `f"hosts={len(printer_result.observations)} → observations"`
++- `observatory/collector/collector/main.py:455` — **non-runtime-name (campo payload `.observations` → API)** — `f"hosts={len(result.observations)} → observations "`
++- `observatory/collector/collector/main.py:464` — **non-runtime-name (campo payload `.observations` → API)** — `# Associazioni senza nuovi host: ancora via observations (no SensorRun fritz hosts).`
++- `observatory/collector/collector/main.py:473` — **non-runtime-name (campo payload `.observations` → API)** — `observations=[],`
++- `observatory/collector/collector/main.py:790` — **non-runtime-name (campo payload `.observations` → API)** — `"""Direct per-radio WLAN observations override MeshList for the same client."""`
++- `observatory/collector/collector/main.py:972` — **non-runtime-name (campo payload `.observations` → API)** — `"""Collect read-only SNMP state and POST FDB observations plus port health."""`
++- `observatory/collector/collector/providers/base.py:34` — **non-runtime-name (campo payload `.observations` → API)** — `observations: list[dict] = field(default_factory=list)`
++- `observatory/collector/collector/providers/base.py:44` — **non-runtime-name (campo payload `.observations` → API)** — `"counts": {"observations": len(self.observations)},`
++- `observatory/collector/collector/providers/base.py:117` — **non-runtime-name (campo payload `.observations` → API)** — `observations: list[dict] = []`
++- `observatory/collector/collector/providers/base.py:121` — **non-runtime-name (campo payload `.observations` → API)** — `observations = _run_with_timeout(lambda: provider.collect(ctx), timeout_s)`
++- `observatory/collector/collector/providers/base.py:135` — **non-runtime-name (campo payload `.observations` → API)** — `observations=observations or [],`
++- `observatory/collector/collector/providers/base.py:155` — **non-runtime-name (campo payload `.observations` → API)** — `"observations": result.observations,`
++- `observatory/collector/collector/providers/base.py:163` — **non-runtime-name (HTTP path ingest → raw)** — `f"{api_base}/api/ingest/observations", json=payload, headers=headers, timeout=60`
++- `observatory/collector/collector/providers/fritz_hosts.py:17` — **non-runtime-name (campo payload `.observations` → API)** — `"""Mirror API host_to_envelope fields so /observations can materialize Fritz."""`
++- `observatory/docs/KNOWN_DEBT.md:42` — **non-runtime (docs)** — `- **Stato:** fonte unica `NmapHostsProvider` → `/observations` con **`wlan_associations` nello stesso POST**; **`mark_missing=True` solo se `
++- `observatory/docs/KNOWN_DEBT.md:204` — **non-runtime (docs)** — `- **Cosa:** la lettura legacy `Observation(kind=dns)` è stata **rimossa** in OBS-DB-SLIM 3b-iii (0 righe utili: GATE vacuo). La hysteresis n`
++- `observatory/docs/KNOWN_DEBT.md:206` — **non-runtime (docs)** — `- **Vietato:** reintrodurre una query runtime su tabella `observations`.`
++- `observatory/docs/KNOWN_DEBT.md:211` — **non-runtime (docs)** — `- **Cosa:** in 3b-iii le SELECT su tabella `observations` sono state **rimosse** (GATE 5). Con `DETECTORS_ENABLED` che li include restano no`
++- `observatory/docs/KNOWN_DEBT.md:213` — **non-runtime (docs)** — `- **Vietato:** reintrodurre reader sulla tabella legacy `observations`.`
++- `observatory/docs/backend-filo-diff-20260721.txt:7` — **non-runtime (docs)** — `- F13: cross-row portal evidence (IpAddress o Observation) su stesso IP; PORTAL_EVIDENCE invariata`
++- `observatory/docs/backend-filo-diff-20260721.txt:234` — **non-runtime (docs)** — `+from app.models import Asset, Observation, ScanRun`
++- `observatory/docs/backend-filo-diff-20260721.txt:291` — **non-runtime (docs)** — `+    observations = db.scalars(`
++- `observatory/docs/backend-filo-diff-20260721.txt:292` — **non-runtime (docs)** — `+        select(Observation).where(`
++- `observatory/docs/backend-filo-diff-20260721.txt:293` — **non-runtime (docs)** — `+            Observation.seen_at >= since,`
++- `observatory/docs/backend-filo-diff-20260721.txt:294` — **non-runtime (docs)** — `+            Observation.ip.in_(sorted(current_ips)),`
++- `observatory/docs/backend-filo-diff-20260721.txt:295` — **non-runtime (docs)** — `+            Observation.kind.in_(sorted(PORTAL_EVIDENCE)),`
++- `observatory/docs/backend-filo-diff-20260721.txt:298` — **non-runtime (docs)** — `+    for obs in observations:`
++- `observatory/docs/backend-filo-diff-20260721.txt:321` — **non-runtime (docs)** — `+    - the same asset+IP has a <24h IpAddress/Observation row whose source is in`
++- `observatory/docs/bootstrap-selective-backup.diff.txt:171` — **non-runtime (docs)** — `-    """Single O(assets × observations) scan → report + apply actions."""`
++- `observatory/docs/bootstrap-selective-backup.diff.txt:172` — **non-runtime (docs)** — `+    """Single O(assets × observations) scan → report + apply actions.`
++- `observatory/docs/bootstrap-selective-backup.diff.txt:175` — **non-runtime (docs)** — `+    1× SELECT all assets, then for each asset with MACs: 1× Observation scan`
++- `observatory/docs/bootstrap-selective-backup.diff.txt:185` — **non-runtime (docs)** — `+            # N+1: one Observation query per asset (not a single prefetch).`
++- `observatory/docs/bootstrap-selective-backup.diff.txt:189` — **non-runtime (docs)** — `select(Observation)`
++- `observatory/docs/bootstrap-selective-backup.diff.txt:190` — **non-runtime (docs)** — `.where(Observation.mac.in_(macs))`
++- `observatory/docs/bootstrap-selective-backup.diff.txt:191` — **non-runtime (docs)** — `.order_by(Observation.seen_at)`
++- `observatory/docs/bootstrap-selective-backup.diff.txt:297` — **non-runtime (docs)** — `+from app.models import Asset, Interface, Observation`
++- `observatory/docs/bootstrap-selective-backup.diff.txt:321` — **non-runtime (docs)** — `+    """Newer portal Observation bumps portal_last_seen without trust_level flip → no backup."""`
++- `observatory/docs/bootstrap-selective-backup.diff.txt:340` — **non-runtime (docs)** — `+        Observation(`
++- `observatory/docs/bootstrap-selective-backup.diff.txt:407` — **non-runtime (docs)** — `+          1× SELECT Observation`
++- `observatory/docs/bootstrap-selective-backup.diff.txt:417` — **non-runtime (docs)** — `+NameProposal IN (…) — non ri-scansiona observations.`
++- `observatory/docs/bootstrap-selective-backup.diff.txt:429` — **non-runtime (docs)** — `+Il commento nel codice parlava già di O(assets × observations): il costo`
++- `observatory/docs/bootstrap-selective-backup.diff.txt:430` — **non-runtime (docs)** — `+dominante non è solo il numero di query, ma ogni Observation scan che`
++- `observatory/docs/bootstrap-selective-backup.diff.txt:442` — **non-runtime (docs)** — `+  - 1× Observation WHERE mac IN (tutti i MAC degli asset) ORDER BY seen_at`
++- `observatory/docs/bootstrap-selective-backup.diff.txt:448` — **non-runtime (docs)** — `+  - memoria se observations per tutti i MAC sono enormi (oggi per-asset`
++- `observatory/docs/dossier-asset98-20260721.txt:22` — **non-runtime (docs)** — `| `observations` (legacy) | **2026-07-17 23:06:57** | oggi | ~308k righe |`
++- `observatory/docs/dossier-asset98-20260721.txt:31` — **non-runtime (docs)** — `| `observations` | **2026-07-18 01:26:08.637** (`kind=fritz`, IP `.2.88`, hostname sintetico `PC-68-13-F3-E7-D2-B2`) | **2026-07-21 ~13:05**`
++- `observatory/docs/dossier-asset98-20260721.txt:46` — **non-runtime (docs)** — `### Conteggi `observations` per giorno`
++- `observatory/docs/dossier-asset98-20260721.txt:87` — **non-runtime (docs)** — `- Ultima riga `observations`: **2026-07-21 ~13:05** UTC+2 locale store, `kind=fritz`, IP ancora `.2.88`, **`fritz_active=false`**`
++- `observatory/docs/fase-a-trust-dryrun-nplus1-20260723.txt:16` — **non-runtime (docs)** — `1× SELECT Observation`
++- `observatory/docs/fase-a-trust-dryrun-nplus1-20260723.txt:26` — **non-runtime (docs)** — `NameProposal IN (…) — non ri-scansiona observations.`
++- `observatory/docs/fase-a-trust-dryrun-nplus1-20260723.txt:38` — **non-runtime (docs)** — `Il commento nel codice parlava già di O(assets × observations): il costo`
++- `observatory/docs/fase-a-trust-dryrun-nplus1-20260723.txt:39` — **non-runtime (docs)** — `dominante non è solo il numero di query, ma ogni Observation scan che`
++- `observatory/docs/fase-a-trust-dryrun-nplus1-20260723.txt:51` — **non-runtime (docs)** — `- 1× Observation WHERE mac IN (tutti i MAC degli asset) ORDER BY seen_at`
++- `observatory/docs/fase-a-trust-dryrun-nplus1-20260723.txt:57` — **non-runtime (docs)** — `- memoria se observations per tutti i MAC sono enormi (oggi per-asset`
++- `observatory/docs/fase-b-velocita-bootstrap.diff.txt:420` — **non-runtime (docs)** — `+    """Single O(assets × observations) scan → report + apply actions."""`
++- `observatory/docs/fase-b-velocita-bootstrap.diff.txt:616` — **non-runtime (docs)** — `+    prior dry_run is therefore safe and avoids a second O(assets × observations)`
++- `observatory/docs/fase-b-velocita-bootstrap.diff.txt:636` — **non-runtime (docs)** — `def latest_portal_observation(db: Session, asset: Asset) -> Observation | None:`
++- `observatory/docs/fix-0f9c152.diff.txt:97` — **non-runtime (docs)** — `from app.models import Asset, Event, NameProposal, Observation, SwitchPort`
++- `observatory/docs/fix-0f9c152.diff.txt:137` — **non-runtime (docs)** — `prior dry_run is therefore safe and avoids a second O(assets × observations)`
++- `observatory/docs/fix-0f9c152.diff.txt:247` — **non-runtime (docs)** — `# Associazioni senza nuovi host: ancora via observations (no SensorRun fritz hosts).`
++- `observatory/docs/fix-0f9c152.diff.txt:258` — **non-runtime (docs)** — `observations=[],`
++- `observatory/docs/leva-b-presence-dedup.diff.txt:95` — **non-runtime (docs)** — `observations: list[dict[str, Any]] = Field(default_factory=list)`
++- `observatory/docs/leva-b-presence-dedup.diff.txt:132` — **non-runtime (docs)** — `body.observations,`
++- `observatory/docs/leva-b-presence-dedup.diff.txt:345` — **non-runtime (docs)** — `f"hosts={len(ssdp_result.observations)} → observations"`
++- `observatory/docs/leva-b-presence-dedup.diff.txt:362` — **non-runtime (docs)** — `f"hosts={len(printer_result.observations)} → observations"`
++- `observatory/docs/leva-b-presence-dedup.diff.txt:410` — **non-runtime (docs)** — `f"hosts={len(result.observations)} → observations "`
++- `observatory/docs/leva-b-presence-dedup.diff.txt:487` — **non-runtime (docs)** — `"observations": result.observations,`
++- `observatory/docs/leva-b-presence-dedup.diff.txt:683` — **non-runtime (docs)** — `+    body = ObservationsV2In(observations=[], materialize=True)`
++- `observatory/docs/nmap-cutover-v061.diff.txt:28` — **non-runtime (docs)** — `- Nmap #4 chiuso come provider dual: `NmapHostsProvider` → `/observations` (MAC upsert + dedup con `scan-batch:ping`); ping-only resta misur`
++- `observatory/docs/nmap-cutover-v061.diff.txt:69` — **non-runtime (docs)** — `-        # Nmap #4 2a dual: typed envelopes via /observations (batch tenuto).`
++- `observatory/docs/nmap-cutover-v061.diff.txt:96` — **non-runtime (docs)** — `-                    f"→ observations"`
++- `observatory/docs/nmap-cutover-v061.diff.txt:99` — **non-runtime (docs)** — `+                    f"mark_missing=1 → observations"`
++- `observatory/docs/nmap-cutover-v061.diff.txt:152` — **non-runtime (docs)** — `"observations": result.observations,`
++- `observatory/docs/nmap-cutover-v061.diff.txt:168` — **non-runtime (docs)** — `-- **Stato:** nmap #4 **chiuso** come provider dual (v0.6.0). `NmapHostsProvider` → `/observations` + `SensorRun(source=nmap)`; MAC upsert +`
++- `observatory/docs/nmap-cutover-v061.diff.txt:172` — **non-runtime (docs)** — `+- **Stato:** fonte unica `NmapHostsProvider` → `/observations` con **`mark_missing=True` + `wlan_associations` nello stesso POST** (gap Wi‑`
++- `observatory/docs/nmap-cutover-v061.diff.txt:257` — **non-runtime (docs)** — `+        observations=[{"source": "nmap", "kind": "nmap", "l2": {"mac": "AA:BB:CC:DD:EE:01"}}],`
++- `observatory/docs/nmap-cutover-v061.diff.txt:269` — **non-runtime (docs)** — `+    assert args[0] == "http://api/api/ingest/observations"`
++- `observatory/docs/nmap-cutover-v061.diff.txt:273` — **non-runtime (docs)** — `+    assert len(payload["observations"]) == 1`
++- `observatory/docs/nmap-cutover-v061.diff.txt:288` — **non-runtime (docs)** — `+        observations=[],`
++- `observatory/docs/nmap4-2a-v0514.diff.txt:27` — **non-runtime (docs)** — `+- Nmap #4 Fase 2a (misura): `NmapHostsProvider` dual → `/observations` + `SensorRun(source=nmap)`; MAC upsert; ping-only solo contatori (`k`
++- `observatory/docs/nmap4-2a-v0514.diff.txt:209` — **non-runtime (altra entità: Raw/Aggregate/Flow)** — `# Legacy Observation append is gated on ObservationRaw.created (see write_and_materialize).`
++- `observatory/docs/nmap4-2a-v0514.diff.txt:276` — **non-runtime (docs)** — `+        # Nmap #4 2a dual: typed envelopes via /observations (batch tenuto).`
++- `observatory/docs/nmap4-2a-v0514.diff.txt:296` — **non-runtime (docs)** — `+                    f"→ observations"`
++- `observatory/docs/obs-3b-i-gap.md:12` — **non-runtime (docs)** — `### A1 · Branch Observation (`scans.py:82-98`)`
++- `observatory/docs/obs-3b-i-gap.md:16` — **non-runtime (docs)** — `observations = db.scalars(`
++- `observatory/docs/obs-3b-i-gap.md:17` — **non-runtime (docs)** — `select(Observation).where(`
++- `observatory/docs/obs-3b-i-gap.md:18` — **non-runtime (docs)** — `Observation.seen_at >= since,`
++- `observatory/docs/obs-3b-i-gap.md:19` — **non-runtime (docs)** — `Observation.ip.in_(sorted(current_ips)),`
++- `observatory/docs/obs-3b-i-gap.md:20` — **non-runtime (docs)** — `Observation.kind.in_(sorted(PORTAL_EVIDENCE)),`
++- `observatory/docs/obs-3b-i-gap.md:23` — **non-runtime (docs)** — `for obs in observations:`
++- `observatory/docs/obs-3b-i-gap.md:37` — **non-runtime (docs)** — `| **Filtro kind** | `Observation.kind ∈ PORTAL_EVIDENCE` = `{arp, icmp, dns, mdns, snmp, lldp, fdb, ipp, service, nmap}` (`trust.py:17-29`) `
++- `observatory/docs/obs-3b-i-gap.md:48` — **non-runtime (docs)** — `| kind ∈ PORTAL_EVIDENCE | COUNT Observation 24h |`
++- `observatory/docs/obs-3b-i-gap.md:56` — **non-runtime (docs)** — `- Dopo join asset+MAC+`is_current`: **60** coppie `(asset_id, ip)` per cui il branch Observation contribuisce al gate`
++- `observatory/docs/obs-3b-i-gap.md:98` — **non-runtime (docs)** — `Universo: **60** `(asset_id, ip)` con contributo Observation portal &lt;24h.`
++- `observatory/docs/obs-3b-i-gap.md:105` — **non-runtime (docs)** — `| Branch IpAddress portal che già copre la coppia | **0** / 60 | Observation **necessaria** per tutte e 60 |`
++- `observatory/docs/obs-3b-i-gap.md:108` — **non-runtime (docs)** — `\*Equivalente = ciò che il branch IpAddress (`scans.py:54-64`) accetterebbe senza Observation.`
++- `observatory/docs/obs-3b-i-gap.md:121` — **non-runtime (docs)** — `| Cosa scans prende da Observation | In IpAddress? | Natura del gap |`
++- `observatory/docs/obs-3b-i-gap.md:142` — **non-runtime (docs)** — `**(d) altro — VIABILE e spesso preferibile.** Ripuntare il branch Observation su evidenza già derivata:`
++- `observatory/docs/obs-3b-i-gap.md:147` — **non-runtime (docs)** — `Raccomandazione operativa per il prompt di implementazione: partire da **(d)** zero-schema (reader su `presence_sources` portal + IP current`
++- `observatory/docs/obs-3b-i-gap.md:155` — **non-runtime (docs)** — `| Se (c) | Backfill ~**60** righe da Observation `kind=nmap` ultime 24h **oppure** da `presence_sources` — non dalla coda TTL |`
++- `observatory/docs/obs-3b-i-gap.md:171` — **non-runtime (docs)** — `- `inventory.active_discovery` → Observation → operational_state / presence`
++- `observatory/docs/obs-3b-i-gap.md:173` — **non-runtime (docs)** — `- Migrare **solo** il reader scans (togliere il `select(Observation)` e usare IpAddress/`presence_sources`) **non** esegue quei path.`
++- `observatory/docs/obs-3b-i-go.md:14` — **non-runtime (docs)** — `| OLD (Observation + IpAddress portal) | 62 | 62 |`
++- `observatory/docs/obs-3b-i-go.md:75` — **non-runtime (docs)** — `| `active_discovery` | ancora su Observation | sì (`inventory.py`) | OK invariato |`
++- `observatory/docs/obs-3b-i-go.md:76` — **non-runtime (docs)** — `| DNS hysteresis | ancora su Observation dns | sì (`identity.py`) | OK invariato |`
++- `observatory/docs/obs-3b-i-go.md:77` — **non-runtime (docs)** — `| scans legge Observation a runtime | no | solo docstring «Does not read Observation legacy»; nessun import/query | OK |`
++- `observatory/docs/obs-3b-i.md:31` — **non-runtime (docs)** — `### 2a · Insieme A (legacy Observation branch — 60)`
++- `observatory/docs/obs-3b-i.md:123` — **non-runtime (docs)** — `- **Rimosso** `select(Observation)` (ex `:82-98`)`
++- `observatory/docs/obs-3b-i.md:136` — **non-runtime (docs)** — `- `test_scan_target_legacy_observation_alone_no_longer_qualifies` — Observation sola non basta più`
++- `observatory/docs/obs-3b-i.md:144` — **non-runtime (docs)** — `| **PRIMA** (Observation + IpAddress portal) | **60** | 61 |`
++- `observatory/docs/obs-3b-i.md:169` — **non-runtime (docs)** — `-from app.models import Asset, Observation, ScanRun`
++- `observatory/docs/obs-3b-i.md:232` — **non-runtime (docs)** — `+    Does not read Observation legacy. ``db`` kept for call-site compatibility.`
++- `observatory/docs/obs-3b-i.md:262` — **non-runtime (docs)** — `-    observations = db.scalars(`
++- `observatory/docs/obs-3b-i.md:263` — **non-runtime (docs)** — `-        select(Observation).where(`
++- `observatory/docs/obs-3b-i.md:264` — **non-runtime (docs)** — `-            Observation.seen_at >= since,`
++- `observatory/docs/obs-3b-i.md:265` — **non-runtime (docs)** — `-            Observation.ip.in_(sorted(current_ips)),`
++- `observatory/docs/obs-3b-i.md:266` — **non-runtime (docs)** — `-            Observation.kind.in_(sorted(PORTAL_EVIDENCE)),`
++- `observatory/docs/obs-3b-i.md:269` — **non-runtime (docs)** — `-    for obs in observations:`
++- `observatory/docs/obs-3b-i.md:286` — **non-runtime (docs)** — `-    - the same asset+IP has a <24h IpAddress/Observation row whose source is in`
++- `observatory/docs/obs-3b-i.md:416` — **non-runtime (docs)** — `+    """Observation legacy without presence_sources must not gate scans (3b-i)."""`
++- `observatory/docs/obs-3b-i.md:441` — **non-runtime (docs)** — `Observation(`
++- `observatory/docs/obs-3b-iii-baseline-034.md:13` — **non-runtime (docs)** — `(`T_prefetch_obs` = sola lettura Observation portal; codice di misura syncato su api, VERSION invariata)`
++- `observatory/docs/obs-3b-iii-baseline-034.md:25` — **non-runtime (docs)** — `│     ├── T_prefetch_obs   NIDIFICATO in dry_run  ← Observation`
++- `observatory/docs/obs-3b-iii-baseline-034.md:168` — **non-runtime (docs)** — `- Non iniziare 4b. Non DROP tabella `observations`.`
++- `observatory/docs/obs-3b-iii-baseline-pre.md:9` — **non-runtime (docs)** — `| Istante | `COUNT(*)` su `observations` |`
++- `observatory/docs/obs-3b-iii-baseline-pre.md:21` — **non-runtime (docs)** — `| Righe totali `observations` (T0) | **1 056 265** |`
++- `observatory/docs/obs-3b-iii-baseline-pre.md:28` — **non-runtime (docs)** — `### `active_discovery` = True (logica legacy Observation@MAC, 24h portal) — **63** id`
++- `observatory/docs/obs-3b-iii-baseline-pre.md:50` — **non-runtime (docs)** — `**Scomposizione B\A (ogni id):** tutti e 19 hanno `presence_sources["fdb"]` fresco; **nessuno** ha Observation portal by-MAC nelle 24h (`leg`
++- `observatory/docs/obs-3b-iii-baseline-pre.md:52` — **non-runtime (docs)** — `- FDB scritto via `observe_portal("fdb")` → `presence_sources`, mentre la legacy AD leggeva solo `Observation` by MAC (kind fdb assente o no`
++- `observatory/docs/obs-3b-iii-baseline-pre.md:66` — **non-runtime (docs)** — `| 8.6 | Δ `observations` / 10 min | **0** (vs baseline **+1465**) |`
++- `observatory/docs/obs-3b-iii-prefetch.md:42` — **non-runtime (docs)** — `**Peso prefetch Observation:** **35.1 s** certi (mode=prefetch, queries=200).`
++- `observatory/docs/obs-3b-iii-prefetch.md:85` — **non-runtime (docs)** — ``SELECT mac, MIN(seen_at), MAX(seen_at) FROM observations WHERE lower(kind) IN PORTAL_EVIDENCE GROUP BY mac``
++- `observatory/docs/obs-3b-iii-prefetch.md:89` — **non-runtime (docs)** — `- Affiancato da `_prefetch_fdb_last_by_asset` (SwitchPort, non Observation)`
++- `observatory/docs/obs-3b-iii-prefetch.md:95` — **non-runtime (docs)** — `- Se assente: l’API **parte lo stesso**; il piano trust userebbe N+1 (`use_prefetch=False`) o, se si elimina la lettura Observation, i soli `
++- `observatory/docs/obs-3b-iii-prefetch.md:106` — **non-runtime (docs)** — `| “refresh” che Observation darebbe oltre asset fields | — | **7** asset con `derived > portal_last_seen`; di cui **5** coperti da FDB senza`
++- `observatory/docs/obs-3b-iii-prefetch.md:116` — **non-runtime (docs)** — `| **A. Eliminare lettura Observation** dal piano trust; usare solo `portal_*` + FDB (+ opz. max `presence_sources`) | −**~35 s** dry_run; qu`
++- `observatory/docs/obs-3b-iii-prefetch.md:118` — **non-runtime (docs)** — `| **C. Solo ripuntare prefetch** su destinazione calda (stessa struttura dict) | −tempo I/O Observation (query più leggera su 151 asset) | C`
++- `observatory/docs/obs-3b-iii-prefetch.md:120` — **non-runtime (docs)** — `**Raccomandazione ricognizione:** **A o C** — Observation non è necessaria al bootstrap; eliminarla accorcia l’avvio **e** toglie un reader `
++- `observatory/docs/obs-3b-iii-prefetch.md:124` — **non-runtime (docs)** — `## Parte 3 · Inventario esaustivo reader `Observation` legacy`
++- `observatory/docs/obs-3b-iii-prefetch.md:163` — **non-runtime (docs)** — `| Prefetch → stessi campi asset/FDB | caldo | OK; **non** materializzare MIN/MAX storici Observation in una nuova tabella “calda” lunga |`
++- `observatory/docs/obs-3b-iii-prefetch.md:164` — **non-runtime (altra tabella)** — `| Tenere Observation come archivio | diventerebbe cold | Dopo DROP: storico solo via `observations_raw` / aggregate / backup |`
++- `observatory/docs/obs-3b-iii-prefetch.md:166` — **non-runtime (docs)** — `**Non-regressione:** migrare reader su `presence_sources`/`portal_*` **aiuta** lo split hot/cold (stato vivo piccolo). Evitare di copiare l’`
++- `observatory/docs/obs-3b-iii-prefetch.md:174` — **non-runtime (docs)** — `3. **trust prefetch** → **eliminare** (o ripuntare senza Observation) — guadagno baseline **−35 s** dry_run`
++- `observatory/docs/obs-3b-iii-recon.md:18` — **non-runtime (docs)** — `select(Observation).where(`
++- `observatory/docs/obs-3b-iii-recon.md:19` — **non-runtime (docs)** — `Observation.mac.in_(macs), Observation.seen_at >= cutoff`
++- `observatory/docs/obs-3b-iii-recon.md:43` — **non-runtime (docs)** — `| **Campi** | `Observation.mac`, `seen_at`, `kind`, `payload` (payload passato a `is_portal_evidence`, oggi kind-only) |`
++- `observatory/docs/obs-3b-iii-recon.md:50` — **non-runtime (docs)** — `Live 24h: Observation portal = quasi solo **nmap** (5542).`
++- `observatory/docs/obs-3b-iii-recon.md:84` — **non-runtime (docs)** — `select(Observation.id).where(`
++- `observatory/docs/obs-3b-iii-recon.md:85` — **non-runtime (docs)** — `Observation.mac == iface.mac,`
++- `observatory/docs/obs-3b-iii-recon.md:86` — **non-runtime (docs)** — `Observation.kind == "dns",`
++- `observatory/docs/obs-3b-iii-recon.md:87` — **non-runtime (docs)** — `Observation.seen_at >= now - timedelta(hours=1),`
++- `observatory/docs/obs-3b-iii-recon.md:105` — **non-runtime (docs)** — `| **Campi** | `Observation.id` (esistenza), `mac`, `kind`, `seen_at` |`
++- `observatory/docs/obs-3b-iii-recon.md:118` — **non-runtime (docs)** — `| Observation `kind=dns` 1h / 24h | **0 / 0** |`
++- `observatory/docs/obs-3b-iii-recon.md:126` — **non-runtime (docs)** — `- **Gap strutturale:** nessun writer live produce Observation `dns` né `presence_sources.dns` (grep collector/api: nessun emit `kind=dns` at`
++- `observatory/docs/obs-3b-iii-recon.md:150` — **non-runtime (docs)** — `| A (asset con dns Observation &lt;1h) | **0** |`
++- `observatory/docs/obs-3b-iii-recon.md:179` — **non-runtime (docs)** — `**Inventario reader Observation — NON è solo {AD, DNS, scans}:**`
++- `observatory/docs/obs-3b-iii-recon.md:186` — **non-runtime (docs)** — `| **`trust._prefetch_portal_first_last_by_mac`** (`trust.py:322-344`) | **LIVE** ogni bootstrap api (`bootstrap.py:164`) | **Parziale:** non`
++- `observatory/docs/obs-3b-iii-recon.md:189` — **non-runtime (docs)** — `| **retention** DELETE Observation | manutenzione | n/a (è writer delete) | n/a |`
++- `observatory/docs/obs-3b-iii-recon.md:192` — **non-runtime (docs)** — `Prima dello spegnimento dual-write (e soprattutto prima del DROP): migrare **AD + DNS**; **migrare o disaccoppiare trust prefetch** da Obser`
++- `observatory/docs/obs-3b-iii-recon.md:223` — **non-runtime (docs)** — `3. Migra/disaccoppia trust prefetch da Observation`
++- `observatory/docs/obs-3b-iii-recon.md:225` — **non-runtime (docs)** — `4. Inventario finale: rg "Observation" nei path runtime → solo retention/admin`
++- `observatory/docs/obs-3b-iii-recon.md:227` — **non-runtime (docs)** — `assert: 0 nuove Observation post-deploy_ts; portal_*/presence_sources ancora freschi`
++- `observatory/docs/obs-3b-iii-riapertura.md:29` — **non-runtime (docs)** — `**3b-iii vale ~20 s su ~348 s.** Il suo valore è **architetturale** (rimozione dell’ultimo reader runtime della tabella legacy `observations`
++- `observatory/docs/obs-3b-recon.md:98` — **non-runtime (docs)** — `| Cosa | Tabella / campo | Sorgente dati | Legge Observation legacy? |`
++- `observatory/docs/obs-3b-recon.md:104` — **non-runtime (altra tabella)** — `**Conclusione:** la calibrazione **non legge** Observation legacy né il contenuto di `observations_raw`. Accumula stato derivato (presence/e`
++- `observatory/docs/obs-3b-recon.md:110` — **non-runtime (docs)** — `| `inventory.active_discovery` | `inventory.py:180-194` | Observation per MAC, `seen_at ≥ cutoff` (`ASSET_STALE_AFTER_HOURS`, default **24h*`
++- `observatory/docs/obs-3b-recon.md:111` — **non-runtime (docs)** — `| `scans._fresh_portal_sources_by_ip` | `scans.py:82-98` | Observation `kind ∈ PORTAL_EVIDENCE`, IP current, **&lt;24h** (`TARGET_MAX_AGE`);`
++- `observatory/docs/obs-3b-recon.md:112` — **non-runtime (docs)** — `| detectors M6 | es. `detectors/__init__.py:86-90`, `:116-119` | Observation **24h** (dhcp/dns_server / llmnr…) | **NO** finché off; se on →`
++- `observatory/docs/obs-3b-recon.md:113` — **non-runtime (docs)** — `| DNS hysteresis | `identity.py:1373-1378` | Observation `kind=dns`, MAC, **&lt;1h** | **Indiretto se cambia:** blocca/consente `endpoint.mi`
++- `observatory/docs/obs-3b-recon.md:135` — **non-runtime (docs)** — `| scans | `IpAddress` source ∈ `PORTAL_EVIDENCE` + `last_seen` &lt;24h | **NO equivalenza** — current IpAddress: solo `fritz`/`mgmt` (fritz `
++- `observatory/docs/obs-3b-recon.md:136` — **non-runtime (docs)** — `| detectors | Observation → raw/Endpoint già per certi detector | N/A mentre `DETECTORS_ENABLED=""` | skip |`
++- `observatory/docs/obs-4a-plan.md:6` — **non-runtime (docs)** — `Contesto: 4a dovrebbe compattare freelist già liberata (indici passo 1 + TTL), **senza** toccare la legacy `observations` (dual-write ancora`
++- `observatory/docs/obs-4a-plan.md:16` — **non-runtime (docs)** — `| **api** | Sì (RW, WAL) | **Sì — unico writer SQL** | Continuo: ingest collector + UI | `db.py:25-37` engine; `materialize.py:82` `record_o`
++- `observatory/docs/obs-4a-plan.md:26` — **non-runtime (altra tabella)** — `| Finestra | `observations` | `observations_raw` |`
++- `observatory/docs/obs-4a-plan.md:152` — **non-runtime (altra tabella)** — `tables = ["observations", "observations_raw", "assets", "name_proposals"]`
++- `observatory/docs/obs-ai-context-diff-017.md:253` — **non-runtime (docs)** — `+- **Fix perdita ora chiusa su timeout POST flow:** batch N=100 su `POST /api/ingest/flows`, retry con ack per chunk (pending resta se fail)`
++- `observatory/docs/obs-behav-w1b-diff-015.md:47` — **non-runtime (docs)** — `+- **Fix perdita ora chiusa su timeout POST flow:** batch N=100 su `POST /api/ingest/flows`, retry con ack per chunk (pending resta se fail)`
++- `observatory/docs/obs-chiusura-fasea.md:23` — **non-runtime (docs)** — `"before.observations": 986244,`
++- `observatory/docs/obs-chiusura-fasea.md:24` — **non-runtime (docs)** — `"after.observations": 986206`
++- `observatory/docs/obs-chiusura-fasea.md:28` — **non-runtime (altra tabella)** — ``metric_snapshots.store` **non** include chiave `observations` (solo `observations_raw`).`
++- `observatory/docs/obs-chiusura-fasea.md:32` — **non-runtime (docs)** — `### A2 — Tabella `observations` ora`
++- `observatory/docs/obs-chiusura-fasea.md:59` — **non-runtime (docs)** — `| EXPLAIN presence `mac + seen_at≥24h` | `SEARCH observations USING INDEX ix_observations_mac (mac=?)` |`
++- `observatory/docs/obs-chiusura-fasea.md:71` — **non-runtime (docs)** — `### B1 — Observation WLAN post-0.10.24`
++- `observatory/docs/obs-chiusura-fasea.md:199` — **non-runtime (docs)** — `Toccare ora la fonte Observation dei detectors: **non inquina verdetti live** (detector off, shadow, zero findings).`
++- `observatory/docs/obs-db-slim-p1-go.md:21` — **non-runtime (docs)** — `SEARCH observations USING INDEX ix_observations_mac (mac=?)`
++- `observatory/docs/obs-db-slim-p1-go.md:23` — **non-runtime (docs)** — `SEARCH observations USING COVERING INDEX ix_obs_seen (seen_at<?)`
++- `observatory/docs/obs-db-slim-p1-go.md:25` — **non-runtime (docs)** — `SEARCH observations USING COVERING INDEX ix_obs_seen (seen_at>?)`
++- `observatory/docs/obs-db-slim-p1-go.md:46` — **non-runtime (docs)** — `SEARCH observations USING INDEX ix_observations_mac (mac=?)`
++- `observatory/docs/obs-db-slim-p1-go.md:48` — **non-runtime (docs)** — `SEARCH observations USING COVERING INDEX ix_obs_seen (seen_at<?)`
++- `observatory/docs/obs-db-slim-p1-go.md:50` — **non-runtime (docs)** — `SEARCH observations USING COVERING INDEX ix_obs_seen (seen_at>?)`
++- `observatory/docs/obs-db-slim-p1.md:28` — **non-runtime (docs)** — `### Coppia B — `observations.seen_at` (INDEX ×2)`
++- `observatory/docs/obs-db-slim-p1.md:32` — **non-runtime (docs)** — `| **`ix_obs_seen`** | `CREATE INDEX ix_obs_seen ON observations (seen_at)` | `(seen_at)` |`
++- `observatory/docs/obs-db-slim-p1.md:33` — **non-runtime (docs)** — `| **`ix_observations_seen_at`** | `CREATE INDEX ix_observations_seen_at ON observations (seen_at)` | `(seen_at)` |`
++- `observatory/docs/obs-db-slim-p1.md:64` — **non-runtime (docs)** — `→ SEARCH observations USING INDEX ix_observations_mac (mac=?)`
++- `observatory/docs/obs-db-slim-p1.md:72` — **non-runtime (docs)** — `SELECT id FROM observations WHERE seen_at < datetime('now','-3 days')`
++- `observatory/docs/obs-db-slim-p1.md:138` — **non-runtime (docs)** — `- `Observation.seen_at`: togliere `index=True`, tenere solo `Index("ix_obs_seen", …)``
++- `observatory/docs/obs-db-slim-p2-go.md:33` — **non-runtime (docs)** — `"observations": 986244,`
++- `observatory/docs/obs-db-slim-p2-go.md:40` — **non-runtime (docs)** — `"observations": 986206,`
++- `observatory/docs/obs-db-slim-p2-go.md:49` — **non-runtime (docs)** — `| Campo `before/after.observations` | presente | **sì** — aggancio OK |`
++- `observatory/docs/obs-db-slim-p2-go.md:51` — **non-runtime (docs)** — `| delta observations | ~0 | 986244 → 986206 (−38; −39 prune + scritture concurrenti) |`
++- `observatory/docs/obs-db-slim-p2-go.md:72` — **non-runtime (docs)** — `2. `observations` scende rispetto al plateau di crescita; **freelist** sale (ora ~22k pagine post-run; writer riusano).`
++- `observatory/docs/obs-db-slim-p2.diff.txt:42` — **non-runtime (docs)** — `Compresses raw observations older than the raw TTL into per-(source, window)`
++- `observatory/docs/obs-db-slim-p2.diff.txt:47` — **non-runtime (docs)** — `+flow observations, and legacy ``observations`` (dual-write presence evidence).`
++- `observatory/docs/obs-db-slim-p2.diff.txt:60` — **non-runtime (docs)** — `+    Observation,`
++- `observatory/docs/obs-db-slim-p2.diff.txt:74` — **non-runtime (docs)** — `+    """Delete legacy ``observations`` rows older than retention_days.`
++- `observatory/docs/obs-db-slim-p2.diff.txt:82` — **non-runtime (docs)** — `+        delete(Observation).where(Observation.seen_at < cutoff)`
++- `observatory/docs/obs-db-slim-p2.diff.txt:118` — **non-runtime (docs)** — `+        "observations": db.scalar(select(func.count()).select_from(Observation)) or 0,`
++- `observatory/docs/obs-db-slim-p2.diff.txt:131` — **non-runtime (docs)** — `+    from app.models import Observation`
++- `observatory/docs/obs-db-slim-p2.diff.txt:135` — **non-runtime (docs)** — `+        Observation(`
++- `observatory/docs/obs-db-slim-p2.diff.txt:143` — **non-runtime (docs)** — `+        Observation(`
++- `observatory/docs/obs-db-slim-p2.diff.txt:159` — **non-runtime (docs)** — `+    assert db.scalar(select(func.count()).select_from(Observation)) == 1`
++- `observatory/docs/obs-db-slim-p2.md:26` — **non-runtime (docs)** — ``store_counts` espone anche `observations` (before/after nel JSON di risposta).`
++- `observatory/docs/obs-db-slim-p2.md:50` — **non-runtime (docs)** — `| Righe `observations` **ora** | **983 788** |`
++- `observatory/docs/obs-db-slim-p2.md:83` — **non-runtime (docs)** — `3. Osservare primo `POST /api/ingest/retention-run` (log collector o trigger manuale interno): campo `legacy_observations_pruned` + `before.`
++- `observatory/docs/obs-db-slim-p3-fasea.md:12` — **non-runtime (docs)** — `### Writer (legacy Observation)`
++- `observatory/docs/obs-db-slim-p3-fasea.md:18` — **non-runtime (altra tabella)** — `Live: ~**216k** `fritz_wlan_assoc` + 163 `fritz_mesh` in `observations`. **0** in `observations_raw`.`
++- `observatory/docs/obs-db-slim-p3-fasea.md:28` — **non-runtime (docs)** — `**Nessuna query di produzione** del tipo `Observation.kind == 'fritz_wlan_assoc'` (solo test + script RO dossier).`
++- `observatory/docs/obs-db-slim-p3-fasea.md:38` — **non-runtime (docs)** — `| Storico 216k Observation | **non serve al runtime** topologia/scans/detector |`
++- `observatory/docs/obs-db-slim-p3-fasea.md:41` — **non-runtime (docs)** — `Le 216k righe Observation sono append-only ridondante rispetto a `meta.link`.`
++- `observatory/docs/obs-db-slim-p3-fasea.md:58` — **non-runtime (docs)** — `| First/last backfill | `observe_portal` + campi asset; prefetch Observation solo se `portal_*` assente (`trust.py:440+`) |`
++- `observatory/docs/obs-db-slim-p3-fasea.md:61` — **non-runtime (docs)** — `### Campi / path ancora scoperti (leggono ancora `observations`)`
++- `observatory/docs/obs-db-slim-p3-fasea.md:65` — **non-runtime (docs)** — `| Presence `active_discovery` | `inventory.py:180–194` | Observation portal kinds con `seen_at ≥ 24h` | **No** — usa le righe, non solo `por`
++- `observatory/docs/obs-db-slim-p3-fasea.md:66` — **non-runtime (docs)** — `| Scans portal-by-IP | `scans.py:82–98` | Observation `PORTAL_EVIDENCE` + IP &lt;24h | **Parziale** — già anche `IpAddress.source` portal &l`
++- `observatory/docs/obs-db-slim-p3-fasea.md:67` — **non-runtime (docs)** — `| Detectors | `detectors/__init__.py:86–119` | kinds `dhcp` / `dns_server` / `llmnr` / `nbns` / `mdns` / `ssdp` su Observation &lt;24h | **N`
++- `observatory/docs/obs-db-slim-p3-fasea.md:68` — **non-runtime (docs)** — `| DNS hysteresis | `identity.py:1375–1378` | Observation `kind=dns` &lt;1h | **No** |`
++- `observatory/docs/obs-db-slim-p3-fasea.md:75` — **non-runtime (docs)** — `| Scans Observation branch | Affidarsi a `IpAddress` portal (già scritto da `observe_interface_ip`); opzionale: raw `entity_key`/IP — **dopo`
++- `observatory/docs/obs-db-slim-p3-fasea.md:82` — **non-runtime (docs)** — `**STOP sui punti 4–6** finché presence (+ scans se si toglie Observation, + detectors/dns) non sono migrati a queste destinazioni.`
++- `observatory/docs/obs-db-slim-p3-fasea.md:92` — **non-runtime (docs)** — `| Call site | Gate | Contenuto Observation |`
++- `observatory/docs/obs-db-slim-p3-fasea.md:98` — **non-runtime (docs)** — `### Già preservato altrove (stesso ingest, indipendente da Observation)`
++- `observatory/docs/obs-db-slim-p3-fasea.md:108` — **non-runtime (docs)** — `### Solo (o principalmente) in legacy Observation oggi`
++- `observatory/docs/obs-db-slim-p3-fasea.md:112` — **non-runtime (docs)** — `| Append storico portal kinds (nmap/icmp/…) | Presence `active_discovery` e scans Observation branch deboli |`
++- `observatory/docs/obs-db-slim-p3-fasea.md:114` — **non-runtime (docs)** — `| Append wlan | Runtime **OK** via meta.link; storico Observation sacrificabile |`
++- `observatory/docs/obs-db-slim-p3-fasea.md:123` — **non-runtime (docs)** — `| Righe/min scritte su `observations` | **0** |`
++- `observatory/docs/obs-db-slim-p3-fasea.md:135` — **non-runtime (docs)** — `2. **Scans**: assert che `IpAddress` portal basti; rimuovere o rendere opzionale il branch Observation.`
++- `observatory/docs/obs-db-slim-p3-fasea.md:138` — **non-runtime (docs)** — `5. Backfill: **non** richiesto per wlan (meta.link già). Eventuale one-shot: trust `portal_*` da Observation residuale dove ancora null (già`
++- `observatory/docs/obs-db-slim-p3a-go.md:22` — **non-runtime (docs)** — `| Totale Observation WLAN (storico TTL) | **216 471** (non toccate a mano) |`
++- `observatory/docs/obs-db-slim-p3a-go.md:24` — **non-runtime (docs)** — `Scan avvenuto + zero Observation scritte → **entrambi OK**.`
++- `observatory/docs/obs-db-slim-p3a.diff.txt:16` — **non-runtime (docs)** — `+        # OBS-DB-SLIM 3a: do NOT append Observation(kind=fritz_wlan_assoc|fritz_mesh).`
++- `observatory/docs/obs-db-slim-p3a.diff.txt:28` — **non-runtime (docs)** — `+# OBS-DB-SLIM · Passo 3a — stop scrittura Observation WLAN · STOP pre-GO`
++- `observatory/docs/obs-db-slim-p3a.diff.txt:57` — **non-runtime (docs)** — `+`prune_legacy_observations` usa solo `Observation.seen_at < cutoff` (TTL 7g).`
++- `observatory/docs/obs-db-slim-p3a.diff.txt:68` — **non-runtime (docs)** — `+| Crescita Observation WLAN = 0 | `COUNT(*) WHERE kind='fritz_wlan_assoc' AND seen_at >= deploy_ts` → **0** (o rate/ora = 0) |`
++- `observatory/docs/obs-db-slim-p3a.diff.txt:75` — **non-runtime (docs)** — `+- ingest scan: `meta.link` scritto; **nessuna** Observation wlan`
++- `observatory/docs/obs-db-slim-p3a.diff.txt:88` — **non-runtime (docs)** — `+| Nuove Observation WLAN / ora dopo deploy | **0** |`
++- `observatory/docs/obs-db-slim-p3a.diff.txt:107` — **non-runtime (docs)** — `-        select(Observation).where(Observation.kind == "fritz_wlan_assoc")`
++- `observatory/docs/obs-db-slim-p3a.diff.txt:108` — **non-runtime (docs)** — `+    # OBS-DB-SLIM 3a: WLAN no longer appends legacy Observation rows.`
++- `observatory/docs/obs-db-slim-p3a.diff.txt:111` — **non-runtime (docs)** — `+            select(Observation).where(Observation.kind == "fritz_wlan_assoc")`
++- `observatory/docs/obs-db-slim-p3a.diff.txt:119` — **non-runtime (docs)** — `+    """meta.link written; zero Observation(kind=fritz_wlan_assoc|fritz_mesh)."""`
++- `observatory/docs/obs-db-slim-p3a.diff.txt:135` — **non-runtime (docs)** — `+        select(Observation).where(`
++- `observatory/docs/obs-db-slim-p3a.diff.txt:136` — **non-runtime (docs)** — `+            Observation.kind.in_(["fritz_wlan_assoc", "fritz_mesh"])`
++- `observatory/docs/obs-db-slim-p3a.md:1` — **non-runtime (docs)** — `# OBS-DB-SLIM · Passo 3a — stop scrittura Observation WLAN · STOP pre-GO`
++- `observatory/docs/obs-db-slim-p3a.md:30` — **non-runtime (docs)** — ``prune_legacy_observations` usa solo `Observation.seen_at < cutoff` (TTL 7g).`
++- `observatory/docs/obs-db-slim-p3a.md:41` — **non-runtime (docs)** — `| Crescita Observation WLAN = 0 | `COUNT(*) WHERE kind='fritz_wlan_assoc' AND seen_at >= deploy_ts` → **0** (o rate/ora = 0) |`
++- `observatory/docs/obs-db-slim-p3a.md:48` — **non-runtime (docs)** — `- ingest scan: `meta.link` scritto; **nessuna** Observation wlan`
++- `observatory/docs/obs-db-slim-p3a.md:61` — **non-runtime (docs)** — `| Nuove Observation WLAN / ora dopo deploy | **0** |`
++- `observatory/docs/obs-deploy-01-go.md:4` — **non-runtime (docs)** — `**Scope:** solo le due parti sicure. **Nessun** prune/TTL su `observations`.`
++- `observatory/docs/obs-dossier-page-diff-021.md:71` — **non-runtime (docs)** — `+- **Fix perdita ora chiusa su timeout POST flow:** batch N=100 su `POST /api/ingest/flows`, retry con ack per chunk (pending resta se fail)`
++- `observatory/docs/obs-dossier-page-diff-021b.md:63` — **non-runtime (docs)** — `+- **Fix perdita ora chiusa su timeout POST flow:** batch N=100 su `POST /api/ingest/flows`, retry con ack per chunk (pending resta se fail)`
++- `observatory/docs/obs-timing-034e-predictions-predeploy.md:17` — **non-runtime (docs)** — `| observations (legacy) | **1055284** |`
++- `observatory/docs/obs-timing-034e-predictions-predeploy.md:33` — **non-runtime (docs)** — `| P7 | assets=151, ip_current=99, observations≈1055284 (tolleranza: observations può crescere leggermente durante deploy; asset/ip_current i`
++- `observatory/docs/obs-timing-034e-qualificazione.md:34` — **non-runtime (docs)** — `| P7 | assets=151, ip_current=99 | assets=**151**, ip_current=**99**; observations 1055284→**1055564** (+280 durante finestra) | **PASS** su`
++- `observatory/docs/obs-timing-034e-qualificazione.md:67` — **non-runtime (docs)** — `4. **Crescita / forma tabella** — `observations` ~1.05M righe; il costo non è dominato solo dalla residenza in page cache del file intero.`
++- `observatory/docs/obs-timing-034e-qualificazione.md:69` — **non-runtime (docs)** — `6. **Prefetch non legge l’intero heap observations** — query aggregata/indice; banda “alta” da run storiche (48 s) non è equivalente a “cold`
++- `observatory/docs/obs-trust-prefetch-diff-011.md:38` — **non-runtime (docs)** — `from app.models import Asset, Event, NameProposal, Observation, SwitchPort`
++- `observatory/docs/obs-trust-prefetch-diff-011.md:104` — **non-runtime (docs)** — `-    """Single O(assets × observations) scan → report + apply actions."""`
++- `observatory/docs/obs-trust-prefetch-diff-011.md:115` — **non-runtime (docs)** — `-                    select(Observation)`
++- `observatory/docs/obs-trust-prefetch-diff-011.md:116` — **non-runtime (docs)** — `-                    .where(Observation.mac.in_(macs))`
++- `observatory/docs/obs-trust-prefetch-diff-011.md:117` — **non-runtime (docs)** — `-                    .order_by(Observation.seen_at)`
++- `observatory/docs/obs-trust-prefetch-diff-011.md:158` — **non-runtime (docs)** — `+    Equivalence with the legacy loop: that loop loads all Observation rows for`
++- `observatory/docs/obs-trust-prefetch-diff-011.md:168` — **non-runtime (docs)** — `+            Observation.mac,`
++- `observatory/docs/obs-trust-prefetch-diff-011.md:169` — **non-runtime (docs)** — `+            func.min(Observation.seen_at),`
++- `observatory/docs/obs-trust-prefetch-diff-011.md:170` — **non-runtime (docs)** — `+            func.max(Observation.seen_at),`
++- `observatory/docs/obs-trust-prefetch-diff-011.md:181` — **non-runtime (docs)** — `+        .where(func.lower(Observation.kind).in_(kinds))`
++- `observatory/docs/obs-trust-prefetch-diff-011.md:182` — **non-runtime (docs)** — `+        .group_by(Observation.mac)`
++- `observatory/docs/obs-trust-prefetch-diff-011.md:220` — **non-runtime (docs)** — `+    """Legacy per-asset Observation scan (kept for equivalence tests)."""`
++- `observatory/docs/obs-trust-prefetch-diff-011.md:226` — **non-runtime (docs)** — `+            select(Observation)`
++- `observatory/docs/obs-trust-prefetch-diff-011.md:227` — **non-runtime (docs)** — `+            .where(Observation.mac.in_(macs))`
++- `observatory/docs/obs-trust-prefetch-diff-011.md:228` — **non-runtime (docs)** — `+            .order_by(Observation.seen_at)`
++- `observatory/docs/obs-trust-prefetch-diff-011.md:252` — **non-runtime (docs)** — `+    pure in-memory loop. ``use_prefetch=False`` keeps the legacy ~2N Observation`
++- `observatory/docs/obs-trust-prefetch-diff-011.md:441` — **non-runtime (docs)** — `-    prior dry_run is therefore safe and avoids a second O(assets × observations)`
++- `observatory/docs/obs-trust-prefetch-diff-011.md:467` — **non-runtime (docs)** — `def latest_portal_observation(db: Session, asset: Asset) -> Observation | None:`
++- `observatory/docs/obs-trust-prefetch-diff-011.md:569` — **non-runtime (docs)** — `+from app.models import Asset, Interface, NameProposal, Observation, Switch, SwitchPort`
++- `observatory/docs/obs-trust-prefetch-diff-011.md:612` — **non-runtime (docs)** — `+    """Prefetch aggregates must match legacy per-asset Observation/FDB scans."""`
++- `observatory/docs/obs-trust-prefetch-diff-011.md:675` — **non-runtime (docs)** — `+            Observation(kind="icmp", mac="AA:BB:CC:DD:EE:01", seen_at=t0, payload={}),`
++- `observatory/docs/obs-trust-prefetch-diff-011.md:676` — **non-runtime (docs)** — `+            Observation(kind="nmap", mac="AA:BB:CC:DD:EE:02", seen_at=t2, payload={}),`
++- `observatory/docs/obs-trust-prefetch-diff-011.md:678` — **non-runtime (docs)** — `+            Observation(kind="ssdp", mac="AA:BB:CC:DD:EE:02", seen_at=now, payload={}),`
++- `observatory/docs/obs-trust-prefetch-diff-011.md:679` — **non-runtime (docs)** — `+            Observation(kind="fritz", mac="AA:BB:CC:DD:EE:01", seen_at=now, payload={}),`
++- `observatory/docs/obs-trust-prefetch-diff-011.md:681` — **non-runtime (docs)** — `+            Observation(kind="ICMP", mac="DE:AD:BE:EF:00:01", seen_at=t1, payload={}),`
++- `observatory/scripts/classify_nuovo_followup.py:54` — **non-runtime (script/tools una-tantum)** — `select kind, ip, seen_at, payload from observations`
++- `observatory/scripts/classify_nuovo_ro.py:104` — **non-runtime (script/tools una-tantum)** — `obs_cols = {x[1] for x in cur.execute("pragma table_info(observations)").fetchall()}`
++- `observatory/scripts/classify_nuovo_ro.py:119` — **non-runtime (script/tools una-tantum)** — `q = f"select source, {at_col} as at from observations where {mac_col}=? order by {at_col} desc limit ?"`
++- `observatory/scripts/dossier_asset98_followup.py:42` — **non-runtime (script/tools una-tantum)** — `"select min(seen_at), max(seen_at), count(*) from observations"`
++- `observatory/scripts/dossier_asset98_followup.py:53` — **non-runtime (script/tools una-tantum)** — `from observations where upper(mac)=? and seen_at like '2026-07-18%'`
++- `observatory/scripts/dossier_asset98_followup.py:63` — **non-runtime (script/tools una-tantum)** — `"select count(*) from observations where upper(mac)=? and seen_at like '2026-07-19%'",`
++- `observatory/scripts/dossier_asset98_followup.py:75` — **non-runtime (script/tools una-tantum)** — `from observations where upper(mac)=? and seen_at like '2026-07-20%'`
++- `observatory/scripts/dossier_asset98_followup.py:91` — **non-runtime (script/tools una-tantum)** — `from observations where upper(mac)=?`
++- `observatory/scripts/dossier_asset98_followup.py:107` — **non-runtime (script/tools una-tantum)** — `from observations where upper(mac)=? and json_extract(payload,'$.fritz_active')=1`
++- `observatory/scripts/dossier_asset98_followup.py:122` — **non-runtime (script/tools una-tantum)** — `from observations where upper(mac)=? and json_extract(payload,'$.fritz_active')=1`
++- `observatory/scripts/dossier_asset98_followup.py:138` — **non-runtime (script/tools una-tantum)** — `from observations where upper(mac)=? group by 1,2,3 order by 4 desc`
++- `observatory/scripts/dossier_asset98_followup.py:147` — **non-runtime (script/tools una-tantum)** — `select seen_at, payload from observations where upper(mac)=?`
++- `observatory/scripts/dossier_asset98_followup.py:209` — **non-runtime (script/tools una-tantum)** — `"select kind, count(*) from observations where upper(mac)=? or ip=? group by kind",`
++- `observatory/scripts/dossier_asset98_followup.py:257` — **non-runtime (script/tools una-tantum)** — `from observations where upper(mac)=? and seen_at like '2026-07-21%'`
++- `observatory/scripts/dossier_asset98_followup.py:268` — **non-runtime (script/tools una-tantum)** — `select max(seen_at) from observations`
++- `observatory/scripts/dossier_asset98_followup.py:280` — **non-runtime (script/tools una-tantum)** — `from observations where upper(mac)=? and seen_at >= ?`
++- `observatory/scripts/dossier_asset98_ro.py:25` — **non-runtime (script/tools una-tantum)** — `print("OBS_COLS", cols("observations"))`
++- `observatory/scripts/dossier_asset98_ro.py:41` — **non-runtime (script/tools una-tantum)** — `"select min(seen_at), max(seen_at), count(*) from observations where upper(mac)=?",`
++- `observatory/scripts/dossier_asset98_ro.py:45` — **non-runtime (script/tools una-tantum)** — `"select min(seen_at), max(seen_at), count(*) from observations where ip=?",`
++- `observatory/scripts/dossier_asset98_ro.py:80` — **non-runtime (altra tabella)** — `for table in ("observations_raw", "observations"):`
++- `observatory/scripts/dossier_asset98_ro.py:92` — **non-runtime (script/tools una-tantum)** — `from observations where upper(mac)=?`
++- `observatory/scripts/dossier_asset98_ro.py:129` — **non-runtime (script/tools una-tantum)** — `select seen_at, kind, ip, hostname, vendor from observations`
++- `observatory/scripts/dossier_asset98_ro.py:137` — **non-runtime (script/tools una-tantum)** — `select seen_at, kind, ip, hostname, vendor from observations`
++- `observatory/scripts/dossier_asset98_ro.py:148` — **non-runtime (script/tools una-tantum)** — `from observations where upper(mac)=? and kind like '%fdb%'`
++- `observatory/scripts/dossier_asset98_ro.py:189` — **non-runtime (script/tools una-tantum)** — `# ssdp-ish observations`
++- `observatory/scripts/dossier_asset98_ro.py:192` — **non-runtime (script/tools una-tantum)** — `"select count(*) from observations where upper(mac)=? and kind=?",`
++- `observatory/scripts/dossier_asset98_ro.py:199` — **non-runtime (script/tools una-tantum)** — `from observations where upper(mac)=? and kind=?`
++- `observatory/scripts/dossier_asset98_ro.py:212` — **non-runtime (script/tools una-tantum)** — `from observations where upper(mac)=?`
++- `observatory/scripts/dossier_asset98_ro.py:316` — **non-runtime (script/tools una-tantum)** — `select seen_at, kind, payload from observations`
++- `observatory/scripts/live_qa_v050.py:119` — **non-runtime (script/tools una-tantum)** — `first = ingest_post("/api/ingest/observations", {"observations": [obs]})`
++- `observatory/scripts/live_qa_v050.py:120` — **non-runtime (script/tools una-tantum)** — `second = ingest_post("/api/ingest/observations", {"observations": [obs]})`
++- `observatory/scripts/obs_db_slim_p1_drop_dup_indexes.py:50` — **non-runtime (script/tools una-tantum)** — `'EXPLAIN QUERY PLAN SELECT * FROM observations WHERE mac=? AND seen_at >= datetime("now","-24 hours")',`
++- `observatory/scripts/obs_db_slim_p1_drop_dup_indexes.py:55` — **non-runtime (script/tools una-tantum)** — `'EXPLAIN QUERY PLAN SELECT id FROM observations WHERE seen_at < datetime("now","-3 days")',`
++- `observatory/scripts/obs_db_slim_p1_drop_dup_indexes.py:60` — **non-runtime (script/tools una-tantum)** — `'EXPLAIN QUERY PLAN SELECT COUNT(*) FROM observations WHERE seen_at >= datetime("now","-24 hours")',`
++- `observatory/scripts/obs_db_slim_p1_drop_dup_indexes.py:109` — **non-runtime (script/tools una-tantum)** — `if "SCAN observations" in joined and "INDEX" not in joined:`
++- `observatory/scripts/obs_db_slim_p1_drop_dup_indexes.py:115` — **non-runtime (script/tools una-tantum)** — `if "SCAN observations" in joined and "INDEX" not in joined:`
++- `observatory/scripts/probe_asset98_monday_ssid.py:21` — **non-runtime (script/tools una-tantum)** — `select seen_at, payload from observations`
++- `observatory/scripts/probe_asset98_monday_ssid.py:78` — **non-runtime (script/tools una-tantum)** — `select count(*) c from observations`
++- `observatory/scripts/probe_guest_flags.py:13` — **non-runtime (script/tools una-tantum)** — `"select count(*) c from observations where instr(cast(payload as text), ?)>0",`
++- `observatory/scripts/probe_guest_flags.py:20` — **non-runtime (script/tools una-tantum)** — `"select count(*) c from observations where instr(cast(payload as text), ?)>0",`
++- `observatory/scripts/probe_guest_flags.py:25` — **non-runtime (script/tools una-tantum)** — `"select mac, seen_at, payload from observations where instr(cast(payload as text), ?)>0 limit 2",`
++- `observatory/tests/test_backend_filo_f2_f28.py:25` — **non-runtime (test)** — `Observation,`
++- `observatory/tests/test_backend_filo_f2_f28.py:214` — **non-runtime (test)** — `"""Observation legacy without presence_sources must not gate scans (3b-i)."""`
++- `observatory/tests/test_backend_filo_f2_f28.py:238` — **non-runtime (test)** — `Observation(`
++- `observatory/tests/test_fritz_provider.py:56` — **non-runtime (test)** — `assert len(result.observations) == 1`
++- `observatory/tests/test_infrastructure_reconciliation.py:22` — **non-runtime (test)** — `Observation,`
++- `observatory/tests/test_infrastructure_reconciliation.py:130` — **non-runtime (test)** — `observation = Observation(kind="fritz", ip=switch.ip, hostname="Switch")`
++- `observatory/tests/test_infrastructure_reconciliation.py:145` — **non-runtime (test)** — `assert db.scalar(select(Observation).where(Observation.id == observation.id))`
++- `observatory/tests/test_ingest_materialize_equivalence.py:17` — **non-runtime (altra entità: Raw/Aggregate/Flow)** — `from app.models import Asset, Finding, Interface, IpAddress, Observation, ObservationRaw`
++- `observatory/tests/test_ingest_materialize_equivalence.py:145` — **non-runtime (test)** — `for o in db.scalars(select(Observation)).all()`
++- `observatory/tests/test_ingest_materialize_equivalence.py:246` — **non-runtime (test)** — `# Legacy Observation rows accumulate (record_observation is append-only); strip them.`
++- `observatory/tests/test_ingest_materialize_equivalence.py:382` — **non-runtime (test)** — `"""Cross-source collapse: one legacy Observation; presence stays fresh via observe_portal."""`
++- `observatory/tests/test_ingest_materialize_equivalence.py:435` — **non-runtime (test)** — `select(Observation).where(Observation.mac == mac, Observation.kind == "nmap")`
++- `observatory/tests/test_ingest_materialize_equivalence.py:450` — **non-runtime (test)** — `# --- DHCP path: detector no longer reads Observation (3b-iii GATE 5) ---`
++- `observatory/tests/test_ingest_materialize_equivalence.py:480` — **non-runtime (test)** — `select(Observation).where(Observation.mac == mac, Observation.kind == "dhcp")`
++- `observatory/tests/test_inventory_reachability.py:13` — **non-runtime (test)** — `from app.models import Asset, Interface, IpAddress, Observation, Switch, SwitchPort`
++- `observatory/tests/test_inventory_reachability.py:47` — **non-runtime (test)** — `db.add(Observation(kind="fritz", mac=mac, hostname=f"PC-{mac.replace(':', '-')}"))`
++- `observatory/tests/test_leva1_reconcile_presence.py:95` — **non-runtime (test)** — `body = ObservationsV2In(observations=[], materialize=True, reconcile_presence=False)`
++- `observatory/tests/test_leva1_reconcile_presence.py:97` — **non-runtime (test)** — `body2 = ObservationsV2In(observations=[], materialize=True)`
++- `observatory/tests/test_leva_b_presence_dedup.py:83` — **non-runtime (test)** — `body = ObservationsV2In(observations=[], materialize=True)`
++- `observatory/tests/test_m1_observation_store.py:21` — **non-runtime (test)** — `Observation,`
++- `observatory/tests/test_m1_observation_store.py:181` — **non-runtime (test)** — `observations=[env],`
++- `observatory/tests/test_m1_observation_store.py:195` — **non-runtime (test)** — `body=ObservationsV2In(observations=[]),`
++- `observatory/tests/test_m1_observation_store.py:217` — **non-runtime (test)** — `# derived state: assets created; legacy Observation dual-write OFF (3b-iii)`
++- `observatory/tests/test_m1_observation_store.py:219` — **non-runtime (test)** — `assert db.scalar(select(func.count()).select_from(Observation)) == 0`
++- `observatory/tests/test_m1_observation_store.py:301` — **non-runtime (test)** — `from app.models import Observation`
++- `observatory/tests/test_m1_observation_store.py:305` — **non-runtime (test)** — `Observation(`
++- `observatory/tests/test_m1_observation_store.py:313` — **non-runtime (test)** — `Observation(`
++- `observatory/tests/test_m1_observation_store.py:329` — **non-runtime (test)** — `assert db.scalar(select(func.count()).select_from(Observation)) == 1`
++- `observatory/tests/test_m1_provider_contract.py:42` — **non-runtime (test)** — `assert len(result.observations) == 1`
++- `observatory/tests/test_m1_provider_contract.py:46` — **non-runtime (test)** — `assert run["counts"]["observations"] == 1`
++- `observatory/tests/test_m1_provider_contract.py:53` — **non-runtime (test)** — `assert result.observations == []`
++- `observatory/tests/test_m1_provider_contract.py:56` — **non-runtime (test)** — `assert run["counts"]["observations"] == 0`
++- `observatory/tests/test_nmap_cutover_post.py:28` — **non-runtime (test)** — `observations=[{"source": "nmap", "kind": "nmap", "l2": {"mac": "AA:BB:CC:DD:EE:01"}}],`
++- `observatory/tests/test_nmap_cutover_post.py:40` — **non-runtime (test)** — `assert args[0] == "http://api/api/ingest/observations"`
++- `observatory/tests/test_nmap_cutover_post.py:44` — **non-runtime (test)** — `assert len(payload["observations"]) == 1`
++- `observatory/tests/test_nmap_cutover_post.py:70` — **non-runtime (test)** — `observations=[],`
++- `observatory/tests/test_nmap_cutover_post.py:99` — **non-runtime (test)** — `observations=[],`
++- `observatory/tests/test_trust_no_observation.py:1` — **non-runtime (test)** — `"""Trust plan uses asset portal_*/presence_sources + FDB — no Observation reads."""`
++- `observatory/tests/test_trust_no_observation.py:60` — **non-runtime (test)** — `assert "observations" not in joined`
++- `observatory/tests/test_wifi_association_ingest.py:16` — **non-runtime (test)** — `from app.models import Asset, Interface, IpAddress, Observation`
++- `observatory/tests/test_wifi_association_ingest.py:111` — **non-runtime (test)** — `# OBS-DB-SLIM 3a: WLAN no longer appends legacy Observation rows.`
++- `observatory/tests/test_wifi_association_ingest.py:114` — **non-runtime (test)** — `select(Observation).where(Observation.kind == "fritz_wlan_assoc")`
++- `observatory/tests/test_wifi_association_ingest.py:121` — **non-runtime (test)** — `"""meta.link written; zero Observation(kind=fritz_wlan_assoc|fritz_mesh)."""`
++- `observatory/tests/test_wifi_association_ingest.py:137` — **non-runtime (test)** — `select(Observation).where(`
++- `observatory/tests/test_wifi_association_ingest.py:138` — **non-runtime (test)** — `Observation.kind.in_(["fritz_wlan_assoc", "fritz_mesh"])`
++
++## Verdetto
++
++GATE 5 = **PASS**
+diff --git a/observatory/docs/obs-3b-iii-riapertura.md b/observatory/docs/obs-3b-iii-riapertura.md
+new file mode 100644
+index 0000000..3a33359
+--- /dev/null
++++ b/observatory/docs/obs-3b-iii-riapertura.md
+@@ -0,0 +1,31 @@
++# OBS-DB-SLIM 3b-iii — riapertura (post-034e)
++
++**Data:** 2026-07-25  
++**Live al riavvio:** 0.10.26 · **target:** 0.10.27  
++**Branch:** `feature/obs-db-slim`
++
++## Decisione: qualificazione rumore T_prefetch_obs ABBANDONATA
++
++Non rinviata: **abbandonata**.
++
++Motivo: 3b-iii **elimina** la componente `T_prefetch_obs`. La sua varianza diventa non osservabile e irrilevante. Gli assert restano **F1/F2** (strutturali, rumore-invarianti).
++
++- Ipotesi page-cache: **FALSIFICATA** (19.716 s vs ≥40 s previsti al primo boot 0.10.26).
++- Ipotesi guida residua sul costo I/O: **stato del WAL** — appartiene alla diagnosi ballooning pre-4b, non a questo cantiere.
++
++Metro ufficiale per il post-deploy 0.10.27: F1/F2 (bloccanti) + F3 indicativo + F4 (stesso `needs_apply`). Vedi `docs/obs-timing-034b.md` e qualificazione 034e.
++
++## Decomposizione reale del boot 0.10.26 (post-deploy 034e)
++
++Boot D (`needs_apply=true`, `needs_backup=true`), riga `[timing]` misurata:
++
++| Componente | s | % di T_total |
++|------------|---|--------------|
++| T_total | **347.943** | 100% |
++| T_backup | **307.942** | **88.5%** |
++| T_prefetch_obs | **19.716** | **5.7%** |
++| resto (apply + fdb + plan + import + uvicorn_to_ready + wrap) | ~20.3 | ~5.8% |
++
++**3b-iii vale ~20 s su ~348 s.** Il suo valore è **architetturale** (rimozione dell’ultimo reader runtime della tabella legacy `observations` → sblocca 4b / DROP), **non cronometrico**.
++
++4b e rotazione backup restano **CONGELATI**. Asimmetria throughput → `DEBT-BACKUP-ASYMMETRY`.
+diff --git a/observatory/tests/test_ingest_materialize_equivalence.py b/observatory/tests/test_ingest_materialize_equivalence.py
+index b77415d..b2bd8b5 100644
+--- a/observatory/tests/test_ingest_materialize_equivalence.py
++++ b/observatory/tests/test_ingest_materialize_equivalence.py
+@@ -434,7 +434,7 @@ def test_legacy_observation_gated_on_raw_created_multisource(db, monkeypatch):
+     nmap_obs = db.scalars(
+         select(Observation).where(Observation.mac == mac, Observation.kind == "nmap")
+     ).all()
+-    assert len(nmap_obs) == 1
++    assert len(nmap_obs) == 0  # dual-write OFF (3b-iii)
+ 
+     asset = db.scalar(
+         select(Asset).join(Interface).where(Interface.mac == mac)
+@@ -447,7 +447,7 @@ def test_legacy_observation_gated_on_raw_created_multisource(db, monkeypatch):
+     assert asset.presence_state == "present"
+     assert asset.trust_level == "confirmed_present"
+ 
+-    # --- DHCP path: collapse must not inflate Finding.occurrence_count ---
++    # --- DHCP path: detector no longer reads Observation (3b-iii GATE 5) ---
+     monkeypatch.setenv("DETECTORS_ENABLED", "unexpected_dhcp_dns")
+     get_settings.cache_clear()
+ 
+@@ -479,23 +479,7 @@ def test_legacy_observation_gated_on_raw_created_multisource(db, monkeypatch):
+     dhcp_rows = db.scalars(
+         select(Observation).where(Observation.mac == mac, Observation.kind == "dhcp")
+     ).all()
+-    assert len(dhcp_rows) == 1
++    assert len(dhcp_rows) == 0  # dual-write OFF (3b-iii)
+ 
+-    detect_unexpected_dhcp_dns(db)
+-    db.commit()
+-    finding = db.scalar(
+-        select(Finding).where(
+-            Finding.category == "unexpected_service",
+-            Finding.asset_id == asset.id,
+-            Finding.status.in_(["open", "ack"]),
+-        )
+-    )
+-    assert finding is not None
+-    assert finding.occurrence_count == 1
+-
+-    detect_unexpected_dhcp_dns(db)
+-    db.commit()
+-    db.refresh(finding)
+-    # Second detector run: +1 from one real row, not +2 from duplicate legacy appends.
+-    assert finding.occurrence_count == 2
++    assert detect_unexpected_dhcp_dns(db) == []
+     get_settings.cache_clear()
+diff --git a/observatory/tests/test_m1_observation_store.py b/observatory/tests/test_m1_observation_store.py
+index ffb75ca..5c9a10f 100644
+--- a/observatory/tests/test_m1_observation_store.py
++++ b/observatory/tests/test_m1_observation_store.py
+@@ -214,9 +214,9 @@ def _scan_body() -> ScanBatch:
+ 
+ def test_scan_batch_dual_write_and_idempotency(db):
+     ingest_scan(body=_scan_body(), db=db, settings=settings(), x_obs_token=TOKEN)
+-    # derived state (legacy path) unchanged: assets + legacy observations created
++    # derived state: assets created; legacy Observation dual-write OFF (3b-iii)
+     assert db.scalar(select(func.count()).select_from(Asset)) == 2
+-    assert db.scalar(select(func.count()).select_from(Observation)) == 2
++    assert db.scalar(select(func.count()).select_from(Observation)) == 0
+     # raw store populated
+     assert db.scalar(select(func.count()).select_from(ObservationRaw)) == 2
+     # sensor run recorded for the batch
+diff --git a/observatory/tests/test_trust_backup_selective.py b/observatory/tests/test_trust_backup_selective.py
+index 5b56dfb..fadf1e9 100644
+--- a/observatory/tests/test_trust_backup_selective.py
++++ b/observatory/tests/test_trust_backup_selective.py
+@@ -12,7 +12,7 @@ from sqlalchemy.orm import sessionmaker
+ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
+ 
+ from app.db import Base
+-from app.models import Asset, Interface, Observation
++from app.models import Asset, Interface
+ from app.services.trust import (  # noqa: E402
+     reconcile_trust_history,
+     trust_needs_apply,
+@@ -36,7 +36,7 @@ def test_trust_needs_backup_helpers():
+ 
+ 
+ def test_portal_bump_alone_is_timestamp_not_backup(tmp_path):
+-    """Newer portal Observation bumps portal_last_seen without trust_level flip → no backup."""
++    """Fresher presence_sources portal bumps portal_last_seen without trust_level flip → no backup."""
+     db = _session(tmp_path)
+     now = datetime.utcnow().replace(microsecond=0)
+     old = now - timedelta(hours=2)
+@@ -49,19 +49,12 @@ def test_portal_bump_alone_is_timestamp_not_backup(tmp_path):
+         presence_state="present",
+         portal_first_seen=old,
+         portal_last_seen=old,
++        presence_sources={"icmp": newer.isoformat() + "Z"},
+         meta={"operational_state": "active"},
+     )
+     db.add(asset)
+     db.flush()
+     db.add(Interface(asset_id=asset.id, mac="AA:BB:CC:DD:EE:01"))
+-    db.add(
+-        Observation(
+-            kind="icmp",
+-            mac="AA:BB:CC:DD:EE:01",
+-            seen_at=newer,
+-            payload={},
+-        )
+-    )
+     db.flush()
+ 
+     preview = reconcile_trust_history(db, dry_run=True, now=now)
+diff --git a/observatory/tests/test_trust_no_observation.py b/observatory/tests/test_trust_no_observation.py
+new file mode 100644
+index 0000000..ff443d9
+--- /dev/null
++++ b/observatory/tests/test_trust_no_observation.py
+@@ -0,0 +1,63 @@
++"""Trust plan uses asset portal_*/presence_sources + FDB — no Observation reads."""
++
++from __future__ import annotations
++
++from datetime import datetime, timedelta
++
++from sqlalchemy import create_engine, event, select
++from sqlalchemy.orm import Session, sessionmaker
++from sqlalchemy.pool import StaticPool
++
++from app.db import Base
++from app.models import Asset, Interface, Switch, SwitchPort
++from app.services.trust import _build_trust_plan, observe_portal
++
++
++def _session(tmp_path):
++    engine = create_engine(
++        f"sqlite:///{tmp_path / 'trust_no_obs.db'}",
++        connect_args={"check_same_thread": False},
++        poolclass=StaticPool,
++    )
++    Base.metadata.create_all(engine)
++    return sessionmaker(bind=engine)()
++
++
++def test_trust_plan_no_observation_queries(tmp_path):
++    db: Session = _session(tmp_path)
++    now = datetime.utcnow()
++    asset = Asset(uid="no-obs-1", status="nuovo", trust_level="known", name="x")
++    db.add(asset)
++    db.flush()
++    db.add(Interface(asset_id=asset.id, mac="AA:BB:CC:DD:EE:01"))
++    observe_portal(asset, "nmap", now - timedelta(hours=1), db=db)
++    sw = Switch(code="s1", name="s", ip="10.0.0.1")
++    db.add(sw)
++    db.flush()
++    db.add(
++        SwitchPort(
++            switch_id=sw.id,
++            number=1,
++            asset_id=asset.id,
++            last_fdb_at=now - timedelta(minutes=5),
++        )
++    )
++    db.commit()
++
++    statements: list[str] = []
++
++    def _before(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
++        statements.append(str(statement))
++
++    bind = db.get_bind()
++    event.listen(bind, "before_cursor_execute", _before)
++    try:
++        plan = _build_trust_plan(db, now=now, use_prefetch=True)
++    finally:
++        event.remove(bind, "before_cursor_execute", _before)
++
++    joined = " ".join(statements).lower()
++    assert "observations" not in joined
++    assert plan["scan_stats"]["t_prefetch_obs_s"] is None
++    assert plan["scan_stats"]["t_prefetch_fdb_s"] is not None
++    assert any(a["asset_id"] == asset.id for a in plan["actions"])
+diff --git a/observatory/tests/test_trust_prefetch_equivalence.py b/observatory/tests/test_trust_prefetch_equivalence.py
+deleted file mode 100644
+index 0d0f06f..0000000
+--- a/observatory/tests/test_trust_prefetch_equivalence.py
++++ /dev/null
+@@ -1,178 +0,0 @@
+-"""Prefetch trust dry_run: equivalence vs legacy N+1 scan."""
+-
+-from __future__ import annotations
+-
+-import sys
+-from datetime import datetime, timedelta
+-from pathlib import Path
+-
+-from sqlalchemy import create_engine
+-from sqlalchemy.orm import sessionmaker
+-
+-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
+-
+-from app.db import Base
+-from app.models import Asset, Interface, NameProposal, Observation, Switch, SwitchPort
+-from app.services.trust import _build_trust_plan, reconcile_trust_history
+-
+-
+-def _session(tmp_path):
+-    engine = create_engine(f"sqlite:///{tmp_path / 'trust_prefetch.db'}")
+-    Base.metadata.create_all(engine)
+-    return sessionmaker(bind=engine)()
+-
+-
+-def _action_key(action: dict) -> dict:
+-    return {
+-        "asset_id": action["asset_id"],
+-        "level": action["level"],
+-        "expected_state": action["expected_state"],
+-        "has_portal_rows": action["has_portal_rows"],
+-        "portal_first": action["portal_first"],
+-        "portal_last": action["portal_last"],
+-        "derived_last": action["derived_last"],
+-        "archive_proposal_ids": list(action["archive_proposal_ids"]),
+-        "structural": action["structural"],
+-        "timestamp_refresh": action["timestamp_refresh"],
+-    }
+-
+-
+-def _report_key(report: dict) -> dict:
+-    return {
+-        k: report[k]
+-        for k in (
+-            "assets_total",
+-            "confirmed_present",
+-            "known",
+-            "new_actionable",
+-            "quarantine",
+-            "stale_unlocated",
+-            "proposals_archived",
+-            "changed_assets",
+-            "timestamp_refreshes",
+-        )
+-    }
+-
+-
+-def test_prefetch_plan_identical_to_nplus1(tmp_path):
+-    """Prefetch aggregates must match legacy per-asset Observation/FDB scans."""
+-    db = _session(tmp_path)
+-    now = datetime.utcnow().replace(microsecond=0)
+-    t0 = now - timedelta(days=3)
+-    t1 = now - timedelta(hours=6)
+-    t2 = now - timedelta(hours=1)
+-    t_fdb = now - timedelta(minutes=10)
+-
+-    # Multi-MAC: portal first on mac-A, last on mac-B; non-portal kinds ignored.
+-    multi = Asset(
+-        uid="multi",
+-        status="noto",
+-        name="MultiNIC",
+-        trust_level="confirmed_present",
+-        presence_state="present",
+-        portal_first_seen=t0,
+-        portal_last_seen=t1,
+-        meta={"operational_state": "active"},
+-    )
+-    # Quarantine candidate + weak Fritz proposal.
+-    histo = Asset(uid="histo", status="nuovo", trust_level=None, presence_state="unknown")
+-    # No MAC → no portal rows.
+-    bare = Asset(
+-        uid="bare",
+-        status="noto",
+-        name="Bare",
+-        trust_level="known",
+-        presence_state="unknown",
+-        meta={"operational_state": "active"},
+-    )
+-    # FDB newer than portal last.
+-    fdb_asset = Asset(
+-        uid="fdb",
+-        status="noto",
+-        name="FDBBox",
+-        trust_level="confirmed_present",
+-        presence_state="present",
+-        portal_first_seen=t1,
+-        portal_last_seen=t1,
+-        meta={"operational_state": "active"},
+-    )
+-    db.add_all([multi, histo, bare, fdb_asset])
+-    db.flush()
+-
+-    db.add_all(
+-        [
+-            Interface(asset_id=multi.id, mac="AA:BB:CC:DD:EE:01"),
+-            Interface(asset_id=multi.id, mac="AA:BB:CC:DD:EE:02"),
+-            Interface(asset_id=histo.id, mac="11:22:33:44:55:66"),
+-            Interface(asset_id=fdb_asset.id, mac="DE:AD:BE:EF:00:01"),
+-        ]
+-    )
+-    db.add(
+-        NameProposal(
+-            asset_id=histo.id,
+-            source="fritz",
+-            value="PC-11-22-33-44-55-66",
+-            confidence=0.3,
+-            status="pending",
+-        )
+-    )
+-    db.add_all(
+-        [
+-            Observation(kind="icmp", mac="AA:BB:CC:DD:EE:01", seen_at=t0, payload={}),
+-            Observation(kind="nmap", mac="AA:BB:CC:DD:EE:02", seen_at=t2, payload={}),
+-            # Must NOT drive portal (ssdp / fritz outside PORTAL_EVIDENCE path for portal).
+-            Observation(kind="ssdp", mac="AA:BB:CC:DD:EE:02", seen_at=now, payload={}),
+-            Observation(kind="fritz", mac="AA:BB:CC:DD:EE:01", seen_at=now, payload={}),
+-            # Uppercase kind still portal via lower().
+-            Observation(kind="ICMP", mac="DE:AD:BE:EF:00:01", seen_at=t1, payload={}),
+-        ]
+-    )
+-    sw = Switch(code="sw1", name="sw", ip="192.168.1.8")
+-    db.add(sw)
+-    db.flush()
+-    db.add(
+-        SwitchPort(
+-            switch_id=sw.id,
+-            number=1,
+-            asset_id=fdb_asset.id,
+-            last_fdb_at=t_fdb,
+-            source="fdb",
+-        )
+-    )
+-    db.flush()
+-
+-    legacy = _build_trust_plan(db, now=now, use_prefetch=False)
+-    pref = _build_trust_plan(db, now=now, use_prefetch=True)
+-
+-    assert _report_key(legacy["report"]) == _report_key(pref["report"])
+-    legacy_actions = sorted(
+-        (_action_key(a) for a in legacy["actions"]), key=lambda a: a["asset_id"]
+-    )
+-    pref_actions = sorted(
+-        (_action_key(a) for a in pref["actions"]), key=lambda a: a["asset_id"]
+-    )
+-    assert legacy_actions == pref_actions
+-
+-    # Multi-MAC first/last span both NICs.
+-    multi_action = next(a for a in pref["actions"] if a["asset_id"] == multi.id)
+-    assert multi_action["portal_first"] == t0
+-    assert multi_action["portal_last"] == t2
+-    assert multi_action["has_portal_rows"] is True
+-
+-    fdb_action = next(a for a in pref["actions"] if a["asset_id"] == fdb_asset.id)
+-    assert fdb_action["derived_last"] == t_fdb
+-
+-    # Query budget: prefetch must beat N+1 on this fixture.
+-    assert pref["scan_stats"]["mode"] == "prefetch"
+-    assert legacy["scan_stats"]["mode"] == "nplus1"
+-    assert pref["scan_stats"]["queries"] < legacy["scan_stats"]["queries"]
+-
+-
+-def test_reconcile_dry_run_exposes_scan_stats(tmp_path):
+-    db = _session(tmp_path)
+-    db.add(Asset(uid="x", status="nuovo"))
+-    db.flush()
+-    preview = reconcile_trust_history(db, dry_run=True)
+-    assert preview["scan_stats"]["mode"] == "prefetch"
+-    assert isinstance(preview["scan_stats"]["queries"], int)
+-    assert preview["scan_stats"]["queries"] >= 3
