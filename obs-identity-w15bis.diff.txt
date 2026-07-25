@@ -1,0 +1,305 @@
+# OBS-IDENTITY W1.5-bis — diff snapshot for review
+# generated 2026-07-25T22:20Z
+
+diff --git a/observatory/CHANGELOG.md b/observatory/CHANGELOG.md
+index 677f6ee..95ef14b 100644
+--- a/observatory/CHANGELOG.md
++++ b/observatory/CHANGELOG.md
+@@ -3,6 +3,7 @@
+ ## 0.10.43 — OBS-IDENTITY W1.5-bis gate closure
+ 
+ - **W1.5-bis:** rimossa soglia E3 inventata (`mac_count_threshold` solo se misurata); test limiti E5-physical (D.2); tool RO `obs_identity_linker_dryrun.py`. Nessun writer identity acceso. W2 shadow writers slitta a **0.10.44**. Debiti: DEBT-RECONCILE-CHURN-1 (asset 116), DEBT-E3-AVAILABLE-FALSE.
++- **MAC↔IP (fixture):** classifier puro `mac_ip_policy.py` + 9 test contratto; **non** wired a reconcile/trust (DEBT-MAC-IP-POLICY-WIRE → W7).
+ 
+ ## 0.10.42 — W1.5 identity-evidence (deployata)
+ 
+diff --git a/observatory/docs/KNOWN_DEBT.md b/observatory/docs/KNOWN_DEBT.md
+index 3fe6739..8c13303 100644
+--- a/observatory/docs/KNOWN_DEBT.md
++++ b/observatory/docs/KNOWN_DEBT.md
+@@ -15,7 +15,21 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+ - **Priorità:** bloccante per E3 finché SNMP non è misurabile
+ - **Cosa:** E3-topological richiede access_port + mac_count misurato + soglia **esplicita** + simultaneità. Con poll SNMP in timeout, E3 = **available=false** (degrada a E2). Nessuna soglia inventata.
+ - **Vincolo:** non promuovere E3 finché `fdb_poll.ok` / misure porta non tornano.
+-- **Ripresa:** W2+ quando SNMP/LLDP writers misurano.
++- **Ripresa:** W2+ quando SNMP/LLDP writers misurano; requisiti accesso/poll in **DEBT-FDB-LLDP-PASSIVE**.
++
++## DEBT-FDB-LLDP-PASSIVE
++
++- **Priorità:** wave futura post W1.5-bis (writers SNMP / presenza) — **non** interrompe W1.5-bis
++- **Cosa:** implementazione iniziale **passiva/read-only** FDB+LLDP: presenza/posizione L2, **non** identità; FDB ≠ ownership; LLDP/CDP solo corroborante (spoofabile). LGS310C/328C: SNMPv3 authPriv, RO, ACL solo Cassiopea, view Bridge/LLDP/ENTITY, no SET, segreti fuori repo/log, timeout/rate limit; LLDP/CDP non abilitato dove non serve. ObservationRaw: switch_id, port, VLAN/bridge-domain, timestamp, age/last_seen, acquisition_method, failure_state; dedupe per **transizione** non per poll. Alert «nuovo MAC su access» solo dopo classificazione misurata access/trunk/uplink/AP/powerline, inizialmente informativo; **niente** quarantena/shutdown auto. Spoof / MAC move / CAM flood / randomized MAC previsti; assenza alert ≠ sicurezza.
++- **Doc:** [`docs/obs-fdb-lldp-passive.md`](obs-fdb-lldp-passive.md)
++- **Vietato:** usarlo come scorciatoia identity/merge; SET SNMP; enforcement automatico porte; dichiarare “rete sicura” perché non ci sono alert.
++
++## DEBT-MAC-IP-POLICY-WIRE
++
++- **Priorità:** prossima wave presence (W7 / post W1.5-bis)
++- **Cosa:** policy dominio MAC↔IP (chassis ≥1 IP corrente; eccezione powerline/510E; `present_l2_unaddressed`; supersession binding) — classifier in `api/app/services/mac_ip_policy.py` + test contratto. **Non ancora** collegata a `reconcile_asset_presence` / trust.
++- **Doc:** [`docs/obs-currency-mac-ip-policy.md`](obs-currency-mac-ip-policy.md)
++- **Vietato:** usarla come scorciatoia di fusione chassis; inventare management IP.
+ 
+ ## DEBT-MIRROR-SOURCES
+ 
+diff --git a/observatory/docs/obs-identity-w15bis.md b/observatory/docs/obs-identity-w15bis.md
+index 4720900..7588d26 100644
+--- a/observatory/docs/obs-identity-w15bis.md
++++ b/observatory/docs/obs-identity-w15bis.md
+@@ -192,10 +192,137 @@ Bump **0.10.43**.
+ 
+ ## OBSERVED 0.10.43
+ 
+-_TBD post-deploy — riportare boot1 E regime senza sostituire._
++### Boot1 (primo post-deploy — **non** sostituibile col regime)
++
++| | Valore |
++|--|--------|
++| T_total | **93.836 s** |
++| needs_apply | **true** |
++| T_backup | **84.636 s** |
++| structural | **1** (asset **116**, DEBT-RECONCILE-CHURN-1 — previsto) |
++| identity_evidence / proposals | **0 / 0** |
++
++**[timing] boot1 0.10.43 (completo):**
++```json
++{"event":"api_boot","version":"0.10.43","epoch_start":1785004909.619,"epoch_import_end":1785004909.663,"epoch_bootstrap_end":1785004999.42,"epoch_ready":1785005003.455,"needs_backup":true,"needs_apply":true,"t_total_level_check":"identity","timers":{"T_total":{"s":93.836,"parent":null},"T_import":{"s":0.044,"parent":"T_total"},"T_bootstrap_wall":{"s":89.757,"parent":"T_total"},"T_uvicorn_to_ready":{"s":4.035,"parent":"T_total"},"T_trust":{"s":84.913,"parent":"T_bootstrap_wall"},"T_dry_run":{"s":0.087,"parent":"T_trust"},"T_prefetch_obs":{"s":null,"parent":"T_dry_run"},"T_prefetch_fdb":{"s":0.003,"parent":"T_dry_run"},"T_plan_loop":{"s":0.083,"parent":"T_dry_run"},"T_dry_residuo":{"s":0.001,"parent":"T_dry_run"},"T_backup":{"s":84.636,"parent":"T_trust"},"T_apply":{"s":0.189,"parent":"T_trust"},"T_residuo_trust":{"s":0.0,"parent":"T_trust"}}}
++```
++
++### Regime (boot successivo — dichiarato distinto)
++
++| | Valore |
++|--|--------|
++| T_total | **8.891 s** (banda 8.8–9.0) |
++| needs_apply | **false** |
++| T_backup | **0** |
++| identity_evidence / proposals | **0 / 0** |
++| name_proposals | **412** |
++| assets / ip_current | **151 / 100** |
++| devices_active (AD) | **82** (`chassis_grouping.device_counters`) |
++| writers identity | **spenti** (ie=0, ilp=0) |
++
++**[timing] regime 0.10.43:**
++```json
++{"event":"api_boot","version":"0.10.43","epoch_start":1785005027.778,"epoch_import_end":1785005027.822,"epoch_bootstrap_end":1785005032.742,"epoch_ready":1785005036.669,"needs_backup":false,"needs_apply":false,"t_total_level_check":"identity","timers":{"T_total":{"s":8.891,"parent":null},"T_import":{"s":0.044,"parent":"T_total"},"T_bootstrap_wall":{"s":4.92,"parent":"T_total"},"T_uvicorn_to_ready":{"s":3.927,"parent":"T_total"},"T_trust":{"s":0.089,"parent":"T_bootstrap_wall"},"T_dry_run":{"s":0.089,"parent":"T_trust"},"T_prefetch_obs":{"s":null,"parent":"T_dry_run"},"T_prefetch_fdb":{"s":0.003,"parent":"T_dry_run"},"T_plan_loop":{"s":0.086,"parent":"T_dry_run"},"T_dry_residuo":{"s":0.0,"parent":"T_dry_run"},"T_backup":{"s":0.0,"parent":"T_trust"},"T_apply":{"s":0.0,"parent":"T_trust"},"T_residuo_trust":{"s":0.0,"parent":"T_trust"}}}
++```
++
++Predizioni regime: **match** (scarto T_total in banda). Boot1 structural=1 giustificato Fase A — **non** regressione identity.
++
++---
++
++## Gate C — suite Py3.12 (container) + env-bound
++
++### Ambiente
++
++- Host locale Mac: Py3.9 → collection fallisce (`DEBT-PYTEST-COLLECTION-PY39`) — **non** usato per dichiarare verde.
++- Suite gate: container image `observatory-api` **Py3.12.13**, `pytest` con `--entrypoint python3`, test copiati nel layer (no bind-mount NFS lento).
++- Ignore espliciti (env-bound, documentati sotto): `test_kuma_native_migration.py`, `test_m1b_measure_gate.py`.
++
++### Env-bound (nominali — non collezionabili senza path extra)
++
++| Test | Motivo collection fail | Remedio dichiarato |
++|------|------------------------|--------------------|
++| `tests/test_kuma_native_migration.py` | `FileNotFoundError: /tmp/scripts/migrate_kuma_to_native.py` | montare/copiare `scripts/` oppure skip dichiarato |
++| `tests/test_m1b_measure_gate.py` | `ModuleNotFoundError: measure_store_gate` (`tools/`) | aggiungere `tools/` a `PYTHONPATH` oppure skip dichiarato |
++
++Output grezzo (tail collect-only):
++
++```
++E   FileNotFoundError: [Errno 2] No such file or directory: '/tmp/scripts/migrate_kuma_to_native.py'
++… Interrupted: 1 error during collection …
++E   ModuleNotFoundError: No module named 'measure_store_gate'
++… Interrupted: 1 error during collection …
++```
++
++### G2 esito suite (post-ignore) — `w15bis-suite`
++
++| | |
++|--|--|
++| Container | `w15bis-suite` (image `observatory-api`, entrypoint `python3`, tests/`collector`/`mac_ip_policy` via `docker cp` nel layer) |
++| Python | **3.12.13** · pytest 8.3.4 |
++| Ignore | `--ignore=test_kuma_native_migration.py --ignore=test_m1b_measure_gate.py` |
++| Durata | **8654.27 s** (2:24:14) |
++| Exit | **1** |
++| **passed** | **556** |
++| **failed** | **12** |
++| **skipped** | **0** (non in summary) |
++| **errors** | **0** (collection) |
++| Copertura | 556+12 = **568** = collected con i 2 env-bound esclusi |
++
++**FAILED (12)** — motivi (da TB / assert):
++
++| Test | Motivo |
++|------|--------|
++| `test_m1_alembic.py::test_alembic_upgrade_downgrade_fresh` | `alembic.CommandError`: Path `/tmp/api/app/alembic` assente nel container suite |
++| `test_m1_alembic.py::test_alembic_stamp_preserves_existing_data` | idem path alembic |
++| `test_m2_discovery.py::test_fdb_skips_observe_portal_on_uplink_role` | `assert <datetime> is None` (portal last_seen non None) |
++| `test_nmap_provider.py::test_dual_dedup_same_mac_entity_key_and_provenance` | `assert 'MAC\|IP' == 'MAC'` (entity_key include IP) |
++| `test_printer_alembic.py::…upgrade_downgrade…` | path alembic assente |
++| `test_printer_alembic.py::…requires_pre_backup` | path alembic assente |
++| `test_printer_enrichment.py::test_ipp_precedence…` | `assert ('HP123','fritz') == ('Stampante Studio','ipp')` |
++| `test_printer_enrichment.py::test_snmp_enrichment…` | `assert [] == [('snmp', …)]` |
++| `test_printer_provider.py::test_r2_ip_migration_category…` | `AttributeError: 'NoneType'.id` |
++| `test_ssdp_alembic.py::…upgrade_downgrade…` | path alembic assente |
++| `test_ssdp_alembic.py::…requires_pre_backup` | path alembic assente |
++| `test_ssdp_provider.py::test_r2_ip_migration_evidence…` | `AttributeError: 'NoneType'.id` |
++
++**Identity / MAC-IP:** nessun test `test_identity_evidence*` / `test_mac_ip_policy*` nella short summary FAILED. Locale: `test_identity_evidence`+`test_mac_ip_policy` → **35 passed**.
++
++**G2 dichiarazione:** suite **eseguita e conteggiata**; **non** «suite verde» (12 failed). Fallimenti alembic = debiti di **wiring path** nel runner usa-e-getta (manca copia `api/app/alembic` in `/tmp/api/...`); gli altri 6 sono fuori perimetro identity W1.5-bis.
++
++### G3 / G4 (output mostrato)
++
++```
++rg 'asset\.(chassis_id|name|trust_level)\s*=' api/app/identity_evidence/  → (empty)
++rg 'scoreSpecificity|specificity' api/  → (empty)
++```
++
++### MAC↔IP (fixture / debito wiring — **non** reconcile live, **no** writer)
++
++- Classifier: `api/app/services/mac_ip_policy.py`
++- Contratto: `tests/test_mac_ip_policy.py` → **9 passed**
++- Doc: `docs/obs-currency-mac-ip-policy.md`
++- Debito: **DEBT-MAC-IP-POLICY-WIRE** (wiring in W7; vietato collegare ora a `reconcile_asset_presence`)
++
++### Esito suite (riga canonica)
++
++```
++12 failed, 556 passed, 3408 warnings in 8654.27s (2:24:14)
++EXIT:1
++```
++
++**GATE C:** G3/G4/G5/G7/C.6/C.7 OK · env-bound documentati · MAC-IP fixture OK · G2 **conteggiato ma non verde** (12 failed dichiarati).
+ 
+ ---
+ 
+ ## Esito
+ 
+-GATE A/B/C verdi. Non procedere a W2 finché review Michele conferma. W2 target VERSION **0.10.44**.
++| Gate | Stato |
++|------|--------|
++| A (structural=1 → churn 116) | **VERDE** |
++| B (dry-run linker RO) | **VERDE** |
++| C (suite+greps+env-bound) | **PARZIALE** — greps/env-bound/MAC-IP OK; suite 556/568 pass, 12 fail dichiarati |
++
++VERSION **0.10.43** · tag `v0.10.43` @ `d5c41a1` · writers identity **spenti**.  
++Debiti aperti rilevanti: DEBT-RECONCILE-CHURN-1 · DEBT-E3-AVAILABLE-FALSE · DEBT-MAC-IP-POLICY-WIRE · DEBT-FDB-LLDP-PASSIVE · DEBT-PYTEST-COLLECTION-PY39.
++
++**STOP per review** — **non** W2 (target **0.10.44**).
+
+===== UNTRACKED / key files =====
+===== UNTRACKED: observatory/docs/obs-fdb-lldp-passive.md =====
+<!-- BLOCK-ID: OBS-FDB-LLDP-PASSIVE -->
+
+# FDB / LLDP — implementazione iniziale passiva (read-only)
+
+**Stato:** requisito vincolante per wave futura (post W1.5-bis / writers SNMP).  
+**Non** interrompe W1.5-bis. **Nessun** codice writer in questa nota.  
+**Allineamento:** sblocca misure per `DEBT-E3-AVAILABLE-FALSE`; ortogonale a identity (`identity_evidence`).
+
+---
+
+## 1. Semantica (vincolante)
+
+| Segnale | È | Non è |
+|---------|----|--------|
+| **FDB** (MAC + switch + porta + VLAN/bridge-domain + timestamp/age) | Evidenza di **presenza / posizione L2** | Identità chassis; **ownership** del MAC |
+| **LLDP / CDP** | Corroborante topologico (neighbor dichiara) | Prova di ownership; affidabile contro spoof |
+
+- FDB **non** prova ownership.
+- LLDP/CDP è **solo corroborante** e **potenzialmente spoofabile**.
+- Nessuna fusione identity / `chassis_id` / `Asset.name` da soli questi segnali.
+- Scala E0–E5 identity: FDB-only resta sotto E5-bridge; LLDP subtype deve restare vincolato (vedi `obs-currency-identity-evidence.md`).
+
+---
+
+## 2. Target switch (LGS310C / LGS328C) — accesso SNMP
+
+Preferenza e minimi di sicurezza (config switch + collector):
+
+1. **SNMPv3 `authPriv`** (non community v2c in prod).
+2. Utente **sola lettura** (GET/WALK; **nessun SET** nel codice né nei diritti).
+3. **ACL** sorgente: solo IP di **Cassiopea** (collector).
+4. **View** limitata alle MIB necessarie: Bridge (FDB), LLDP (e CDP solo se già esposto e utile), ENTITY (serial/chassis fisico). Niente view “tutto”.
+5. **Segreti** solo env/secret store — **fuori** repo, log, DB, UI, report exchange.
+6. **Timeout** e **rate limit** sul poll (non martellare; backoff su failure).
+7. **Non abilitare** LLDP/CDP su porte dove non serve (rumore + superficie spoof).
+
+Riferimento stile credenziali (NAS, non switch): [`ASUSTOR_SNMP.md`](ASUSTOR_SNMP.md) — stesso principio “RO + env-only”.
+
+---
+
+## 3. ObservationRaw — contratto minimo
+
+Ogni riga FDB/LLDP (o fallimento di poll) deve poter esprimere:
+
+| Campo | Ruolo |
+|-------|--------|
+| `switch_id` | Switch osservatore |
+| `port` | Porta / ifIndex risolto |
+| `VLAN` / bridge-domain | Contesto L2 |
+| `timestamp` | Quando acquisito |
+| `age` / `last_seen` | Freschezza sulla tabella bridge (se esposta) |
+| `acquisition_method` | es. `snmp_v3_authpriv_walk` |
+| `failure_state` | ok / timeout / auth / acl / view / parse — **mai** silenzio su poll fallito |
+
+**Dedupe:** per **transizione** di binding (MAC↔porta↔VLAN o comparsa/scomparsa), **non** per ogni poll uguale. Poll ripetuto senza cambio → no flood di raw.
+
+---
+
+## 4. Alert «nuovo MAC su access port»
+
+1. Solo **dopo** classificazione porta **misurata**: `access` / `trunk` / `uplink` / `AP` / `powerline` (no euristica inventata).
+2. Fase iniziale: **solo informativo** (finding / evento).
+3. **Vietato:** quarantena automatica, port shutdown, ACL auto, “isolate”.
+
+---
+
+## 5. Minacce e limiti onesti
+
+Prevedere esplicitamente (doc + detector, non finger-wagging):
+
+| Scenario | Nota |
+|----------|------|
+| Spoof MAC | FDB/LLDP possono mentire |
+| MAC move | Transizione legittima vs hop sospetto — distinguere con storia, non panic |
+| CAM flood | Tabella piena → evidenza degradata; failure_state / coverage |
+| Randomized / LAA MAC | Non trattare come identità stabile |
+
+**Assenza di alert ≠ sicurezza.** Un silenzio (poll down, view vuota, timeout) è **failure**, non “rete pulita”.
+
+---
+
+## 6. Fuori scope di questa wave iniziale
+
+- Writers identity / confirm_link automatico.
+- SET SNMP, trap-driven enforcement.
+- Quarantena / shutdown porte.
+- Abilitare LLDP/CDP “ovunque” per completezza.
+
+## 7. Ripresa
+
+Coda OBS-CURRENCY dopo chiusura W1.5-bis e review writers (W2+ / presenza W7 secondo piano vigente). Debito traccia: **DEBT-FDB-LLDP-PASSIVE** in `KNOWN_DEBT.md`.
+===== UNTRACKED: observatory/docs/obs-currency-mac-ip-policy.md =====
+<!-- BLOCK-ID: OBS-CURRENCY-MAC-IP-POLICY -->
+
+# Policy MAC↔IP (dominio Michele, 2026-07-25)
+
+**Stato:** contratto + classifier puro in `api/app/services/mac_ip_policy.py`.  
+**Wiring** in inventory/trust reconcile → **prossima wave presence** (OBS-CURRENCY **W7** topologia/presence/scans, post chiusura W1.5-bis).  
+**Non** è una scorciatoia di fusione chassis.
+
+## Regole
+
+1. Un apparato **normale** e **current** si riconcilia a uno **chassis con ≥1 IP corrente**. Non serve che ogni MAC/NIC abbia IP.
+2. **Eccezione:** powerline / Fritz 510E (e classi afini esplicite) possono essere legittimamente **L2-only** (`l2_only_allowed`).
+3. MAC con sola storia, **nessuna** osservazione L2 fresca, **nessun** IP corrente sul chassis → non può essere `present`/`current` → `stale` o `superseded`.
+4. MAC **FDB-fresh** senza IP → stato distinto **`present_l2_unaddressed`**; cercare management IP del chassis (misurato); **non inventare** identità.
+5. Un nuovo binding MAC↔IP **corrente** **supersede** / storicizza il vecchio.
+
+## Test
+
+`tests/test_mac_ip_policy.py` — **9 passed** (contratto). Incluso in chiusura W1.5-bis come fixture/debito wiring; **non** collegato al reconcile live e **nessun** writer.
+
+## Fuori scope di questa nota
+
+- Writer identity, fusione ch23/ch24, OUI adjacency.
+- Apply automatico su Asset in questa nota (solo classifier).
