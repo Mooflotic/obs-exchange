@@ -150,7 +150,7 @@ Alembic **non** gira in prod. Test `test_schema_parity_identity_tables_match_mod
 
 **Vacuo** con writer spenti (rows=0). Rimandato a **W2 (0.10.44)** quando i writer sono accesi.
 
-**GATE B: VERDE** · **GATE C: VERDE** (C.7 dichiarato vacuo).
+**GATE B: VERDE** · **GATE C:** vedi sezione post-0.10.43 (G2 conteggiato, non verde; C.7 vacuo).
 
 ---
 
