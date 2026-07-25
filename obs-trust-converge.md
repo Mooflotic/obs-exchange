@@ -123,3 +123,30 @@ sqlite3 data/backups/pre-deploy-YYYYMMDD-HHMM.db 'PRAGMA integrity_check;'
 | D7 | T_prefetch_obs null, T_dry_run < 2 s | sì |
 | D8 | nessun op_state peggiore vs C.1 | sì |
 | D9 | serie throughput aggiornata | no |
+
+---
+
+## Post-deploy 0.10.28 (osservato)
+
+| Boot | structural (log) | needs_apply | T_backup | T_total |
+|------|------------------|-------------|----------|---------|
+| 1 (deploy) | 53 (backlog apply) | true | 162.3 s | 179.2 s |
+| 2 | **1** | true | 125.6 s | 142.0 s |
+| 3 | **0** (no print) | **false** | **0.0 s** | **8.869 s** |
+
+Residuo dry_run dopo boot1 e dopo boot3: **structural=0**.  
+D4 premio: **PASS** (boot3).
+
+| Assert | Esito |
+|--------|-------|
+| D1 health 0.10.28 | PASS proxy+diretto |
+| D2 | PASS: residuo post-boot1=0 (log 53 = azioni applicate, non residuo) |
+| D3 | PASS: boot2=1 (straggler), boot3=0; residuo stabile 0 |
+| D4 | PASS T_total=8.869 s, T_backup=0 |
+| D5 | AD=82; scans=**66** (−43 Sky: IP non più `is_current`, churn); asset=151; ip_current=**98** (churn) |
+| D6 | obs 1067155→1067155 Δ=0 |
+| D7 | T_prefetch_obs=null; T_dry_run=0.088 |
+| D8 | sample C.1 allineati (71/83/116/138/150) |
+| D9 | trust boot1 2862MB/162.3s ≈ **17.3 MB/s**; serie → 18.38 → 17.3 |
+
+Snapshot: `pre-deploy-20260725-1522.db` size 2862301184.
