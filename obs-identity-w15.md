@@ -60,10 +60,30 @@ Test **T1–T21 + schema parity: 22 passed**.
 | fusione ch23/ch24 | **nessuna** |
 | LGS310C name | **invariato** (pin manuale non toccato dal codice W1.5) |
 
-## Fase 5 — OBSERVED
+## Fase 5 — OBSERVED (post-deploy · regime)
 
-_TBD post-deploy._
+**Misura:** 2026-07-25 ~20:27 Europe/Rome · health `0.10.42`  
+**Nota boot1:** primo avvio post-deploy `needs_apply=true` / `T_backup=82.5s` / `structural=1` (settle trust, stesso pattern W1). **Regime** = restart dopo dry_run `needs_apply=false`.
 
-## Rollback
+| Metrica | Predetto (G7) | Osservato | Esito |
+|---------|---------------|-----------|-------|
+| VERSION | 0.10.42 | **0.10.42** | OK |
+| `identity_evidence` | 0 | **0** | OK |
+| `identity_link_proposals` | 0 | **0** | OK |
+| `T_total` | 8.8–9.0 | **8.829** | OK |
+| `needs_apply` | false | **false** | OK |
+| `T_backup` | 0 | **0.0** | OK |
+| assets | 151 | **151** | OK |
+| AD | 82 | **82** | OK |
+| ip_current | 100 | **100** | OK |
+| name_proposals | 412 | **412** | OK |
+| proposte consolidabili :05/:08 | 0 | **0** (ilp=0) | OK |
+| fusione ch23/ch24 | nessuna | 147/151 restano **chassis_id=23**; 3 resta **24** | OK |
+| LGS310C name | invariato | **LGS310C** | OK |
 
-`git revert` bump + deploy tag `v0.10.41`. Schema identity inerte: non rimuovere in fretta.
+`T_total=8.829` da `[timing]` lifespan. Fragment: `needs_apply=false`, `T_backup=0.0`.
+
+## Chiusura
+
+W1.5 **CHIUSA**. Prossima: **W2 shadow writers → 0.10.43**.
+
