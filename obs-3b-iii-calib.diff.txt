@@ -1,0 +1,164 @@
+# OBS-DB-SLIM 3b-iii — calib.diff (pre-decisione epoch)
+# Base: 1f1775f · files: predictions-predeploy.md, reliability_metrics.py, reset_calibration_once.py
+#
+# RIGHE RIMOSSE da reliability_metrics.py (path day-clock UNCONDITIONAL → spostate in else):
+#   - first_snapshot = db.scalar(select(func.min(MetricSnapshot.taken_at)))
+#       → calcolava il MIN(taken_at) della serie metric_snapshots (ancora day-clock)
+#   - first_sensor = db.scalar(select(func.min(SensorRun.started_at)))
+#       → calcolava il MIN(started_at) di TUTTI i SensorRun (ancora day-clock primaria live)
+#   - candidates = [value for value in (first_snapshot, first_sensor) if value is not None]
+#       → univa i due timestamp non-null
+#   - started_at = min(candidates) if candidates else now
+#       → day-clock = min(snapshot, sensor) oppure now se vuoto
+# Con epoch presente queste 4 NON girano; con epoch assente restano nel ramo else
+# (stesso calcolo). Vedi decisione PASSO 1 in postdeploy.
+#
+diff --git a/observatory/api/app/services/reliability_metrics.py b/observatory/api/app/services/reliability_metrics.py
+index 42fa483..52fe308 100644
+--- a/observatory/api/app/services/reliability_metrics.py
++++ b/observatory/api/app/services/reliability_metrics.py
+@@ -174,10 +174,27 @@ def build_calibration_status(
+     calibrated = bool(settings.scoring_calibrated)
+     total_days = max(1, int(settings.measure_window_days or 14))
+ 
+-    first_snapshot = db.scalar(select(func.min(MetricSnapshot.taken_at)))
+-    first_sensor = db.scalar(select(func.min(SensorRun.started_at)))
+-    candidates = [value for value in (first_snapshot, first_sensor) if value is not None]
+-    started_at = min(candidates) if candidates else now
++    # Optional reset epoch (settings.calibration_started_at) — set by one-shot reset
++    # without truncating SensorRun. Floor day remains 1 (never 0).
++    from app.models import Setting
++
++    epoch_row = db.get(Setting, "calibration_started_at")
++    epoch_raw = (epoch_row.value or {}).get("at") if epoch_row else None
++    epoch_at: datetime | None = None
++    if epoch_raw:
++        try:
++            parsed = datetime.fromisoformat(str(epoch_raw).replace("Z", "+00:00"))
++            epoch_at = parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
++        except ValueError:
++            epoch_at = None
++
++    if epoch_at is not None:
++        started_at = epoch_at
++    else:
++        first_snapshot = db.scalar(select(func.min(MetricSnapshot.taken_at)))
++        first_sensor = db.scalar(select(func.min(SensorRun.started_at)))
++        candidates = [value for value in (first_snapshot, first_sensor) if value is not None]
++        started_at = min(candidates) if candidates else now
+ 
+     elapsed = (now.date() - started_at.date()).days
+     day = min(total_days, max(1, elapsed + 1))
+diff --git a/observatory/docs/obs-3b-iii-predictions-predeploy.md b/observatory/docs/obs-3b-iii-predictions-predeploy.md
+new file mode 100644
+index 0000000..d97d9e4
+--- /dev/null
++++ b/observatory/docs/obs-3b-iii-predictions-predeploy.md
+@@ -0,0 +1,45 @@
++# OBS-DB-SLIM 3b-iii — previsioni pre-deploy 0.10.27
++
++**Scritte PRIMA del deploy. Non modificare dopo.**
++**Live pre-deploy:** 0.10.26 · **target:** 0.10.27 · branch `feature/obs-db-slim` @ `c9ae4b3`
++
++## Preflight (PASSO 1) — osservato
++
++| Voce | Valore |
++|------|--------|
++| health proxy | `{"ok":true,"version":"0.10.26"}` |
++| health diretto | `{"ok":true,"version":"0.10.26"}` |
++| servizi | api healthy, web/collector/proxy/zeek up |
++| observatory.db | **2835304448** B |
++| WAL | **7556112** B |
++| libero /volume1 | **5703041765376** B |
++| COUNT observations | **1061084** |
++| asset totali | **151** |
++| ip_current | **99** |
++| AD legacy (63) | `[1–4,9,11–14,16–69]` |
++| AD nuova (82) | 63 + 19 fdb-only documentati |
++| scans (67) | `[1–6,9,11–14,16–57,59–70,85,98]` |
++| structural ultimo log 0.10.26 | **53** (boot 13:21, stesso valore del boot 12:00) |
++| calibrazione live | day **6**/14 · started_at 2026-07-20 · scoring_calibrated=false |
++
++## Previsioni A1–A13 (immutabili)
++
++| # | Assert | Previsto | Tipo |
++|---|--------|----------|------|
++| A1 | health | **0.10.27** proxy+diretto | BLOCCANTE |
++| A2 F1 | T_prefetch_obs | **assente o `null`** (mai 0.0) | BLOCCANTE |
++| A3 F2 | T_dry_run | **&lt; 2 s** | BLOCCANTE |
++| A4 | Δ observations / 10 min | **0** (vs baseline +1465) | BLOCCANTE |
++| A5 | letture runtime obs | **0** evidence; retention DELETE/COUNT ammessi (blocker 4b) | BLOCCANTE |
++| A6 | scans | **67** id, insieme = preflight | BLOCCANTE |
++| A7 | active_discovery | **⊇ 63** legacy; atteso **82**; ogni Δ vs 82 enumerata | BLOCCANTE |
++| A8 | asset / ip_current | **151** / **99** (churn spiegato ok) | BLOCCANTE |
++| A9 | structural 1° boot | ordine di grandezza **~53**; se **&gt;100** → STOP | BLOCCANTE |
++| A10 | T_backup | ≈ invariato (~308 s / ~9 MB/s); calo = ANOMALIA | BLOCCANTE |
++| A11 F3 | guadagno T_total | intervallo **~15–25 s** su ~348 (indicativo) | non bloccante |
++| A12 F4 | confronti | solo stesso `needs_apply` | — |
++| A13 | throughput serie | aggiungere punto; INFERITO se no marker fase deploy | osservazione |
++
++## Cross-check atteso
++
++Una sola riga `[timing] {json}`; prosa `[bootstrap] trust dry_run/backup/apply` deve coincidere. Divergenza → STOP.
+diff --git a/observatory/scripts/reset_calibration_once.py b/observatory/scripts/reset_calibration_once.py
+new file mode 100644
+index 0000000..656af18
+--- /dev/null
++++ b/observatory/scripts/reset_calibration_once.py
+@@ -0,0 +1,56 @@
++#!/usr/bin/env python3
++"""One-shot calibration reset for OBS-DB-SLIM 3b-iii. Does NOT bump VERSION.
++
++Touches:
++  - settings key ``calibration_started_at`` = {"at": <now ISO Z>}  (day-clock epoch)
++  - DELETE FROM metric_snapshots  (serie metriche azzerata)
++
++Does NOT touch:
++  - sensor_runs, observations, observations_raw, assets, scoring_calibrated env
++  - retention / deploy / backup scripts
++
++Day-clock after reset: floor is day=1/14 (code never returns 0). Assert «0/14»
++nel prompt = inizio finestra pulita → day 1/14 con started_at = now.
++"""
++from __future__ import annotations
++
++import argparse
++from datetime import datetime, timezone
++
++from sqlalchemy import delete, func, select
++
++from app.db import _session_factory
++from app.models import MetricSnapshot, Setting
++from app.services.reliability_metrics import build_calibration_status
++from app.config import get_settings
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--apply", action="store_true", help="Esegue le scritture")
++    args = parser.parse_args()
++    now = datetime.now(timezone.utc).replace(tzinfo=None)
++    SessionLocal = _session_factory()
++    with SessionLocal() as db:
++        n_before = db.scalar(select(func.count()).select_from(MetricSnapshot)) or 0
++        cal_before = build_calibration_status(db, get_settings(), now=now)
++        print("BEFORE snapshots", n_before, "calibration", cal_before)
++        if not args.apply:
++            print("DRY-RUN only. Pass --apply to execute.")
++            return
++        row = db.get(Setting, "calibration_started_at")
++        payload = {"at": now.isoformat() + "Z"}
++        if row is None:
++            db.add(Setting(key="calibration_started_at", value=payload))
++        else:
++            row.value = payload
++        deleted = db.execute(delete(MetricSnapshot)).rowcount
++        db.commit()
++        cal_after = build_calibration_status(db, get_settings(), now=now)
++        n_after = db.scalar(select(func.count()).select_from(MetricSnapshot)) or 0
++        print("DELETED metric_snapshots", deleted)
++        print("AFTER snapshots", n_after, "calibration", cal_after)
++
++
++if __name__ == "__main__":
++    main()
