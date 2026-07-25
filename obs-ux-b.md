@@ -16,7 +16,7 @@
 | Dual-write spento | PASS |
 | B-a nessuna info con regole diverse su due viste | PASS — Impianto=edit · Topologia=dove · Monitor=salute; citazioni crociate |
 | B-b niente rimosso senza riga dipendenze | PASS — tabella in `docs/obs-ux-deps-b.md`; zero drop |
-| I3 divergenza IP asset 4 | PASS — `.1.8` mgmt current · `.3.20` secondario dichiarato |
+| I3 divergenza IP asset 4 | PASS al deploy B con copy «inventariale» — **poi corretta** (verifica RO): `.1.8` fatto; `.3.20` binding Fritz storico da confermare, non IP del 308; SPAN ≠ `.3.20` → `obs-ux-ip-308-verifica.md` |
 | I7 GS308EP | PASS — Monitor non inventa SNMP; rimanda a Impianto/Topologia |
 
 ## Decisioni legacy (sintesi)
