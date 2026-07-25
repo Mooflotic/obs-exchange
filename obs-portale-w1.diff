@@ -1,0 +1,309 @@
+diff --git a/observatory/CHANGELOG.md b/observatory/CHANGELOG.md
+index 33232e4..a217e13 100644
+--- a/observatory/CHANGELOG.md
++++ b/observatory/CHANGELOG.md
+@@ -1,5 +1,9 @@
+ # Changelog
+ 
++## 0.10.31 — 2026-07-25
++
++- **OBS-PORTALE ondata 1:** dichiara l'assenza — barra confidenza manuale → badge «manuale»; sidebar «versione non disponibile» senza health; DirectionBar testo esplicito; chassis partial warning (no mono-NIC silenzioso).
++
+ ## 0.10.30 — 2026-07-25
+ 
+ - **OBS-COERENZA:** rotazione backup unificata (`backup_rotate_core` + `deploy.sh` post-rsync); protetti esclusi per nome (`pre-4b-drop-20260725-161330.db`, `observatory-pre4b.bak`).
+diff --git a/observatory/VERSION b/observatory/VERSION
+index 7c8b593..f2ae7df 100644
+--- a/observatory/VERSION
++++ b/observatory/VERSION
+@@ -1 +1 @@
+-0.10.30
++0.10.31
+diff --git a/observatory/web/src/App.vue b/observatory/web/src/App.vue
+index b1ac11d..10594d3 100644
+--- a/observatory/web/src/App.vue
++++ b/observatory/web/src/App.vue
+@@ -32,7 +32,8 @@ const runtimeVersion = ref("");
+ const versionLabel = computed(() => {
+   const ver = (runtimeVersion.value || "").trim();
+   if (ver) return `v${ver} · ${buildId}`;
+-  return buildId;
++  // DEBT-VERSION-SILENT-FALLBACK: never show bare buildId as if it were a version.
++  return `versione non disponibile · ${buildId}`;
+ });
+ 
+ async function refreshRuntimeVersion() {
+diff --git a/observatory/web/src/components/AssetChassis.vue b/observatory/web/src/components/AssetChassis.vue
+index c587857..a3e71e7 100644
+--- a/observatory/web/src/components/AssetChassis.vue
++++ b/observatory/web/src/components/AssetChassis.vue
+@@ -10,6 +10,8 @@ const props = defineProps({
+ 
+ const loading = ref(false);
+ const error = ref("");
++/** Partial chassis: some member fetches failed — declare, never silent mono-NIC. */
++const partialWarning = ref("");
+ const device = ref(null);
+ const asset = ref(null);
+ 
+@@ -57,6 +59,7 @@ function deviceFromAsset(row) {
+  * only (not the full inventory list that hung the spinner).
+  */
+ async function loadChassisScoped(id, row) {
++  partialWarning.value = "";
+   try {
+     const chassisPayload = await api.chassis();
+     const groups = chassisPayload?.chassis || chassisPayload || [];
+@@ -71,15 +74,19 @@ async function loadChassisScoped(id, row) {
+       .filter((n) => Number.isFinite(n) && n > 0);
+     const members = await Promise.all(
+       memberIds.map(async (mid) => {
+-        if (mid === id) return row;
++        if (mid === id) return { ok: true, row };
+         try {
+-          return await api.asset(mid);
++          return { ok: true, row: await api.asset(mid) };
+         } catch {
+-          return null;
++          return { ok: false, id: mid };
+         }
+       }),
+     );
+-    const ok = members.filter(Boolean);
++    const failed = members.filter((m) => !m.ok);
++    const ok = members.filter((m) => m.ok).map((m) => m.row);
++    if (failed.length) {
++      partialWarning.value = `Vista chassis parziale: ${failed.length} NIC non caricate (id ${failed.map((f) => f.id).join(", ")}). Non è un dispositivo mono-NIC.`;
++    }
+     const devices = composeDevices(ok, { chassis: [group] });
+     return (
+       devices.find(
+@@ -90,6 +97,8 @@ async function loadChassisScoped(id, row) {
+       ) || deviceFromAsset(row)
+     );
+   } catch {
++    partialWarning.value =
++      "Vista chassis non disponibile (errore elenco). Mostro solo questa NIC.";
+     return deviceFromAsset(row);
+   }
+ }
+@@ -131,6 +140,7 @@ watch(
+     <div v-else-if="error" class="inv-p-note-sugg inv-err">{{ error }}</div>
+     <div v-else-if="!asset && !device" class="inv-p-note-sugg">nessun dato di connessione</div>
+     <template v-else>
++      <div v-if="partialWarning" class="inv-p-note-sugg inv-warn" role="status">{{ partialWarning }}</div>
+       <div class="inv-kv">
+         <span class="k">Presenza</span>
+         <span class="v">{{ presence }}</span>
+@@ -174,6 +184,7 @@ watch(
+ .inv-p-seclabel .line { flex: 1; height: 1px; background: var(--inv-border-soft); }
+ .inv-p-note-sugg { font-size: 12.5px; color: var(--inv-muted, var(--text-3)); }
+ .inv-err { color: var(--alert, #b33); }
++.inv-warn { color: var(--inv-amber, #c47a2c); }
+ .inv-kv {
+   display: grid;
+   grid-template-columns: auto 1fr;
+diff --git a/observatory/web/src/components/AssetHabits.vue b/observatory/web/src/components/AssetHabits.vue
+index fb8bc0d..1c8234f 100644
+--- a/observatory/web/src/components/AssetHabits.vue
++++ b/observatory/web/src/components/AssetHabits.vue
+@@ -200,6 +200,7 @@ watch(
+               </template>
+               <template #value>
+                 <span v-if="showBars && directionSplit(d)">{{ formatDirPair(d) }}</span>
++                <span v-else-if="showBars" class="habits-dir-na">n/d</span>
+                 <span v-else>{{ formatBytes(d.bytes) }}</span>
+               </template>
+             </DenseRow>
+@@ -358,6 +359,12 @@ watch(
+ }
+ .wide .habits-dst-name { font-size: 12.5px; }
+ .habits-dst-ip { color: var(--inv-mut); font-size: 12px; }
++.habits-dir-na {
++  font-size: 11px;
++  color: var(--inv-mut);
++  font-variant-numeric: tabular-nums;
++  white-space: nowrap;
++}
+ .habits-dst-dir {
+   display: flex; align-items: center; gap: 5px; min-width: 0; flex-wrap: wrap;
+ }
+diff --git a/observatory/web/src/components/ui/CandidateList.vue b/observatory/web/src/components/ui/CandidateList.vue
+index 918e729..4bfa47e 100644
+--- a/observatory/web/src/components/ui/CandidateList.vue
++++ b/observatory/web/src/components/ui/CandidateList.vue
+@@ -29,11 +29,17 @@ const normalized = computed(() =>
+   (props.candidates || []).map((c, i) => {
+     let conf = Number(c.confidence ?? c.accuracy ?? 0);
+     if (conf > 0 && conf <= 1) conf = Math.round(conf * 100);
++    const subtitle = c.subtitle || "";
++    const authoritative =
++      Boolean(c.authoritative) ||
++      /scelta manuale/i.test(subtitle) ||
++      String(c.source || "") === "manual";
+     return {
+       id: c.id ?? c.name ?? i,
+       name: c.name || "",
+-      subtitle: c.subtitle || "",
++      subtitle,
+       confidence: conf,
++      authoritative,
+     };
+   }),
+ );
+@@ -121,7 +127,8 @@ function reopen() {
+           <span class="name">{{ selectedRow.name }}</span>
+           <span v-if="selectedRow.subtitle" class="sub">{{ selectedRow.subtitle }}</span>
+         </span>
+-        <span v-if="selectedRow.confidence != null" class="conf">
++        <span v-if="selectedRow.authoritative" class="auth-badge" title="Scelta autorevole, non una misura">manuale</span>
++        <span v-else-if="selectedRow.confidence != null" class="conf">
+           <span class="bar"><i :style="{ width: confWidth(selectedRow) }" /></span>
+           <span class="num">{{ selectedRow.confidence }}</span>
+         </span>
+@@ -142,7 +149,8 @@ function reopen() {
+           <span class="name">{{ c.name }}</span>
+           <span v-if="c.subtitle" class="sub">{{ c.subtitle }}</span>
+         </span>
+-        <span class="conf">
++        <span v-if="c.authoritative" class="auth-badge" title="Scelta autorevole, non una misura">manuale</span>
++        <span v-else class="conf">
+           <span class="bar"><i :style="{ width: confWidth(c) }" /></span>
+           <span class="num">{{ c.confidence }}</span>
+         </span>
+@@ -212,6 +220,14 @@ function reopen() {
+   text-align: right;
+   color: var(--text-2);
+ }
++.auth-badge {
++  flex: 0 0 auto;
++  font-size: 11px;
++  color: var(--text-2);
++  border: 0.5px solid var(--border);
++  border-radius: var(--radius);
++  padding: 1px 6px;
++}
+ .cambia {
+   flex: 0 0 auto;
+   background: none;
+diff --git a/observatory/web/src/components/ui/DirectionBar.vue b/observatory/web/src/components/ui/DirectionBar.vue
+index 4d427f0..eb762c7 100644
+--- a/observatory/web/src/components/ui/DirectionBar.vue
++++ b/observatory/web/src/components/ui/DirectionBar.vue
+@@ -1,12 +1,13 @@
+ <script setup>
+ /**
+  * Direction bar — OBS-DESIGN-SPEC-025 §3.3
+- * out = cold (left), in = warm (right). Idle when no direction.
++ * out = cold (left), in = warm (right).
++ * OBS-PORTALE: unavailable = explicit label, not a silent idle bar.
+  */
+ defineProps({
+   /** 0–100 share for outbound (left). */
+   outPct: { type: Number, default: 0 },
+-  /** When false, render idle track only. */
++  /** When false, declare missing direction instead of a plausible bar. */
+   available: { type: Boolean, default: true },
+ });
+ </script>
+@@ -21,7 +22,7 @@ defineProps({
+       <span class="seg out" :style="{ width: `${Math.max(0, Math.min(100, outPct))}%` }" />
+       <span class="seg in" :style="{ width: `${Math.max(0, Math.min(100, 100 - outPct))}%` }" />
+     </template>
+-    <span v-else class="seg idle" style="width: 100%" />
++    <span v-else class="dir-unavailable">direzione non disponibile</span>
+   </div>
+ </template>
+ 
+@@ -33,9 +34,22 @@ defineProps({
+   border-radius: 3px;
+   overflow: hidden;
+   background: var(--data-idle);
++  align-items: center;
++}
++.direction-bar:has(.dir-unavailable) {
++  height: auto;
++  min-height: 1.1em;
++  background: transparent;
++  overflow: visible;
+ }
+ .seg { display: block; height: 100%; }
+ .seg.out { background: var(--data-out); }
+ .seg.in { background: var(--data-in); }
+-.seg.idle { background: var(--data-idle); }
++.dir-unavailable {
++  font-size: 11px;
++  line-height: 1.2;
++  color: var(--text-3);
++  font-variant-numeric: tabular-nums;
++  white-space: nowrap;
++}
+ </style>
+diff --git a/observatory/web/src/components/ui/uiPrimitives.test.js b/observatory/web/src/components/ui/uiPrimitives.test.js
+index 7571f54..d3c834c 100644
+--- a/observatory/web/src/components/ui/uiPrimitives.test.js
++++ b/observatory/web/src/components/ui/uiPrimitives.test.js
+@@ -38,11 +38,18 @@ test("CandidateList: free-text collapse senza fallback su normalized[0] (OBS-028
+   );
+   assert.ok(src.includes("freeText: true"), "riga collassata da modelValue non in lista");
+   assert.ok(
+-    src.includes('v-if="selectedRow.confidence != null"'),
+-    "testo libero: niente barra confidenza",
++    src.includes("authoritative") && src.includes("auth-badge"),
++    "scelta manuale: badge autorevole, non barra 100%",
+   );
+ });
+ 
++test("DirectionBar: assenza direzione dichiarata (OBS-PORTALE)", () => {
++  const src = readFileSync(join(root, "DirectionBar.vue"), "utf8");
++  assert.ok(src.includes("direzione non disponibile"));
++  assert.ok(src.includes("dir-unavailable"));
++  assert.ok(!src.includes('class="seg idle"'), "niente barra idle silenziosa");
++});
++
+ test("direction gate 0.20 e split temperatura", () => {
+   assert.equal(HABITS_DIR_RATIO_MIN, 0.2);
+   assert.equal(showDirectionBars({ direction_sample_ratio: 0.19 }), false);
+diff --git a/observatory/web/src/portaleDeclareAbsence.test.js b/observatory/web/src/portaleDeclareAbsence.test.js
+new file mode 100644
+index 0000000..cea25e0
+--- /dev/null
++++ b/observatory/web/src/portaleDeclareAbsence.test.js
+@@ -0,0 +1,20 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++import { readFileSync } from "node:fs";
++import { dirname, join } from "node:path";
++import { fileURLToPath } from "node:url";
++
++const root = join(dirname(fileURLToPath(import.meta.url)), "components");
++
++test("AssetChassis: partial member fetch dichiara, non mono-NIC silenzioso", () => {
++  const src = readFileSync(join(root, "AssetChassis.vue"), "utf8");
++  assert.ok(src.includes("partialWarning"));
++  assert.ok(src.includes("Vista chassis parziale"));
++  assert.ok(src.includes("Non è un dispositivo mono-NIC"));
++});
++
++test("AssetHabits: direzione assente → n/d in colonna value", () => {
++  const src = readFileSync(join(root, "AssetHabits.vue"), "utf8");
++  assert.ok(src.includes("habits-dir-na"));
++  assert.ok(src.includes('v-else-if="showBars" class="habits-dir-na"'));
++});
+diff --git a/observatory/web/src/versionDisplay.test.js b/observatory/web/src/versionDisplay.test.js
+index 0e15c8e..46d273c 100644
+--- a/observatory/web/src/versionDisplay.test.js
++++ b/observatory/web/src/versionDisplay.test.js
+@@ -29,6 +29,12 @@ test("single-source VERSION: file truth, package.json allineato, runtime da heal
+   assert.match(app, /brand-version/);
+   assert.match(app, /api\.health|refreshRuntimeVersion/);
+   assert.match(app, /versionLabel/);
++  assert.match(app, /versione non disponibile/);
++  assert.doesNotMatch(
++    app,
++    /if \(ver\) return `v\$\{ver\} · \$\{buildId\}`;\s*return buildId;/,
++    "senza health.version non mostrare solo buildId",
++  );
+   assert.match(apiMain, /_load_version/);
+   assert.doesNotMatch(apiMain, /VERSION = "0\./);
+   assert.match(compose, /\.\/VERSION:\/VERSION:ro/);
