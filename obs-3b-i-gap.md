@@ -180,7 +180,8 @@ Evidenza:
 
 I report di sessione in `observatory/docs/` già pubblicati su **obs-exchange** (`obs-3b-recon`, `obs-chiusura-fasea`, `obs-db-slim-*-go`, `obs-deploy-01-go`, …) sono **artefatti di scambio + audit locale**: stessa famiglia dei `obs-db-slim-p1.md` già tracked.
 
-**Scelta:** **versionarli** con commit dedicato `docs: report sessione OBS-DB-SLIM` (inclusi `obs-3b-recon.md` e questo `obs-3b-i-gap.md`), così non restano untracked indefiniti. Non sono “solo scratch”: documentano GO/assert e ricognizioni 3b.
+**Scelta dichiarata:** **versionarli** (non lasciarli untracked indefiniti) con commit dedicato `docs: report sessione OBS-DB-SLIM` — stessa famiglia dei `obs-db-slim-p1.md` già tracked; non sono scratch (GO/assert + ricognizioni).  
+**Stato a fine 3b-i-gap:** commit **non** eseguito in questo turno (solo report + share); i file restano `??` in `docs/` finché Michele non dà GO al commit docs. Alternativa se si preferisce zero git locale: cancellarli da `docs/` e tenere solo obs-exchange.
 
 ---
 
