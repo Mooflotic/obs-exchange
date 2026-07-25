@@ -10,8 +10,9 @@
 
 1. **Verifica prune raw 0a.1** — atteso ~**2026-07-27**. Predizione falsificabile: ~173 530 righe cancellate, freelist 0.30–0.37 GiB. Confrontare `store.before/after` + log `[retention]` con previsto. (Oggi 2026-07-25: non ancora avvenuto.)
 2. **Gesto manuale Michele — «Archivia rumore»** con **N = 41** (rimisurato post-0.10.33 con `all_proposals=true`; il ≈39/2 storici sono obsoleti). **Non eseguito** in questo cantiere.
-3. **Debiti ancora aperti** (dopo PORTALE): `DEBT-AGGREGATE-NO-RETENTION`, `DEBT-FINGERBANK-027` (rimandato ≥2026-08-15), `DEBT-AUTOVACUUM-NOT-SET` (criterio residuo post-prune), `DEBT-BACKUP-ALL-OR-NOTHING`, `DEBT-PRIVACY-MAC-CHURN`, `DEBT-PYTEST-COLLECTION-PY39`, `DEBT-MAC-REGEX-DIGIT-RUN` (verificata 0 hit — regex invariata), rename chassis (residuo adopt).
-4. **STOP qui** per PORTALE: revisione grafica e hot/cold **uno alla volta**, dopo review.
+3. **Audit UX (handoff sotto)** — redesign / rimozione dump grezzo Dossier / unificazione switch / Oggi come coda unica; **dopo** review, un cantiere alla volta (grafica ≠ hot/cold).
+4. **Debiti ancora aperti** (dopo PORTALE): `DEBT-AGGREGATE-NO-RETENTION`, `DEBT-FINGERBANK-027` (rimandato ≥2026-08-15), `DEBT-AUTOVACUUM-NOT-SET` (criterio residuo post-prune), `DEBT-BACKUP-ALL-OR-NOTHING`, `DEBT-PRIVACY-MAC-CHURN`, `DEBT-PYTEST-COLLECTION-PY39`, `DEBT-MAC-REGEX-DIGIT-RUN` (verificata 0 hit — regex invariata), rename chassis (residuo adopt).
+5. **STOP** funzionale PORTALE: nessun redesign improvvisato qui.
 
 ---
 
@@ -88,3 +89,92 @@ Aperte/rimandate: AGGREGATE-NO-RETENTION, FINGERBANK-027, AUTOVACUUM (criterio n
 - Merge `feature/obs-portale` → `main`
 - Tag di produzione = ultimo bump VERSION: **`v0.10.33`** = `71322ec`
 - Evidenza: `GET /api/health` → `0.10.33` · curl web/health 200
+
+---
+
+## Handoff UX obbligatorio (sola lettura — nessun redesign in PORTALE)
+
+**Vincolo:** il cantiere funzionale è chiuso. Qui solo misura e documentazione per il **prossimo prompt UX Claude** (audit completo). Nessuna telemetria inventata; ogni conclusione non certa = **inferenza AI** con evidenze e confidenza.
+
+### Vincoli per il prompt UX
+
+1. Mental model switch: **Impianto = edit**, **Topologia = dove**, **Monitor = salute** — non tre “home” dello stesso oggetto; GS308 = scheda ramo opaco, non faux-SNMP.
+2. **Oggi = unica coda operativa**: naming + (futuro) move FDB + chassis come *problemi/azioni*, non percorsi autonomi / pagine separate.
+3. Deprecare/nascondere `/suggestions` dopo migrazione azioni in Oggi/Dossier.
+4. **Rimuovere** «Dossier → Mostra dettagli tecnici» (dump JSON grezzo) — richiesta esplicita utente (`AssetIdentity.vue` L309–314 → `api.assetIdentity(id, technical=true)`).
+5. Non inventare telemetria porte sul 308; solo upstream FDB, ping, mappa manuale, endpoint del ramo.
+
+---
+
+### (1) Strutture legacy residue — focus vista switch
+
+**Routes** (`web/src/router.js`):
+
+| Path | View | In nav? | Ruolo |
+|------|------|---------|-------|
+| `/oggi` | Oggi | RADAR | Coda triage |
+| `/dossier/:id` | Dossier | RADAR | Scheda device |
+| `/inventory` | Inventory | MAPPA | Lista |
+| `/plant` | Plant | MAPPA «Impianto» | Porte/patch + edit |
+| `/topology` | Topology | MAPPA | Grafo |
+| `/monitoring` | Monitoring | MAPPA «Monitor» | Ping + pannello SNMP switch |
+| `/suggestions` | Suggestions | **No (orfana)** | Coda `Suggestion` (move/rename) |
+
+**Tre superfici sullo stesso `Switch` (sovrapposizione):**
+
+| Vista | API | Cosa | Stato |
+|-------|-----|------|-------|
+| Impianto | `GET /api/switches`, `PATCH /api/ports/{id}` | Griglia porte, FDB, chip GS308, drawer | Corrente edit |
+| Topologia | `GET /api/topology` | Albero, ramo opaco 308 | Corrente “dove” |
+| Monitor · Switch | stessi switches | Aggregati SNMP; 308 → «non disponibile» | Duplicato parziale salute |
+
+**API/models:** `Switch`/`SwitchPort` canonici; `Suggestion(kind=move)` vs `NameProposal` (Oggi) = due code “proposta”; `PatchPanel`/`PatchPort` solo DB senza UI. Move generate in `topology.py` `_ensure_move_suggestion` (post-0.10.33: 19→0 pending uplink).
+
+**Legacy raggiungibili fuori nav primaria:** Suggestions, Dashboard/Incidents/Ai/Runbook; ingest `POST /fdb` etichettato legacy nel poll_id.
+
+---
+
+### (2) Caso «308» (GS308EP) — senza SNMP
+
+**Fatto dichiarato in codice:** `switch_capabilities` → `snmp_supported=false`, `fdb_supported=false`, `poll_method=manual_upstream`. Asset **4**; IP mgmt `.1.8` (ping); `.3.20` inventariale (KNOWN_DEBT drift). Topology: `inferred_branch`, «porta interna non rilevabile».
+
+| Dato | Affidabile senza SNMP? | Evidenza |
+|------|------------------------|----------|
+| Nome/modello GS308EP | Sì | riga switches + asset |
+| Reachability `.1.8` | Sì | monitor ping |
+| Mappa porte **manuale** Plant | Sì se curata | `source=manual` |
+| MAC ramo su uplink a monte (FDB core) | Sì come “dietro il 308” | confidenza codice **0.65** |
+| Porta **interna** sul 308 | **No** (salvo override) | README + Topology |
+| LLDP lato core verso 308 | Sì sul core | `port_roles` |
+| Contatori porte / PoE / NSDP | **No** | capabilities |
+| Traffico switch-locale rx/tx | **No** | Monitor vuoto |
+| MAC/OUI/fingerprint endpoint *dietro* | Sì se visti altrove | pipeline asset |
+| Flows SPAN del ramo | Possibile | **Inferenza AI** (conf. bassa): carico “del ramo” ≠ telemetria del 308; serve aggregazione MAC/IP ∩ uplink non esposta oggi |
+| Flapping porte sul 308 | **No** | senza SNMP |
+
+**Sintesi UX derivabili (non inventate):** scheda ramo (N endpoint su uplink + freschezza FDB); salute = solo ping + freschezza edit Plant; inventario ramo via `inferred_branch`; gap esplicito porta interna.  
+**Inferenza da non presentare come fatto:** PoE/load, porte interne da pattern, “traffico del 308” da SPAN senza join esplicito.
+
+---
+
+### (3) Vista Oggi — chassis / upgrade / FDB
+
+**Conferma architetturale:** chassis, upgrade nome e overhaul/move FDB **non** sono percorsi operativi centrali autonomi; sono **problemi/azioni della vista Oggi** da rendere leggibili, contestualizzati e risolvibili lì (o nel Dossier collegato).
+
+| Tema | In Oggi oggi? | Come |
+|------|---------------|------|
+| Proposte nome (adotta/verifica/rumore) | Sì | `triageRules` + `all_proposals` |
+| Chassis (naming multi-NIC) | Sì · Verifica | `verdict=chassis`; adopt 409; **nessun rename chassis** |
+| Upgrade nome | Sì | `verdict=upgrade` / `manual-upgrade` |
+| Nuovi + monitor down | Sì · «Altro» | deep-link Monitoring |
+| Suggestion `move` / FDB | **No** | resta `/suggestions` orfana + Plant |
+
+**Gap per audit UX:** jargon Verifica (`collide`, `sotto-soglia`); chassis apre Dossier senza spiegare multi-NIC; nessuna card «porta da confermare»; NameProposal vs Suggestion; N massa rumore = **41** (fragile da spiegare); manca azione «apri Impianto/Topologia» dalla riga.
+
+**Use case futuri (dipendenze):** adopt/reject NP; bulk rumore; `GET /api/chassis`; suggestions move + Plant; Topology `?asset_id=`; monitors.
+
+---
+
+### STOP
+
+Misura e handoff sopra sono il deliverable. **Nessun redesign** in questo follow-up. Il prossimo prompt UX implementa l’audit completo (inclusa rimozione dump grezzo Dossier).
