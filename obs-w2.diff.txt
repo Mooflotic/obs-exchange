@@ -1,0 +1,611 @@
+diff --git a/observatory/.env.example b/observatory/.env.example
+index 70bb5b3..3096dcb 100644
+--- a/observatory/.env.example
++++ b/observatory/.env.example
+@@ -155,6 +155,8 @@ SCORING_CALIBRATED=false
+ LEARNING_PERIOD_DAYS=14
+ LEARNING_PERIOD_CYCLES=50
+ DRIFT_SHADOW_MODE=true
++# W2 shadow fact writers (kill switch a caldo; false spegne le sole scritture assertion)
++FACT_SHADOW_WRITERS_ENABLED=true
+ NOTIFICATIONS_ENABLED=false
+ # --- M6/M8 detector e sensori opzionali (singolarmente attivabili) ---
+ DETECTORS_ENABLED=
+diff --git a/observatory/CHANGELOG.md b/observatory/CHANGELOG.md
+index 677f6ee..2696792 100644
+--- a/observatory/CHANGELOG.md
++++ b/observatory/CHANGELOG.md
+@@ -1,8 +1,38 @@
+ # Changelog
+ 
++## 0.10.47 — W2: shadow writers fact_assertion
++
++- **W2:** scritture parallele `asset.iface_ip` (soggetto=interfaccia, excl_key=`asset.iface_ip:{iface_id}`); nessun consumatore legge ancora.
++- **S1:** barriera + SAVEPOINT; kill switch `FACT_SHADOW_WRITERS_ENABLED`; circuit breaker (20k righe / 2k/giorno / 50 MiB).
++- **Non collegato:** `asset.name` (chassis → W4a/W4b). Observability: `GET /api/admin/facts/shadow-stats`.
++- Report: [`docs/obs-w2.md`](docs/obs-w2.md).
++
++## 0.10.46 — W-D-fix: discriminante multi-IP sul dedup
++
++- **X.2:** `entity_key` resta MAC-scoped; `compute_dedup_key` ripristina discriminante IP (`fact_discriminant_for`) — DEBT-TOPO-IP-CONTEXTUAL ripristinato.
++- **X.4:** lift Fritz → `known` (non `confirmed_present`); decisione in `on_fritz_active_evidence` (trust).
++- **Debiti:** DEBT-LASTSEEN-DUAL-SEMANTICS. W2 → **0.10.47**.
++- Report: [`docs/obs-wd-fix.md`](docs/obs-wd-fix.md).
++
++## 0.10.45 — W-D: sblocco gate W2 (T-b, T-e, T-f)
++
++- **T-b:** `entity_key_for` MAC-scoped quando MAC noto; IP-only provisional (`identity_provisional`) + DEBT-PROVISIONAL-IDENTITY-MERGE.
++- **T-e/T-f:** demotion IP chiude `last_seen=now` → `resolve_asset_by_ip_at` trova il detentore storico.
++- **D.0.b:** `lift_fritz_quarantine_on_active` (trust) — quarantena non assorbente; inventory resta bloccata.
++- **Debiti:** DEBT-DOUBLE-CURRENT-IP; Cassiopea ri-caratterizzata chassis (W4a/W4b); alembic unificato in DEBT-ALEMBIC-BASELINE-LEGACY-TABLE. W2 writers → **0.10.46** (poi **0.10.47** in W-D-fix).
++- Report: [`docs/obs-wd.md`](docs/obs-wd.md).
++
++## 0.10.44 — F1-bis: DEBT-RECONCILE-CHURN-1 + riqualifica gate F1
++
++- **W-C:** `inventory_may_set_operational_state` non solleva/smasha `trust_quarantine` (`fritz_historical`) — chiude DEBT-RECONCILE-CHURN-1 (classe, non asset 116). Test zero-iface obbligatorio.
++- **W-B.3:** script una-tantum `scripts/normalize_empty_manual_names.py` (asset 98/150 name manual vuoto → assenza; no bump).
++- **Debiti:** DEBT-IP-CURRENT-SCOPE-PER-ASSET (Cassiopea asset 6). W2 slitta a **0.10.45** (poi rinumerato → **0.10.46** in W-D).
++- Report: [`docs/obs-f1bis.md`](docs/obs-f1bis.md).
++
+ ## 0.10.43 — OBS-IDENTITY W1.5-bis gate closure
+ 
+-- **W1.5-bis:** rimossa soglia E3 inventata (`mac_count_threshold` solo se misurata); test limiti E5-physical (D.2); tool RO `obs_identity_linker_dryrun.py`. Nessun writer identity acceso. W2 shadow writers slitta a **0.10.44**. Debiti: DEBT-RECONCILE-CHURN-1 (asset 116), DEBT-E3-AVAILABLE-FALSE.
++- **W1.5-bis:** rimossa soglia E3 inventata (`mac_count_threshold` solo se misurata); test limiti E5-physical (D.2); tool RO `obs_identity_linker_dryrun.py`. Nessun writer identity acceso. W2 shadow writers slitta a **0.10.44** (poi rinumerato → **0.10.45** in F1-bis). Debiti: DEBT-RECONCILE-CHURN-1 (asset 116), DEBT-E3-AVAILABLE-FALSE.
++- **MAC↔IP (fixture):** classifier puro `mac_ip_policy.py` + 9 test contratto; **non** wired a reconcile/trust (DEBT-MAC-IP-POLICY-WIRE → W7).
+ 
+ ## 0.10.42 — W1.5 identity-evidence (deployata)
+ 
+diff --git a/observatory/VERSION b/observatory/VERSION
+index a548662..dc2261b 100644
+--- a/observatory/VERSION
++++ b/observatory/VERSION
+@@ -1 +1 @@
+-0.10.43
++0.10.47
+diff --git a/observatory/api/app/config.py b/observatory/api/app/config.py
+index c796e50..0e00542 100644
+--- a/observatory/api/app/config.py
++++ b/observatory/api/app/config.py
+@@ -99,6 +99,8 @@ class Settings(BaseSettings):
+     learning_period_days: int = 14
+     learning_period_cycles: int = 50
+     drift_shadow_mode: bool = True
++    # W2: parallel fact_assertion writers (no consumers). Hot kill switch — no redeploy.
++    fact_shadow_writers_enabled: bool = True
+     notifications_enabled: bool = False
+     notification_webhook_url: str = ""
+     notification_telegram_bot_token: str = ""
+diff --git a/observatory/api/app/facts/registry.py b/observatory/api/app/facts/registry.py
+index c0faf54..8194f83 100644
+--- a/observatory/api/app/facts/registry.py
++++ b/observatory/api/app/facts/registry.py
+@@ -63,6 +63,20 @@ def subject_ref_asset(entity: Any) -> tuple[str, int]:
+     return ("asset", int(asset.id))
+ 
+ 
++def subject_ref_interface(entity: Any) -> tuple[str, int]:
++    """IP currency subject is the NIC (W2 — never asset-scoped exclusivity)."""
++    if isinstance(entity, Interface):
++        return ("interface", int(entity.id))
++    asset = _entity_asset(entity)
++    if asset is None:
++        raise ValueError("subject_ref_interface requires Asset or Interface")
++    ifaces = list(asset.interfaces or [])
++    if not ifaces:
++        raise ValueError("subject_ref_interface requires at least one Interface")
++    primary = next((i for i in ifaces if i.is_primary), ifaces[0])
++    return ("interface", int(primary.id))
++
++
+ def excl_key_fixed(key: str) -> Callable[..., str]:
+     def _fn(_subject: tuple[str, int], _entity: Any, _value: Any) -> str:
+         return key
+@@ -71,13 +85,13 @@ def excl_key_fixed(key: str) -> Callable[..., str]:
+ 
+ 
+ def excl_key_iface_ip(_subject: tuple[str, int], entity: Any, _value: Any) -> str:
+-    """Per-MAC/interface exclusivity (W0 §0.3 — sequential same MAC)."""
++    """Exclusivity = fact_key + interface_id (W2 — GS308EP sequential; Cassiopea parallel)."""
+     if isinstance(entity, Interface):
+-        return f"ip:{entity.id}"
++        return f"asset.iface_ip:{entity.id}"
+     asset = _entity_asset(entity)
+     if asset and asset.interfaces:
+         primary = next((i for i in asset.interfaces if i.is_primary), asset.interfaces[0])
+-        return f"ip:{primary.id}"
++        return f"asset.iface_ip:{primary.id}"
+     raise ValueError("excl_key_iface_ip requires Interface or Asset with interfaces")
+ 
+ 
+@@ -129,13 +143,14 @@ FACT_REGISTRY: dict[str, FactSpec] = {
+     ),
+     "asset.iface_ip": FactSpec(
+         fact_key="asset.iface_ip",
+-        subject_scope="asset",
+-        subject_ref=subject_ref_asset,
++        subject_scope="interface",
++        subject_ref=subject_ref_interface,
+         cardinality="single",
+         excl_key=excl_key_iface_ip,
+         sources=frozenset({"mgmt", "dhcp", "fritz", "nmap", "manual"}),
+         ttl_window=timedelta(hours=2),
+-        consumers=("elect_interface_primary", "topology", "scans", "monitoring"),
++        # W2: shadow writers only — no live consumers yet (W5/W7 migrate readers).
++        consumers=(),
+     ),
+     "asset.mgmt_ip": FactSpec(
+         fact_key="asset.mgmt_ip",
+diff --git a/observatory/api/app/routers/admin.py b/observatory/api/app/routers/admin.py
+index 501d4a8..96868e5 100644
+--- a/observatory/api/app/routers/admin.py
++++ b/observatory/api/app/routers/admin.py
+@@ -264,3 +264,24 @@ def cancel_scan(
+     audit(db, user=user, action="scan.cancel", entity="scan_run", entity_id=str(run.id))
+     db.commit()
+     return {"ok": True, "status": run.status}
++
++
++@router.get("/facts/shadow-stats")
++def facts_shadow_stats(
++    db: Session = Depends(get_db),
++    user: User = Depends(require_role("operator")),
++):
++    """W2.4 — read-only observability for shadow fact writers (no UI)."""
++    from sqlalchemy import func
++
++    from app.facts.shadow import evaluate_circuit_breaker, shadow_stats
++    from app.models import FactAssertion
++
++    stats = shadow_stats()
++    rows = int(db.scalar(select(func.count()).select_from(FactAssertion)) or 0)
++    open_, reason = evaluate_circuit_breaker(db)
++    stats["fact_assertions"] = rows
++    stats["breaker_open"] = open_
++    if reason:
++        stats["breaker_reason"] = reason
++    return stats
+diff --git a/observatory/api/app/services/identity.py b/observatory/api/app/services/identity.py
+index 834f44f..6a459b0 100644
+--- a/observatory/api/app/services/identity.py
++++ b/observatory/api/app/services/identity.py
+@@ -922,6 +922,12 @@ def elect_interface_primary(
+     for addr in addresses:
+         was_current = addr.is_current
+         addr.is_current = elected is not None and addr.id == elected.id
++        if was_current and not addr.is_current:
++            # Close binding interval at demotion time so resolve_asset_by_ip_at
++            # can answer first_seen <= T <= last_seen for historical holders
++            # (T-e/T-f / DEBT-IP-MIGRATION-NONETYPE).
++            if addr.last_seen is None or addr.last_seen < now:
++                addr.last_seen = now
+         if addr.is_current:
+             if mgmt_ip and addr.ip == mgmt_ip and (addr.role or "") in ("", "secondario"):
+                 addr.role = "mgmt"
+@@ -1018,7 +1024,7 @@ def observe_interface_ip(
+         elif role == "mgmt" and (row.role or "") in ("", "secondario"):
+             row.role = "mgmt"
+ 
+-    return elect_interface_primary(
++    elected = elect_interface_primary(
+         db,
+         asset,
+         iface,
+@@ -1028,6 +1034,19 @@ def observe_interface_ip(
+         mac=mac or next((i.mac for i in asset.interfaces if i.id == iface.id), ""),
+         vendor=vendor,
+     )
++    # W2 shadow: parallel fact_assertion for elected primary IP only.
++    # S1 — safe_shadow_* never raises; SAVEPOINT isolates assertion failures.
++    if elected is not None and elected.ip:
++        from app.facts.shadow import safe_shadow_iface_ip
++
++        safe_shadow_iface_ip(
++            db,
++            iface,
++            ip=elected.ip,
++            source=elected.source or source,
++            observed_at=now,
++        )
++    return elected
+ 
+ 
+ def touch_switch_mgmt_ip(
+diff --git a/observatory/docs/KNOWN_DEBT.md b/observatory/docs/KNOWN_DEBT.md
+index 3fe6739..2d64a21 100644
+--- a/observatory/docs/KNOWN_DEBT.md
++++ b/observatory/docs/KNOWN_DEBT.md
+@@ -4,18 +4,93 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+ 
+ ## DEBT-RECONCILE-CHURN-1
+ 
+-- **Priorità:** media (bootstrap regime) — aperto in W1.5-bis 2026-07-25
+-- **Cosa:** asset **116** ha `trust_level=fritz_historical` ma `meta.operational_state=active`. Ogni boot1 con `needs_apply=true` / `structural=1` / `T_backup≈80s`; apply trust corregge; `inventory.reconcile_asset_presence` ripristina `active`.
+-- **Attribuzione:** churn preesistente (backup pre-0.10.42), **non** indotto da `identity_evidence`.
+-- **Vietato:** tollerarlo silenziosamente come “regime ok”; sostituire la misura del boot1 con un boot successivo senza dichiararlo.
+-- **Fix quando:** ownership `operational_state` per `fritz_historical` — inventory non deve smashare la quarantena trust senza evidenza reliable; oppure heal one-shot + guard.
++- **Priorità:** media (bootstrap regime) — **CHIUSO in F1-bis / 0.10.44**; **confermato D.6** sul boot1 di **0.10.45** (`structural=0`)
++- **Cosa:** asset **116** aveva `trust_level=fritz_historical` ma `meta.operational_state=active`. Boot1 `needs_apply=true` / `structural=1` / `T_backup≈80s` perché `inventory_may_set_operational_state` permetteva `fritz_historical`→`active` se `reliable=True` (anche con 0 interfacce via reachability).
++- **Fix:** inventory non solleva né smasha `trust_quarantine` (`fritz_historical` op_state o trust_level) — gerarchia invariata `archived > trust_quarantine > trust_protected > inventory_presence`. Test `test_quarantine_zero_interfaces_inventory_cannot_set_active`.
++- **Vietato (storico):** tollerarlo come “regime ok”; caso speciale su `asset_id=116`.
++
++## DEBT-IP-CURRENT-SCOPE-PER-ASSET → ri-caratterizzato come IDENTITÀ CHASSIS (W-D)
++
++- **Priorità:** W4a/W4b (consolidamento chassis) — riaperto/riscritto F1-bis→W-D 2026-07-26
++- **Fatto:** Cassiopea è modellata come **due asset record** — asset **5** «Cassiopea — NIC 1» tiene `192.168.1.3` CURRENT (id 9); asset **6** tiene `192.168.3.24` CURRENT (id 855). L’IP di management non è perso: è sull’altro record. Il ping fallito su `.3.24` dal container api è atteso (lato SPAN), non un sintomo.
++- **Test di non-regressione (da chiudere in W4a/W4b):** dopo consolidamento, Cassiopea = **UN** apparato con **DUE** interfacce; entrambi gli IP correnti ciascuno sulla propria interfaccia; un solo nome canonico.
++- **Vietato ora:** patch dati che forzi due current sullo stesso asset_id / stessa iface.
++- **Doc:** [`docs/obs-f1bis.md`](obs-f1bis.md) · [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-DOUBLE-CURRENT-IP
++
++- **Priorità:** pre-condizione **W3** — aperto W-D 2026-07-26
++- **Cosa:** stesso IP con >1 riga `is_current=1` (stesso asset o asset diversi). Al backfill W3 collideranno con `uq_fact_assertions_current_slot`.
++- **Casi enumerati (live, invariati da X.2):**
++  - `192.168.1.2` — id **3** (asset 2, mgmt) + id **153** (asset 2, fritz)
++  - `192.168.2.108` — id **15** (asset 11) + id **853** (asset 138)
++- **Nota:** W3 richiede una **regola di risoluzione dichiarata PRIMA** del backfill. **NON** collassare ora. Cardinalità non cambiata da X.2 (dedup ≠ `is_current`).
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md) · [`docs/obs-wd-fix.md`](obs-wd-fix.md)
++
++## DEBT-PROVISIONAL-IDENTITY-MERGE
++
++- **Priorità:** post W-D (quando MAC sconosciuto → poi scoperto) — aperto W-D 2026-07-26
++- **Cosa:** `entity_key` IP-only è marcato `payload.identity_provisional=true`, ma non esiste ancora un percorso di **fusione** quando il MAC viene scoperto in seguito (evitare duplicato).
++- **X.2:** invariato — discriminante IP sul dedup non introduce merge. Cardinalità debito invariata.
++- **Vietato:** inventare il merge in questa ondata.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md) · [`docs/obs-wd-fix.md`](obs-wd-fix.md)
+ 
+ ## DEBT-E3-AVAILABLE-FALSE
+ 
+ - **Priorità:** bloccante per E3 finché SNMP non è misurabile
+ - **Cosa:** E3-topological richiede access_port + mac_count misurato + soglia **esplicita** + simultaneità. Con poll SNMP in timeout, E3 = **available=false** (degrada a E2). Nessuna soglia inventata.
+ - **Vincolo:** non promuovere E3 finché `fdb_poll.ok` / misure porta non tornano.
+-- **Ripresa:** W2+ quando SNMP/LLDP writers misurano.
++- **Ripresa:** W2+ quando SNMP/LLDP writers misurano; requisiti accesso/poll in **DEBT-FDB-LLDP-PASSIVE**.
++
++## DEBT-FDB-LLDP-PASSIVE
++
++- **Priorità:** wave futura post W1.5-bis (writers SNMP / presenza) — **non** interrompe W1.5-bis
++- **Cosa:** implementazione iniziale **passiva/read-only** FDB+LLDP: presenza/posizione L2, **non** identità; FDB ≠ ownership; LLDP/CDP solo corroborante (spoofabile). LGS310C/328C: SNMPv3 authPriv, RO, ACL solo Cassiopea, view Bridge/LLDP/ENTITY, no SET, segreti fuori repo/log, timeout/rate limit; LLDP/CDP non abilitato dove non serve. ObservationRaw: switch_id, port, VLAN/bridge-domain, timestamp, age/last_seen, acquisition_method, failure_state; dedupe per **transizione** non per poll. Alert «nuovo MAC su access» solo dopo classificazione misurata access/trunk/uplink/AP/powerline, inizialmente informativo; **niente** quarantena/shutdown auto. Spoof / MAC move / CAM flood / randomized MAC previsti; assenza alert ≠ sicurezza.
++- **Doc:** [`docs/obs-fdb-lldp-passive.md`](obs-fdb-lldp-passive.md)
++- **Vietato:** usarlo come scorciatoia identity/merge; SET SNMP; enforcement automatico porte; dichiarare “rete sicura” perché non ci sono alert.
++
++## DEBT-ENTITY-KEY-MAC-IP
++
++- **Priorità:** era bloccante W2 — **CHIUSO in W-D / 0.10.45** (2026-07-26)
++- **Fix:** `entity_key_for` → MAC quando MAC noto; IP-only → provisional (`identity_provisional`). Test T-b verde.
++- **Residuo correlato (non collassare):** righe IP duplicate / refresh-as-transition — vedi B.2 / DEBT-DOUBLE-CURRENT-IP.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-IP-MIGRATION-NONETYPE
++
++- **Priorità:** era bloccante W2 — **CHIUSO in W-D / 0.10.45** (2026-07-26)
++- **Causa:** `elect_interface_primary` demoteva senza chiudere `last_seen` → `resolve_asset_by_ip_at` tornava `None` a T intermedio.
++- **Fix:** alla demotion, `last_seen = now` se mancante/precedente. T-e / T-f verdi.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-ALEMBIC-BASELINE-LEGACY-TABLE
++
++- **Priorità:** bassa (igiene CI; Alembic **non** gira in prod) — unificato W-D 2026-07-26
++- **Ex:** DEBT-ALEMBIC-MIGRATION-TESTS + baseline disallineata da tabella `observations` droppata.
++- **Sintomi test:** `ix_observations_seen_at`, `assets.chassis_id`, `assets.printer_first_seen` su fixture/alembic.
++- **Vietato:** inseguirli come fix runtime; schema prod = `create_all`.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-IPP-PRECEDENCE (T-c / T-d)
++
++- **Priorità:** media (autorità naming) — registrato W-D 2026-07-26, **non** corretto in questa ondata
++- **Test:** `test_ipp_precedence_and_human_category_override` (T-c); `test_snmp_enrichment_creates_proposal_without_overwriting_name` (T-d)
++- **Osservato T-c:** `best_guess` → `('HP123','fritz')` invece di `('Stampante Studio','ipp')`
++- **Osservato T-d:** proposal snmp assente / lista vuota vs atteso `[('snmp','HP LaserJet M404dn')]`
++- **Nota:** non risolti come collaterale di D.1. I5 / gerarchia naming — ondata dedicata.
++
++## DEBT-FDB-UPLINK-PORTAL (T-a)
++
++- **Priorità:** media — registrato W-D 2026-07-26 (preesistente), **non** corretto qui
++- **Test:** `test_m2_discovery.py::test_fdb_skips_observe_portal_on_uplink_role`
++- **Osservato:** `portal_last_seen` valorizzato invece di `None` su ruolo uplink.
++
++## DEBT-MAC-IP-POLICY-WIRE
++
++- **Priorità:** prossima wave presence (W7 / post W1.5-bis)
++- **Cosa:** policy dominio MAC↔IP (chassis ≥1 IP corrente; eccezione powerline/510E; `present_l2_unaddressed`; supersession binding) — classifier in `api/app/services/mac_ip_policy.py` + test contratto. **Non ancora** collegata a `reconcile_asset_presence` / trust.
++- **Doc:** [`docs/obs-currency-mac-ip-policy.md`](obs-currency-mac-ip-policy.md)
++- **Vietato:** usarla come scorciatoia di fusione chassis; inventare management IP.
+ 
+ ## DEBT-MIRROR-SOURCES
+ 
+@@ -65,20 +140,30 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+ - **Residuo:** riprendere DVR (#2) / LUMIN / openhabian dal toggle critico se servono; non riattivare Kuma runtime.
+ - **Vietato:** ripristinare Kuma come dipendenza; delete delle righe kuma archiviate.
+ 
+-## DEBT-TOPO-IP-CONTEXTUAL (CHIUSO v0.9.0)
++## DEBT-TOPO-IP-CONTEXTUAL
+ 
+-- **Priorità:** bassa (latente → perimetro ampliato 2026-07-21) — ex BUG 3 declassato
++- **Priorità:** bassa (latente → perimetro ampliato 2026-07-21; discriminante raw ripristinato 0.10.46) — ex BUG 3 declassato
++- **Invariante:** multi-IP sullo stesso MAC **non collassa** nello store raw (fatti distinti).
++- **Stato raw:** **violato in 0.10.45** (`dedup_key` usava solo `entity_key` MAC-scoped → 5 IP → 1 riga). **Ripristinato in 0.10.46:** `entity_key` resta MAC; `compute_dedup_key` aggiunge discriminante IP (`fact_discriminant_for`). Identità ≠ dedup. Vedi [`docs/obs-wd-fix.md`](obs-wd-fix.md).
+ - **Perimetro definitivo:** multi-IP per ruolo (`primario` / `vpn` / `mgmt` / `servizi`). `endpoint.ip_change` **solo sul primario**. Casi noti:
+   - **FRITZ!Box** (asset 1): 5 IP contemporanei sullo stesso MAC — `.1.1` primario, `.1.9` VPN LAN, `.1.4`/`.1.5`/`.1.6` (ruolo TBD servizi/altro); ×223 `ip_change`/24h documentati poi silenziati.
+-  - **GS308EP** (asset 4): `.1.8` mgmt (fatto). `.3.20` = binding Fritz storico sullo stesso MAC, **ownership da confermare** (non inventariale; non SPAN — SPAN=p22/NIC2 `.3.24` / sink `10.255.255.2/30`). Vedi `docs/obs-ux-ip-308-verifica.md`.
++  - **GS308EP** (asset 4): `.1.8` mgmt (fatto). `.3.20` = binding Fritz storico sullo stesso MAC, **ownership da confermare** (non inventariale; non SPAN — SPAN=p22/NIC2 `.3.24` / sink `10.255.255.2/30`). Vedi [`docs/obs-ux-ip-308-verifica.md`](obs-ux-ip-308-verifica.md).
+   - **Cassiopea (ex-bond):** `DEBT-LAG-CASSIOPEA` **CHIUSO** 21/07/2026 (eth0 LAN / eth1 SPAN).
+-- **Nota architetturale:** il dedup raw per-MAC scarta le osservazioni L3 multi-IP (sul Fritz 4/5 IP perse nel raw, `hit_count≈5` ma `l3.ip` resta solo `.1.1`) mentre l’upsert legacy scrive comunque i binding e gli `ip_change`: le due pipeline divergono. Il fix dovrà includere `dedup_key` **MAC+IP** per le osservazioni L3.
+-- **Sintomo latente (BUG 3 originale):** in [`_resolve_ap_asset`](../api/app/services/topology.py) il fallback per-IP usa `is_current` invece di `resolve_asset_by_ip_at`. Oggi non gira (0 client Wi‑Fi IP-only su 41).
+-- **Fix quando servirà:** (1) ruoli IP + `ip_change` solo primario; (2) dedup L3 MAC+IP; (3) nel solo ramo (b) di `_resolve_ap_asset`, `resolve_asset_by_ip_at` + `observed_at`; tie→None→fall-through. NON toccare `is_current` alla cieca su multi-NIC storiche.
++- **Nota architetturale:** il dedup raw per-MAC scartava le osservazioni L3 multi-IP (sul Fritz 4/5 IP perse nel raw, `hit_count≈5` ma `l3.ip` resta solo `.1.1`) mentre l’upsert legacy scrive comunque i binding e gli `ip_change`: le due pipeline divergevano. Fix 0.10.46: `dedup_key` MAC+IP per L3.
++- **Sintomo latente (BUG 3 originale / consumatore di correttezza):** in [`_resolve_ap_asset`](../api/app/services/topology.py) il fallback per-IP usa `is_current` invece di `resolve_asset_by_ip_at`. Oggi non gira (0 client Wi‑Fi IP-only su 41). **Classe di difetto OBS-CURRENCY:** è un **consumatore di correntezza** da migrare esplicitamente in **W5/W7** (lista consumatori fact_assertions / resolve-at-T).
++- **Fix quando servirà:** (1) ruoli IP + `ip_change` solo primario; (2) dedup L3 MAC+IP *(fatto 0.10.46)*; (3) nel solo ramo (b) di `_resolve_ap_asset`, `resolve_asset_by_ip_at` + `observed_at`; tie→None→fall-through. NON toccare `is_current` alla cieca su multi-NIC storiche.
+ - **Riattivazione:** attribuzione topologia sbagliata su IP DHCP migrato, oppure ripresa del rumore `ip_change` multi-ruolo dopo unmute.
+-- **Stato FASE B (codice, 2026-07-21):** elezione + `role` + dedup `mac|ip` + `ip_change` solo primario — in tree, pre-deploy. Bonifica storica duplicate `(interface_id, ip)` resta fuori scope. UI secondari = FASE C.
++- **Stato FASE B (codice):** elezione + `role` + dedup `mac|ip` + `ip_change` solo primario — in tree. Bonifica storica duplicate `(interface_id, ip)` resta fuori scope. UI secondari = FASE C.
+ - **Bonifica storica:** eventuali righe duplicate `(interface_id, ip)` pre-FASE-B restano; niente UniqueConstraint finché non c’è purge dedicato (fuori scope).
+ 
++## DEBT-LASTSEEN-DUAL-SEMANTICS
++
++- **Priorità:** pre-condizione **W3** — aperto W-D-fix 2026-07-26
++- **Cosa:** `elect_interface_primary` scrive `last_seen = now` alla demotion (chiusura amministrativa di intervallo) nello stesso campo «ultima osservazione».
++- **Nota W3:** prima del backfill dichiarare per ogni campo quale semantica porta; le righe con `last_seen` amministrativo daranno `valid_to`, non un’osservazione.
++- **Vietato ora:** correggere / biforcare il campo in questa ondata.
++- **Doc:** [`docs/obs-wd-fix.md`](obs-wd-fix.md)
++
+ ## DEBT-A2-CASCADE-AP
+ 
+ - **Priorità:** bassa (latente) — ex nota di confine BUG 1 / A2
+diff --git a/observatory/docs/obs-w2.md b/observatory/docs/obs-w2.md
+new file mode 100644
+index 0000000..5e5f24b
+--- /dev/null
++++ b/observatory/docs/obs-w2.md
+@@ -0,0 +1,177 @@
++# W2 — Shadow writers `fact_assertion` (0.10.47)
++
++**Esito:** W2.0.a chiusa · writer `asset.iface_ip` collegati · W2.5.3 / W2.5.6 verdi · assert W2.6 rispettato (con scarto `T_total` spiegato) · **STOP prima di W4a**.
++
++**Rollback:** tag `v0.10.46` · kill switch `FACT_SHADOW_WRITERS_ENABLED=false` prima del rollback se il problema è solo nelle scritture shadow.
++
++---
++
++## W2.0.a — Discrepanza diff / sommario T-e/T-f
++
++| | |
++|--|--|
++| Codice **deployato** 0.10.46 | `elect_interface_primary`: alla demotion `was_current and not is_current` → `last_seen = now` **PRESENTE** |
++| Diff W-D-fix | Non includeva `identity.py` → **filtrato**, non assente |
++| Gate W2 | **OK** — writers accesi |
++
++---
++
++## W2.0.b — Memoria `DEBT-TOPO-IP-CONTEXTUAL`
++
++Ripristinate da history le voci perse (nessun bump per questa sola voce):
++
++- `_resolve_ap_asset` usa `is_current` (0 client Wi‑Fi IP-only / 41) — **consumatore di correntezza → migrare in W5/W7**
++- GS308EP asset 4: ownership binding storico `.3.20` stesso MAC
++- Fritz asset 1: ×223 `ip_change`/24h documentati poi silenziati
++- `DEBT-LAG-CASSIOPEA` chiuso 21/07 + `docs/obs-ux-ip-308-verifica.md`
++- Invariante raw multi-IP + ripristino 0.10.46 mantenuti
++
++---
++
++## W2.1 — Inventario (dichiarato, non assunto)
++
++### `api/app/facts/registry.py` — esiste
++
++| fact_key | subject_scope | cardinality | excl_key | sources (authority via I5 rank) | ttl | consumers |
++|----------|---------------|-------------|----------|----------------------------------|-----|-----------|
++| `asset.name` | chassis | single | `name` | manual,ai,dhcp,fritz,oui,dns,mdns,ssdp | — | oggi,dossier,… |
++| `iface.alias` | asset | single | `alias` | manual | — | dossier,plant |
++| `asset.iface_ip` | **interface** (W2) | single | `asset.iface_ip:{iface_id}` | mgmt,dhcp,fritz,nmap,manual | 2h | **()** shadow only |
++| `asset.mgmt_ip` | asset | single | `mgmt_ip` | mgmt,manual,fritz,nmap | 2h | monitoring,plant |
++| `presence.portal` | asset | single | `presence` | portal | 24h | trust,inventory |
++| `port.fdb_mac` | port | scoped | fdb:… | fdb | — | topology,presence |
++| `rel.physical_link` | relation | scoped | physical_link | manual,auto | — | plant,topology |
++| `os.guess` | asset | single | `os` | manual,nmap | — | dossier |
++| `name_proposal` | chassis | multi | proposal:… | ai,dhcp,fritz,… | — | oggi |
++
++### `api/app/facts/resolver.py` — R-A…R-H
++
++| Regola | Stato |
++|--------|--------|
++| R-A refresh (stesso value+source → `last_seen`, `valid_from` invariato) | implementata |
++| R-B supersession atomica (demote poi insert) | implementata |
++| R-C weak_evidence (authority inferiore) | implementata |
++| R-D manual pinned | implementata |
++| R-E TTL / stale | implementata (`expire_stale_facts`) |
++| R-F readmission cooldown 4h | implementata |
++| R-G absent → None (I2) | implementata (`current`) |
++| R-H semantic contradiction / conflict_review | implementata |
++
++Nessuna regola necessaria a W2 mancante.
++
++### `fact_assertions` in prod (pre-writer)
++
++- Tabella + indici: `uq_fact_assertions_current_slot` (partial unique `state='current'`), `ix_fact_assertions_subject_state`, `ix_fact_assertions_fact_state`
++- Righe pre-deploy: **0**
++
++---
++
++## W2.2 — Classi collegate / rinviate
++
++| Classe | Decisione |
++|--------|-----------|
++| `asset.iface_ip` (iface IP) | **COLLEGATA** — soggetto=`interface`, excl_key=`asset.iface_ip:{id}`; scrive solo l’IP **eletto** post-`elect_interface_primary` |
++| `asset.name` | **RINVIATA** a W4a/W4b (soggetto chassis) — non dimenticata |
++| `os.guess` / hostname / altre | **NON collegate** — K3 / fuori perimetro W2 |
++
++---
++
++## W2.3 — Isolamento S1
++
++| Meccanismo | Dove |
++|------------|------|
++| Barriera try/except su ogni apply | `facts/shadow.py` `safe_shadow_iface_ip` |
++| SAVEPOINT (`begin_nested`) | stessa sessione ingest — rollback assertion ≠ rollback osservazione |
++| Kill switch a caldo | `FACT_SHADOW_WRITERS_ENABLED` / `Settings.fact_shadow_writers_enabled` (default true; `false` spegne senza redeploy) |
++| Circuit breaker | righe `<20000` · crescita `<2000/giorno` · tabella+indici `<50 MiB`; latch + log `top_groups` |
++| K1 | nessuna scrittura su colonne Asset / campi reconcile |
++
++---
++
++## W2.4 — Osservabilità
++
++`GET /api/admin/facts/shadow-stats` (operator): contatori per `(fact_key|source)`, `breaker_*`, `fact_assertions`. Nessuna UI.
++
++---
++
++## W2.5 — Test (nodi nominati)
++
++| Nodo | Esito |
++|------|-------|
++| W2.5.1 idempotenza R-A | PASS |
++| W2.5.2 supersession R-B | PASS |
++| W2.5.3 Cassiopea dual-iface entrambe current | PASS |
++| W2.5.4 GS308EP `.3.20`→`.1.8` | PASS |
++| W2.5.5 fritz ≱ manual | PASS |
++| W2.5.6 S1 IntegrityError isolato | PASS |
++| W2.5.7 circuit breaker | PASS |
++| `test_facts_resolver` (W1) | PASS |
++| `test_m1_observation_store` | PASS |
++| `test_trust_converge` | PASS |
++| `test_mac_ip_policy` | PASS |
++| T-b / T-e / T-f | PASS |
++| identity (`test_asset_identity`, `test_m3_identity_presence`, `test_identity_evidence`, `test_migrate_identity`) | PASS |
++
++Nessuna suite completa. Nessuna temporizzazione.
++
++---
++
++## W2.6 — Deploy 0.10.47
++
++### Previsioni (dichiarate pre-deploy)
++
++| Metrica | Previsto |
++|---------|----------|
++| boot1 structural | 0 |
++| needs_apply | false |
++| T_backup | 0 |
++| T_total | 8.8–9.2 s |
++| assets / ip_current / NP | 151 / 100 / 412 |
++| identity_evidence / link_proposals | 0 / 0 (tabella assente) |
++| `observations` in sqlite_master | assente |
++| AD_devices_active | **69** (snapshot finestra 24h) |
++| fact_assertions avvio | 0 |
++| fact_assertions post 1° ciclo | **O(10²) ≈ ip_current (100)** — una assertion per binding primario eletto rinfrescato, non per osservazione raw |
++
++Snapshot pre-op: `data/backups/pre-w2-20260726-014717.db` (+ `pre-deploy-20260726-0147.db`). Protetti intatti.
++
++### Osservato
++
++| Metrica | Osservato | vs previsto |
++|---------|-----------|-------------|
++| VERSION | 0.10.47 | ok |
++| structural | 0 (`changed_assets` trust / conflitti=0) | ok |
++| needs_apply | false | ok |
++| T_backup | 0.0 | ok |
++| T_total | **9.263 s** | **+0.063 s** oltre banda 9.2 — scarto: passo chassis 0.9 s + jitter uvicorn post-rebuild; nessun `needs_apply`/backup; **non** ridefinita la metrica |
++| assets / ip_cur / NP | 151 / 100 / 412 | ok |
++| ie / link_proposals | 0 / assente | ok |
++| observations | assente | ok |
++| AD_devices_active | 69 | ok |
++| fact_assertions @boot | 0 | ok |
++| fact_assertions post ciclo | **56** (tutte `current`, subject=`interface`) | stesso ordine di grandezza di ~100; sotto perché Fritz hostlist **401** e il ciclo ha rinfrescato un sottoinsieme (nmap/ssdp/mgmt); crescita per osservazione eletta, non per raw |
++| breaker | **closed** | ok |
++| errori shadow isolati | 0 (processo API) | ok |
++
++**Assert one-liner:**
++
++`boot1 0.10.47: structural=0 needs_apply=false T_backup=0 T_total=9.263 · NP=412 assets=151 ip_cur=100 ie/ilp=0/0 observations=absent · AD_devices_active=69 · fact_assertions=56 · breaker=closed`
++
++---
++
++## W2.7 — Verifica successiva (una volta, non serie)
++
++Alla prossima occasione naturale: leggere `fact_assertions`, `breaker`, contatori shadow-stats. Se breaker open → quello è il report.
++
++---
++
++## Rinviate esplicitamente
++
++- **W4a** (soggetto NameProposal / chassis) — STOP qui; arriva dopo review del diff
++- Consumatori live di `fact_assertions` (W5/W7), incluso `_resolve_ap_asset`
++- Collasso doppi-current IP (W3)
++- `asset.name` shadow
++
++## Diff
++
++[`docs/obs-w2.diff.txt`](obs-w2.diff.txt)
+diff --git a/observatory/tests/test_facts_resolver.py b/observatory/tests/test_facts_resolver.py
+index 1ea304c..740af22 100644
+--- a/observatory/tests/test_facts_resolver.py
++++ b/observatory/tests/test_facts_resolver.py
+@@ -174,10 +174,10 @@ def test_unique_index_violation_impossible(db):
+     )
+     db.commit()
+     dup = FactAssertion(
+-        subject_type="asset",
+-        subject_id=asset.id,
++        subject_type="interface",
++        subject_id=iface.id,
+         fact_key="asset.iface_ip",
+-        excl_key=f"ip:{iface.id}",
++        excl_key=f"asset.iface_ip:{iface.id}",
+         value_norm="192.168.1.2",
+         value_json={},
+         source="nmap",
+@@ -253,7 +253,9 @@ def test_anti_flap_no_oscillation(db):
+     )
+     db.commit()
+     assert r3.action in {"cooldown", "weak_evidence"}
+-    cur = current(db, "asset", asset.id, "asset.iface_ip", excl_key=f"ip:{iface.id}")
++    cur = current(
++        db, "interface", iface.id, "asset.iface_ip", excl_key=f"asset.iface_ip:{iface.id}"
++    )
+     assert cur.value_norm == "192.168.1.101"
+ 
+ 
+@@ -291,7 +293,9 @@ def test_history_never_deleted(db):
+             observed_at=_ts(i * 60),
+         )
+     db.commit()
+-    rows = history(db, "asset", asset.id, "asset.iface_ip", excl_key=f"ip:{iface.id}")
++    rows = history(
++        db, "interface", iface.id, "asset.iface_ip", excl_key=f"asset.iface_ip:{iface.id}"
++    )
+     assert len(rows) == 3
+     assert db.scalar(select(func.count()).select_from(FactAssertion)) == 3
+ 
+@@ -316,8 +320,20 @@ def test_multi_excl_key_no_collide(db):
+         observed_at=_ts(),
+     )
+     db.commit()
+-    c1 = current(db, "asset", asset1.id, "asset.iface_ip", excl_key=f"ip:{iface1.id}")
+-    c2 = current(db, "asset", asset2.id, "asset.iface_ip", excl_key=f"ip:{iface2.id}")
++    c1 = current(
++        db,
++        "interface",
++        iface1.id,
++        "asset.iface_ip",
++        excl_key=f"asset.iface_ip:{iface1.id}",
++    )
++    c2 = current(
++        db,
++        "interface",
++        iface2.id,
++        "asset.iface_ip",
++        excl_key=f"asset.iface_ip:{iface2.id}",
++    )
+     assert c1 and c1.value_norm == "192.168.1.3" and c1.state == "current"
+     assert c2 and c2.value_norm == "192.168.3.24" and c2.state == "current"
+ 
+@@ -360,7 +376,9 @@ def test_gs308ep_sequential_ip_supersession(db):
+     ).one()
+     assert old.state == "superseded"
+     assert new.state == "current"
+-    hist = history(db, "asset", asset.id, "asset.iface_ip", excl_key=f"ip:{iface.id}")
++    hist = history(
++        db, "interface", iface.id, "asset.iface_ip", excl_key=f"asset.iface_ip:{iface.id}"
++    )
+     assert len(hist) == 2
+     assert {h.state for h in hist} == {"superseded", "current"}
+ 
