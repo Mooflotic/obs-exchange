@@ -1,0 +1,3203 @@
+diff --git a/observatory/CHANGELOG.md b/observatory/CHANGELOG.md
+index aeef36d..449ca9b 100644
+--- a/observatory/CHANGELOG.md
++++ b/observatory/CHANGELOG.md
+@@ -1,8 +1,12 @@
+ # Changelog
+ 
+-## 0.10.41 — pending deploy (STOP)
++## 0.10.42 — W1.5 identity-evidence (pending deploy / STOP)
+ 
+-- **OBS-CURRENCY W1:** fondamenta `fact_assertion` — registro dichiarativo (`api/app/facts/registry.py`), resolver unico R-A..R-H (`api/app/facts/resolver.py`), modello + indice unico parziale `(subject_type, subject_id, excl_key) WHERE state='current'`, migrazione Alembic di coerenza. Nessun writer ingest, nessun consumatore modificato, nessuna scrittura su colonne Asset.
++- **OBS-CURRENCY W1.5 OBS-IDENTITY-EVIDENCE (Fase 3 post-review):** scala evidenze **E0..E5** (`level = f(fact_type, acquisition_method, source, subtype, quals)` — mai `fact_type` da solo) e scala decisioni **D0..D3** (D4 assente per design). Package `api/app/identity_evidence/{classes,store,linker,decisions,presence,mac_guards,circularity}.py`. Modelli aggiornati (`member_id`, `provenance_generation`, `collector_run_id`, stato `absent_measured`/`absent_unmeasured`, FSM `link_state` ortogonale a `evidence.state`, `relation` default `unresolved`, `audit` JSON per confermare/rifiutare/ritrarre). Guardrail: **U/L bit MAC** (LAA → downgrade a E1), **zero adiacenza blocchi MAC** (test statico sul modulo), **K7 circolarità** (chassis_id come propria evidenza rifiutato; provenance che cita il link stesso rifiutata). Linker: solo `link_state=proposed`, mai `chassis_id`/`Asset.name`, no transitività, no fusione. Merge = LINK (reversibile via `retract_link`). Test T1..T21 + schema parity models ↔ `create_all` verdi. W2 shadow writers rimane **0.10.43**.
++
++## 0.10.41 — OBS-CURRENCY W1 (deployata)
++
++- **OBS-CURRENCY W1:** fondamenta `fact_assertion` — registro dichiarativo (`api/app/facts/registry.py`), resolver unico R-A..R-H (`api/app/facts/resolver.py`), modello + indice unico parziale `(subject_type, subject_id, excl_key) WHERE state='current'`, migrazione Alembic di coerenza. Nessun writer ingest, nessun consumatore modificato, nessuna scrittura su colonne Asset. Regime assert: T_total=8.879 · needs_apply=false · T_backup=0 · NP=412.
+ 
+ ## 0.10.40 — 2026-07-25
+ 
+diff --git a/observatory/VERSION b/observatory/VERSION
+index e0cb4bf..ecf12d7 100644
+--- a/observatory/VERSION
++++ b/observatory/VERSION
+@@ -1 +1 @@
+-0.10.41
++0.10.42
+diff --git a/observatory/api/app/alembic/versions/n4e5f6a7b8c9_identity_evidence.py b/observatory/api/app/alembic/versions/n4e5f6a7b8c9_identity_evidence.py
+new file mode 100644
+index 0000000..9de4444
+--- /dev/null
++++ b/observatory/api/app/alembic/versions/n4e5f6a7b8c9_identity_evidence.py
+@@ -0,0 +1,199 @@
++"""identity_evidence + identity_link_proposals — OBS-IDENTITY-EVIDENCE W1.5
++
++Revision ID: n4e5f6a7b8c9
++Revises: m3d4e5f6a7b8
++Create Date: 2026-07-25 19:50:00.000000
++
++Prod uses ``Base.metadata.create_all`` at bootstrap; this migration keeps
++Alembic parity for both tables. Schema mirrors
++:class:`app.models.IdentityEvidence` and :class:`app.models.IdentityLinkProposal`.
++"""
++from __future__ import annotations
++
++from alembic import op
++import sqlalchemy as sa
++
++
++revision = "n4e5f6a7b8c9"
++down_revision = "m3d4e5f6a7b8"
++branch_labels = None
++depends_on = None
++
++
++def upgrade() -> None:
++    op.create_table(
++        "identity_evidence",
++        sa.Column("id", sa.Integer(), nullable=False),
++        sa.Column("subject_hint_type", sa.String(length=16), nullable=False),
++        sa.Column("subject_hint_id", sa.Integer(), nullable=True),
++        sa.Column("member_id", sa.Integer(), nullable=True),
++        sa.Column("fact_type", sa.String(length=48), nullable=False),
++        sa.Column("acquisition_method", sa.String(length=48), nullable=False),
++        sa.Column("subtype", sa.String(length=32), nullable=False),
++        sa.Column("source", sa.String(length=48), nullable=False),
++        sa.Column("evidence_key", sa.String(length=128), nullable=False),
++        sa.Column("level", sa.String(length=24), nullable=False),
++        sa.Column("value_norm", sa.String(length=512), nullable=False),
++        sa.Column("value_json", sa.JSON(), nullable=False),
++        sa.Column("authority", sa.Integer(), nullable=False),
++        sa.Column("confidence", sa.Float(), nullable=False),
++        sa.Column("observed_at", sa.DateTime(), nullable=False),
++        sa.Column("last_seen_at", sa.DateTime(), nullable=False),
++        sa.Column("valid_from", sa.DateTime(), nullable=False),
++        sa.Column("valid_to", sa.DateTime(), nullable=True),
++        sa.Column("state", sa.String(length=24), nullable=False),
++        sa.Column("provenance", sa.JSON(), nullable=False),
++        sa.Column("provenance_generation", sa.Integer(), nullable=False),
++        sa.Column("collector_run_id", sa.String(length=64), nullable=False),
++        sa.Column("contradicts_id", sa.Integer(), nullable=True),
++        sa.Column("manual_review", sa.Boolean(), nullable=False),
++        sa.Column("decay_score", sa.Float(), nullable=False),
++        sa.Column("created_at", sa.DateTime(), nullable=False),
++        sa.ForeignKeyConstraint(
++            ["contradicts_id"], ["identity_evidence.id"], ondelete="SET NULL"
++        ),
++        sa.PrimaryKeyConstraint("id"),
++    )
++    op.create_index(
++        "ix_identity_evidence_natural_key",
++        "identity_evidence",
++        [
++            "subject_hint_type",
++            "subject_hint_id",
++            "member_id",
++            "fact_type",
++            "acquisition_method",
++            "source",
++            "subtype",
++            "evidence_key",
++            "state",
++        ],
++    )
++    op.create_index(
++        "ix_identity_evidence_subject_state",
++        "identity_evidence",
++        ["subject_hint_type", "subject_hint_id", "state"],
++    )
++    op.create_index(
++        "ix_identity_evidence_fact_state",
++        "identity_evidence",
++        ["fact_type", "state"],
++    )
++    op.create_index(
++        "ix_identity_evidence_level_state",
++        "identity_evidence",
++        ["level", "state"],
++    )
++    op.create_index(
++        op.f("ix_identity_evidence_subject_hint_type"),
++        "identity_evidence",
++        ["subject_hint_type"],
++    )
++    op.create_index(
++        op.f("ix_identity_evidence_subject_hint_id"),
++        "identity_evidence",
++        ["subject_hint_id"],
++    )
++    op.create_index(
++        op.f("ix_identity_evidence_member_id"),
++        "identity_evidence",
++        ["member_id"],
++    )
++    op.create_index(
++        op.f("ix_identity_evidence_fact_type"),
++        "identity_evidence",
++        ["fact_type"],
++    )
++    op.create_index(
++        op.f("ix_identity_evidence_level"),
++        "identity_evidence",
++        ["level"],
++    )
++
++    op.create_table(
++        "identity_link_proposals",
++        sa.Column("id", sa.Integer(), nullable=False),
++        sa.Column("left_ref", sa.String(length=64), nullable=False),
++        sa.Column("right_ref", sa.String(length=64), nullable=False),
++        sa.Column("relation", sa.String(length=24), nullable=False),
++        sa.Column("link_state", sa.String(length=16), nullable=False),
++        sa.Column("decision_level", sa.String(length=4), nullable=False),
++        sa.Column("score", sa.Float(), nullable=False),
++        sa.Column("evidence_ids", sa.JSON(), nullable=False),
++        sa.Column("proposed_by", sa.String(length=64), nullable=False),
++        sa.Column("proposed_at", sa.DateTime(), nullable=False),
++        sa.Column("confirmed_by", sa.String(length=64), nullable=True),
++        sa.Column("confirmed_at", sa.DateTime(), nullable=True),
++        sa.Column("rejected_by", sa.String(length=64), nullable=True),
++        sa.Column("rejected_at", sa.DateTime(), nullable=True),
++        sa.Column("retracted_by", sa.String(length=64), nullable=True),
++        sa.Column("retracted_at", sa.DateTime(), nullable=True),
++        sa.Column("notes", sa.Text(), nullable=False),
++        sa.Column("audit", sa.JSON(), nullable=False),
++        sa.Column("created_at", sa.DateTime(), nullable=False),
++        sa.Column("updated_at", sa.DateTime(), nullable=False),
++        sa.PrimaryKeyConstraint("id"),
++    )
++    op.create_index(
++        "ix_identity_link_proposals_link_state",
++        "identity_link_proposals",
++        ["link_state"],
++    )
++    op.create_index(
++        "ix_identity_link_proposals_relation",
++        "identity_link_proposals",
++        ["relation"],
++    )
++    op.create_index(
++        "ix_identity_link_proposals_refs",
++        "identity_link_proposals",
++        ["left_ref", "right_ref"],
++    )
++    op.create_index(
++        op.f("ix_identity_link_proposals_left_ref"),
++        "identity_link_proposals",
++        ["left_ref"],
++    )
++    op.create_index(
++        op.f("ix_identity_link_proposals_right_ref"),
++        "identity_link_proposals",
++        ["right_ref"],
++    )
++
++
++def downgrade() -> None:
++    op.drop_index(
++        op.f("ix_identity_link_proposals_right_ref"),
++        table_name="identity_link_proposals",
++    )
++    op.drop_index(
++        op.f("ix_identity_link_proposals_left_ref"),
++        table_name="identity_link_proposals",
++    )
++    op.drop_index(
++        "ix_identity_link_proposals_refs", table_name="identity_link_proposals"
++    )
++    op.drop_index(
++        "ix_identity_link_proposals_relation", table_name="identity_link_proposals"
++    )
++    op.drop_index(
++        "ix_identity_link_proposals_link_state", table_name="identity_link_proposals"
++    )
++    op.drop_table("identity_link_proposals")
++
++    op.drop_index(op.f("ix_identity_evidence_level"), table_name="identity_evidence")
++    op.drop_index(op.f("ix_identity_evidence_fact_type"), table_name="identity_evidence")
++    op.drop_index(op.f("ix_identity_evidence_member_id"), table_name="identity_evidence")
++    op.drop_index(
++        op.f("ix_identity_evidence_subject_hint_id"), table_name="identity_evidence"
++    )
++    op.drop_index(
++        op.f("ix_identity_evidence_subject_hint_type"), table_name="identity_evidence"
++    )
++    op.drop_index("ix_identity_evidence_level_state", table_name="identity_evidence")
++    op.drop_index("ix_identity_evidence_fact_state", table_name="identity_evidence")
++    op.drop_index(
++        "ix_identity_evidence_subject_state", table_name="identity_evidence"
++    )
++    op.drop_index("ix_identity_evidence_natural_key", table_name="identity_evidence")
++    op.drop_table("identity_evidence")
+diff --git a/observatory/api/app/bootstrap.py b/observatory/api/app/bootstrap.py
+index afbaf93..2be9ab4 100644
+--- a/observatory/api/app/bootstrap.py
++++ b/observatory/api/app/bootstrap.py
+@@ -16,7 +16,7 @@ from sqlalchemy import select
+ from app.auth import hash_password
+ from app.config import get_settings
+ from app.db import Base, get_engine, _session_factory
+-from app.models import FactAssertion, Switch, User  # noqa: F401 — FactAssertion for create_all
++from app.models import FactAssertion, IdentityEvidence, IdentityLinkProposal, Switch, User  # noqa: F401 — create_all
+ from app.services.backup import bootstrap_should_backup, create_backup
+ from app.services.identity import reconcile_known_infrastructure
+ from app.services.migrate import import_legacy
+diff --git a/observatory/api/app/identity_evidence/__init__.py b/observatory/api/app/identity_evidence/__init__.py
+new file mode 100644
+index 0000000..da8219f
+--- /dev/null
++++ b/observatory/api/app/identity_evidence/__init__.py
+@@ -0,0 +1,127 @@
++"""Identity evidence pipeline — non-destructive audit store, decisions, presence.
++
++Public surface (OBS-IDENTITY-EVIDENCE W1.5 / VERSION 0.10.42):
++
++- Evidence classification (E0..E5) and decisions (D0..D3) live in
++  :mod:`app.identity_evidence.classes`.
++- :mod:`app.identity_evidence.store` provides the idempotent upsert and
++  the evidence-only decay.
++- :mod:`app.identity_evidence.linker` proposes links (never mutates
++  ``Asset.chassis_id`` or ``Asset.name``, never applies transitivity).
++- :mod:`app.identity_evidence.decisions` implements the audited
++  confirm / reject / retract (split) transitions on
++  :class:`app.models.IdentityLinkProposal`.
++- :mod:`app.identity_evidence.mac_guards` provides the U/L exclusion.
++  It intentionally exports NO MAC-block-adjacency helper.
++- :mod:`app.identity_evidence.circularity` provides K7 guards.
++"""
++
++from app.identity_evidence.classes import (
++    D0_NOTHING,
++    D1_INTERNAL,
++    D2_PROPOSAL,
++    D3_CONSOLIDABLE,
++    DECAY_TTL_HOURS,
++    DECISIONS,
++    E0_ABSENT,
++    E0_UNMEASURED,
++    E1_CORROBORANT,
++    E2_TEMPORAL,
++    E3_TOPOLOGICAL,
++    E4_MGMT,
++    E5_BRIDGE,
++    E5_PHYSICAL,
++    EVIDENCE_LEVELS,
++    DecisionInputs,
++    EvidenceQualifiers,
++    can_propose,
++    classify_evidence_level,
++    is_consolidable,
++    max_decision,
++    score_levels,
++)
++from app.identity_evidence.circularity import (
++    filter_non_circular,
++    has_circularity,
++    is_circular_for_link,
++    is_self_referential_chassis_evidence,
++)
++from app.identity_evidence.decisions import (
++    DecisionError,
++    confirm_link,
++    reject_link,
++    retract_link,
++    split_link,
++)
++from app.identity_evidence.linker import (
++    LinkCandidate,
++    score_and_propose_links,
++    score_link,
++)
++from app.identity_evidence.mac_guards import (
++    guard_mac_value,
++    is_locally_administered_mac,
++)
++from app.identity_evidence.presence import (
++    PresenceClass,
++    PresenceInputs,
++    classify_mac_presence,
++)
++from app.identity_evidence.store import (
++    EvidenceUpsert,
++    decay_stale_evidence,
++    refresh_evidence,
++    upsert_evidence,
++)
++
++__all__ = [
++    # Levels + decisions.
++    "D0_NOTHING",
++    "D1_INTERNAL",
++    "D2_PROPOSAL",
++    "D3_CONSOLIDABLE",
++    "DECAY_TTL_HOURS",
++    "DECISIONS",
++    "E0_ABSENT",
++    "E0_UNMEASURED",
++    "E1_CORROBORANT",
++    "E2_TEMPORAL",
++    "E3_TOPOLOGICAL",
++    "E4_MGMT",
++    "E5_BRIDGE",
++    "E5_PHYSICAL",
++    "EVIDENCE_LEVELS",
++    "DecisionError",
++    "DecisionInputs",
++    "EvidenceQualifiers",
++    # Classification + decision helpers.
++    "can_propose",
++    "classify_evidence_level",
++    "is_consolidable",
++    "max_decision",
++    "score_levels",
++    # Circularity + MAC guards.
++    "filter_non_circular",
++    "guard_mac_value",
++    "has_circularity",
++    "is_circular_for_link",
++    "is_locally_administered_mac",
++    "is_self_referential_chassis_evidence",
++    # Decisions.
++    "confirm_link",
++    "reject_link",
++    "retract_link",
++    "split_link",
++    # Linker + store.
++    "EvidenceUpsert",
++    "LinkCandidate",
++    "decay_stale_evidence",
++    "refresh_evidence",
++    "score_and_propose_links",
++    "score_link",
++    "upsert_evidence",
++    # Presence.
++    "PresenceClass",
++    "PresenceInputs",
++    "classify_mac_presence",
++]
+diff --git a/observatory/api/app/identity_evidence/circularity.py b/observatory/api/app/identity_evidence/circularity.py
+new file mode 100644
+index 0000000..7a15618
+--- /dev/null
++++ b/observatory/api/app/identity_evidence/circularity.py
+@@ -0,0 +1,106 @@
++"""K7 circularity guards for identity evidence.
++
++Rejects:
++
++- ``chassis_id`` used as its own evidence (tautology).
++- Evidence whose provenance already cites the link being justified.
++- Evidence produced by a post-merge state that is being re-read as
++  premise for the same merge.
++
++These functions are intentionally simple — they detect textual/structural
++loops on ``subject_hint_type/id``, ``value_norm`` and ``provenance``, and
++must be called by the linker BEFORE building a proposal.
++"""
++
++from __future__ import annotations
++
++from typing import Any, Iterable
++
++
++def is_self_referential_chassis_evidence(evidence: Any) -> bool:
++    """True when a chassis-scoped row uses its own chassis id as value.
++
++    Detects patterns like ``fact_type='chassis_id_declared'`` with
++    ``value_norm`` equal to ``str(subject_hint_id)`` or ``chassis:<id>``.
++    """
++    subj_type = getattr(evidence, "subject_hint_type", "") or ""
++    subj_id = getattr(evidence, "subject_hint_id", None)
++    value = str(getattr(evidence, "value_norm", "") or "").strip()
++    fact = str(getattr(evidence, "fact_type", "") or "")
++
++    if subj_type != "chassis" or subj_id is None:
++        return False
++    if fact not in {"chassis_id", "chassis_id_declared", "group_id"}:
++        return False
++    candidates = {str(subj_id), f"chassis:{subj_id}", f"chassis-{subj_id}"}
++    return value in candidates
++
++
++def _provenance_mentions_pair(
++    provenance: dict | None, *, left_ref: str, right_ref: str
++) -> bool:
++    if not isinstance(provenance, dict):
++        return False
++    justifies = provenance.get("justifies") or provenance.get("link") or {}
++    if isinstance(justifies, dict):
++        left = str(justifies.get("left_ref") or justifies.get("left") or "")
++        right = str(justifies.get("right_ref") or justifies.get("right") or "")
++        pair = {left, right}
++        if pair == {str(left_ref), str(right_ref)}:
++            return True
++    for tag in provenance.get("derived_from") or []:
++        if isinstance(tag, str) and tag in {left_ref, right_ref, f"link:{left_ref}~{right_ref}"}:
++            return True
++    return False
++
++
++def is_circular_for_link(
++    evidence: Any, *, left_ref: str, right_ref: str
++) -> bool:
++    """True when the row's provenance already cites this exact link.
++
++    The linker must reject such evidence rows to satisfy K7.
++    """
++    provenance = getattr(evidence, "provenance", None)
++    return _provenance_mentions_pair(
++        provenance, left_ref=left_ref, right_ref=right_ref
++    )
++
++
++def filter_non_circular(
++    evidence_rows: Iterable[Any],
++    *,
++    left_ref: str,
++    right_ref: str,
++) -> list[Any]:
++    """Drop self-referential and link-circular rows."""
++    keep: list[Any] = []
++    for row in evidence_rows:
++        if is_self_referential_chassis_evidence(row):
++            continue
++        if is_circular_for_link(row, left_ref=left_ref, right_ref=right_ref):
++            continue
++        keep.append(row)
++    return keep
++
++
++def has_circularity(
++    evidence_rows: Iterable[Any],
++    *,
++    left_ref: str,
++    right_ref: str,
++) -> bool:
++    for row in evidence_rows:
++        if is_self_referential_chassis_evidence(row):
++            return True
++        if is_circular_for_link(row, left_ref=left_ref, right_ref=right_ref):
++            return True
++    return False
++
++
++__all__ = [
++    "filter_non_circular",
++    "has_circularity",
++    "is_circular_for_link",
++    "is_self_referential_chassis_evidence",
++]
+diff --git a/observatory/api/app/identity_evidence/classes.py b/observatory/api/app/identity_evidence/classes.py
+new file mode 100644
+index 0000000..bf6f881
+--- /dev/null
++++ b/observatory/api/app/identity_evidence/classes.py
+@@ -0,0 +1,431 @@
++"""Evidence levels (E0..E5) and decision map (D0..D3) — OBS-IDENTITY-EVIDENCE W1.5.
++
++Design axioms (Fase 3):
++
++- Level is a **function of the tuple** ``(fact_type, acquisition_method,
++  source, subtype, quals)`` — never ``fact_type`` alone.
++- D4 (silent apply) MUST NOT EXIST in the code path.
++- Links are NOT transitive: ``A~B`` and ``B~C`` does NOT imply ``A~C``.
++- The default relation between two references is ``unresolved``.
++- MAC block adjacency is NEVER a predicate (see :mod:`mac_guards`).
++- LLDP chassis-id reaches E5-bridge ONLY when its subtype is
++  ``macAddress`` (802.1AB chassis-id-subtype 4). Any other subtype
++  degrades one level.
++- Bridge MAC observed only via FDB — never E5-bridge.
++- E3-topological requires ALL qualifiers
++  ``{access_port_measured, mac_count_measured (below threshold),
++  simultaneity_window}`` — otherwise it degrades to E2-temporal.
++- Locally-administered MACs (U/L bit = 1) are never usable as identity
++  evidence (see :mod:`mac_guards`).
++
++Evidence levels (ordered):
++
++    E0-unmeasured  — poll not performed, timeout, sensor missing
++    E0-absent      — measurement performed; the fact was absent
++    E1-corroborant — weak signals (OUI/vendor/temporal hint)
++    E2-temporal    — temporal co-presence or degraded topology
++    E3-topological — verified port co-observation with qualifiers
++    E4-mgmt        — same-agent management-plane consistency
++    E5-bridge      — bridge-layer identity (LLDP chassis-id=macAddress,
++                     declared bridge base MAC, LACP system-ID marker)
++    E5-physical    — physical identifier (ENTITY serial, UUID, chassis
++                     serial declared via SNMP ENTITY-MIB)
++
++Decision map (given a candidate link's set of levels + guards):
++
++    E5-physical, non-circular, no-contradiction -> D3
++    E5-bridge                                   -> D3 (virtual-chassis
++                                                       grouping only —
++                                                       NEVER fuse physical
++                                                       members)
++    E4 ∧ E3                                     -> D2
++    E3 alone / E2                               -> D1
++    E1                                          -> never raises (D0)
++    E0-*                                        -> D0
++"""
++
++from __future__ import annotations
++
++from dataclasses import dataclass, field
++from typing import Iterable, Mapping
++
++
++# --- Evidence level identifiers ---------------------------------------
++
++E0_UNMEASURED = "E0-unmeasured"
++E0_ABSENT = "E0-absent"
++E1_CORROBORANT = "E1-corroborant"
++E2_TEMPORAL = "E2-temporal"
++E3_TOPOLOGICAL = "E3-topological"
++E4_MGMT = "E4-mgmt"
++E5_BRIDGE = "E5-bridge"
++E5_PHYSICAL = "E5-physical"
++
++EVIDENCE_LEVELS: tuple[str, ...] = (
++    E0_UNMEASURED,
++    E0_ABSENT,
++    E1_CORROBORANT,
++    E2_TEMPORAL,
++    E3_TOPOLOGICAL,
++    E4_MGMT,
++    E5_BRIDGE,
++    E5_PHYSICAL,
++)
++
++_LEVEL_ORDER: Mapping[str, int] = {level: rank for rank, level in enumerate(EVIDENCE_LEVELS)}
++
++
++def level_rank(level: str) -> int:
++    """Total order over :data:`EVIDENCE_LEVELS`. Unknown → -1."""
++    return _LEVEL_ORDER.get(level, -1)
++
++
++# --- Decisions --------------------------------------------------------
++
++D0_NOTHING = "D0"
++D1_INTERNAL = "D1"
++D2_PROPOSAL = "D2"
++D3_CONSOLIDABLE = "D3"
++
++DECISIONS: tuple[str, ...] = (D0_NOTHING, D1_INTERNAL, D2_PROPOSAL, D3_CONSOLIDABLE)
++
++
++# --- Level classification ---------------------------------------------
++
++# LLDP chassis-id-subtype (RFC 802.1AB) values accepted for E5-bridge:
++# 4 = macAddress; anything else must degrade one level.
++_LLDP_SUBTYPES_STRONG: frozenset[str] = frozenset({"macAddress", "4"})
++
++
++# Fact types that unambiguously identify a *physical* chassis when
++# obtained via a management source.
++_PHYSICAL_FACTS: frozenset[str] = frozenset(
++    {
++        "entity_serial",
++        "physical_serial",
++        "chassis_serial",
++        "entity_uuid",
++        "physical_uuid",
++    }
++)
++
++_PHYSICAL_METHODS: frozenset[str] = frozenset(
++    {
++        "snmp_entity",
++        "snmp_entphysical",
++        "manual",
++        "config",
++    }
++)
++
++
++# Fact types that identify a *bridge* (L2 identity that may be shared
++# across stack members via a virtual chassis).
++_BRIDGE_FACTS: frozenset[str] = frozenset(
++    {
++        "lldp_chassis_id",
++        "bridge_base_mac",
++        "lacp_system_id",
++    }
++)
++
++# Acquisition methods that are acceptable for E5-bridge. FDB observation
++# alone is intentionally excluded (Fase 3 rule).
++_BRIDGE_METHODS: frozenset[str] = frozenset(
++    {
++        "snmp_lldp",
++        "snmp_bridge",
++        "snmp_dot1dbridge",
++        "config",
++        "manual",
++    }
++)
++
++
++_MGMT_FACTS: frozenset[str] = frozenset(
++    {
++        "sysobjectid",
++        "management_agent",
++        "mgmt_ip_agent",
++        "snmp_agent",
++    }
++)
++
++
++_TOPOLOGY_FACTS: frozenset[str] = frozenset(
++    {
++        "port_coobservation",
++        "port_coobs",
++    }
++)
++
++
++_TEMPORAL_FACTS: frozenset[str] = frozenset(
++    {
++        "temporal_copresence",
++        "broadcast_domain",
++    }
++)
++
++
++_CORROBORANT_FACTS: frozenset[str] = frozenset(
++    {
++        "oui24",
++        "oui",
++        "vendor_hint",
++        "hostname_hint",
++    }
++)
++
++
++@dataclass(frozen=True)
++class EvidenceQualifiers:
++    """Structured qualifiers consumed by :func:`classify_evidence_level`.
++
++    Only what the rules actually need is exposed — no name-ranking
++    scoring in Python (I6 lives in triageRules.js): each qualifier is a
++    boolean or a small integer directly mapped from the collector output.
++    """
++
++    # E3-topological qualifiers (ALL required; else degrade to E2).
++    access_port_measured: bool = False
++    mac_count_measured: bool = False
++    mac_count: int = 0
++    mac_count_threshold: int = 4
++    simultaneity_window: bool = False
++
++    # Guards shared across families.
++    value_is_locally_administered_mac: bool = False
++    from_fdb_observation_only: bool = False
++    measured: bool = True  # False → E0-unmeasured
++    fact_absent: bool = False  # True → E0-absent (measurement done, no fact)
++
++    # Free-form provenance echo for debugging / audit only.
++    notes: str = ""
++
++
++def _degrade_bridge_to_temporal(fact_type: str) -> str:
++    """Fallback for bridge-family evidence that fails the E5-bridge gate."""
++    if fact_type == "lldp_chassis_id":
++        return E2_TEMPORAL
++    return E1_CORROBORANT
++
++
++def classify_evidence_level(
++    *,
++    fact_type: str,
++    acquisition_method: str,
++    source: str,
++    subtype: str = "",
++    quals: EvidenceQualifiers | None = None,
++) -> str:
++    """Return the E-level for one evidence row.
++
++    NOTE: this is a **pure** function. Callers must pass the collector
++    qualifiers explicitly; no heuristic is applied on missing quals.
++    """
++    q = quals or EvidenceQualifiers()
++
++    if not q.measured:
++        return E0_UNMEASURED
++    if q.fact_absent:
++        return E0_ABSENT
++
++    # A locally-administered MAC value cannot be used as bridge / physical
++    # identity — degrade to corroborant regardless of fact type.
++    if q.value_is_locally_administered_mac and fact_type in (
++        _BRIDGE_FACTS | _PHYSICAL_FACTS
++    ):
++        return E1_CORROBORANT
++
++    ft = (fact_type or "").strip()
++    am = (acquisition_method or "").strip()
++    st = (subtype or "").strip()
++
++    if ft in _PHYSICAL_FACTS:
++        if am in _PHYSICAL_METHODS:
++            return E5_PHYSICAL
++        return E1_CORROBORANT
++
++    if ft in _BRIDGE_FACTS:
++        # Bridge MAC learned only through FDB is never E5.
++        if q.from_fdb_observation_only:
++            return _degrade_bridge_to_temporal(ft)
++        if ft == "lldp_chassis_id" and st not in _LLDP_SUBTYPES_STRONG:
++            return _degrade_bridge_to_temporal(ft)
++        if am not in _BRIDGE_METHODS:
++            return _degrade_bridge_to_temporal(ft)
++        return E5_BRIDGE
++
++    if ft in _MGMT_FACTS:
++        return E4_MGMT
++
++    if ft in _TOPOLOGY_FACTS:
++        # E3 requires the full topology qualifier bundle.
++        if (
++            q.access_port_measured
++            and q.mac_count_measured
++            and q.mac_count > 0
++            and q.mac_count <= q.mac_count_threshold
++            and q.simultaneity_window
++        ):
++            return E3_TOPOLOGICAL
++        return E2_TEMPORAL
++
++    if ft in _TEMPORAL_FACTS:
++        return E2_TEMPORAL
++
++    if ft in _CORROBORANT_FACTS:
++        return E1_CORROBORANT
++
++    # Unknown fact_type must not silently raise the decision surface.
++    return E1_CORROBORANT
++
++
++# --- Decay TTL by level (hours) ---------------------------------------
++
++DECAY_TTL_HOURS: Mapping[str, int] = {
++    E5_PHYSICAL: 720,
++    E5_BRIDGE: 336,
++    E4_MGMT: 168,
++    E3_TOPOLOGICAL: 72,
++    E2_TEMPORAL: 48,
++    E1_CORROBORANT: 24,
++    E0_ABSENT: 168,
++    E0_UNMEASURED: 168,
++}
++
++
++# --- Decision map -----------------------------------------------------
++
++@dataclass(frozen=True)
++class DecisionInputs:
++    """Inputs to :func:`max_decision` — everything the linker knows about
++    a candidate link *besides* the evidence set itself."""
++
++    circular: bool = False
++    contradicts: bool = False
++    is_physical_bridge_context: bool = False
++    """When True, E5-bridge propagates fuse-physical semantics and must be
++    demoted (never fuse physical members based on bridge MAC alone)."""
++
++
++def max_decision(
++    levels: Iterable[str],
++    *,
++    circular: bool = False,
++    contradicts: bool = False,
++    is_physical_bridge_context: bool = False,
++) -> str:
++    """Highest permissible decision given the evidence levels + guards.
++
++    Never returns anything above D3 — the D4 (silent apply) path does not
++    exist by design.
++    """
++    if circular or contradicts:
++        return D0_NOTHING
++
++    present = {lvl for lvl in levels if lvl in _LEVEL_ORDER}
++    if not present:
++        return D0_NOTHING
++
++    if E5_PHYSICAL in present:
++        return D3_CONSOLIDABLE
++
++    if E5_BRIDGE in present:
++        # Bridge identity groups virtual-chassis — it must NEVER fuse two
++        # physical members. If the caller declares physical-member context,
++        # demote to proposal-only.
++        return D2_PROPOSAL if is_physical_bridge_context else D3_CONSOLIDABLE
++
++    if E4_MGMT in present and E3_TOPOLOGICAL in present:
++        return D2_PROPOSAL
++
++    if E3_TOPOLOGICAL in present or E2_TEMPORAL in present:
++        return D1_INTERNAL
++
++    # E1 alone never raises above internal-noise.
++    return D0_NOTHING
++
++
++def can_propose(
++    levels: Iterable[str],
++    *,
++    circular: bool = False,
++    contradicts: bool = False,
++    is_physical_bridge_context: bool = False,
++) -> bool:
++    """True when :func:`max_decision` reaches D2 or D3."""
++    d = max_decision(
++        levels,
++        circular=circular,
++        contradicts=contradicts,
++        is_physical_bridge_context=is_physical_bridge_context,
++    )
++    return d in (D2_PROPOSAL, D3_CONSOLIDABLE)
++
++
++def is_consolidable(decision_level: str) -> bool:
++    """D3 alone is human-consolidable; D2 stops at proposal."""
++    return decision_level == D3_CONSOLIDABLE
++
++
++# --- Retained utilities used by store/linker --------------------------
++
++# NOTE: no per-class weight table any more; scoring is level-driven and
++# deliberately capped so that no single E-level except E5 can propose.
++LEVEL_WEIGHTS: Mapping[str, float] = {
++    E5_PHYSICAL: 1.0,
++    E5_BRIDGE: 0.9,
++    E4_MGMT: 0.6,
++    E3_TOPOLOGICAL: 0.4,
++    E2_TEMPORAL: 0.2,
++    E1_CORROBORANT: 0.1,
++    E0_ABSENT: 0.0,
++    E0_UNMEASURED: 0.0,
++}
++
++
++def score_levels(levels: Iterable[str], *, confidences: Iterable[float] | None = None) -> float:
++    """Weighted sum capped at 1.0 — informational, never a name-ranking score."""
++    lvls = list(levels)
++    confs = list(confidences) if confidences is not None else [1.0] * len(lvls)
++    if len(confs) != len(lvls):
++        confs = (confs + [1.0] * len(lvls))[: len(lvls)]
++    seen: set[str] = set()
++    total = 0.0
++    for lvl, cf in zip(lvls, confs):
++        if lvl in seen:
++            continue
++        seen.add(lvl)
++        w = LEVEL_WEIGHTS.get(lvl, 0.0)
++        total += w * max(0.0, min(1.0, float(cf)))
++    return min(1.0, total)
++
++
++__all__ = [
++    "E0_ABSENT",
++    "E0_UNMEASURED",
++    "E1_CORROBORANT",
++    "E2_TEMPORAL",
++    "E3_TOPOLOGICAL",
++    "E4_MGMT",
++    "E5_BRIDGE",
++    "E5_PHYSICAL",
++    "EVIDENCE_LEVELS",
++    "DECISIONS",
++    "D0_NOTHING",
++    "D1_INTERNAL",
++    "D2_PROPOSAL",
++    "D3_CONSOLIDABLE",
++    "DecisionInputs",
++    "EvidenceQualifiers",
++    "DECAY_TTL_HOURS",
++    "LEVEL_WEIGHTS",
++    "can_propose",
++    "classify_evidence_level",
++    "is_consolidable",
++    "level_rank",
++    "max_decision",
++    "score_levels",
++]
+diff --git a/observatory/api/app/identity_evidence/decisions.py b/observatory/api/app/identity_evidence/decisions.py
+new file mode 100644
+index 0000000..8f53e7f
+--- /dev/null
++++ b/observatory/api/app/identity_evidence/decisions.py
+@@ -0,0 +1,224 @@
++"""Audited decisions on identity link proposals.
++
++These are the ONLY functions allowed to move
++:attr:`IdentityLinkProposal.link_state` off ``proposed``. Every call
++appends a JSON entry to :attr:`IdentityLinkProposal.audit`.
++
++Contract:
++
++- Only D3 proposals can be confirmed (``is_consolidable`` gate).
++- ``confirm_link`` is idempotent: a second call by any actor on a
++  ``confirmed`` proposal returns the row unchanged, but does NOT append
++  a duplicate audit entry for the same actor.
++- ``retract_link`` reverses a confirmation (split) — the row's
++  ``link_state`` becomes ``retracted``, ``member_id`` on the associated
++  evidence remains intact for reattribution.
++- No function mutates ``Asset.chassis_id`` or ``Asset.name``.
++"""
++
++from __future__ import annotations
++
++from datetime import datetime
++from typing import Any
++
++from sqlalchemy.orm import Session
++
++from app.identity_evidence.classes import (
++    D3_CONSOLIDABLE,
++    is_consolidable,
++)
++from app.models import IdentityLinkProposal, utcnow
++
++
++def _append_audit(
++    proposal: IdentityLinkProposal,
++    *,
++    action: str,
++    actor: str,
++    reason: str = "",
++    extra: dict[str, Any] | None = None,
++) -> None:
++    entries = list(proposal.audit or [])
++    entry = {
++        "action": action,
++        "actor": actor,
++        "ts": utcnow().isoformat(),
++    }
++    if reason:
++        entry["reason"] = reason
++    if extra:
++        entry.update(extra)
++    entries.append(entry)
++    proposal.audit = entries
++
++
++def _already_recorded(
++    proposal: IdentityLinkProposal, *, action: str, actor: str
++) -> bool:
++    for entry in proposal.audit or []:
++        if entry.get("action") == action and entry.get("actor") == actor:
++            return True
++    return False
++
++
++class DecisionError(RuntimeError):
++    """Raised when a decision is attempted against contract."""
++
++
++def confirm_link(
++    db: Session,
++    proposal_id: int,
++    *,
++    actor: str,
++    reason: str = "",
++    relation: str = "proven_same",
++) -> IdentityLinkProposal:
++    """Confirm a proposal — idempotent, D3-only.
++
++    Returns the up-to-date proposal row. Idempotent: repeated calls by
++    the same actor do not duplicate audit entries.
++    """
++    proposal = db.get(IdentityLinkProposal, proposal_id)
++    if proposal is None:
++        raise DecisionError(f"proposal {proposal_id} not found")
++
++    if proposal.link_state == "confirmed":
++        # Idempotent: only append audit if the actor changed OR we have a
++        # new reason string that is not already in the trail.
++        if not _already_recorded(proposal, action="confirm", actor=actor):
++            _append_audit(
++                proposal,
++                action="confirm",
++                actor=actor,
++                reason=reason,
++                extra={"noop": True},
++            )
++            db.flush()
++        return proposal
++
++    if proposal.link_state in {"rejected", "retracted"}:
++        raise DecisionError(
++            f"cannot confirm proposal in state '{proposal.link_state}'"
++        )
++
++    if not is_consolidable(proposal.decision_level):
++        raise DecisionError(
++            f"proposal decision_level={proposal.decision_level} is not consolidable; "
++            "only D3 proposals accept human confirmation"
++        )
++
++    if relation not in {"proven_same", "proven_different"}:
++        raise DecisionError(
++            f"relation must be proven_same|proven_different, got '{relation}'"
++        )
++
++    now = utcnow()
++    proposal.link_state = "confirmed"
++    proposal.relation = relation
++    proposal.confirmed_by = actor
++    proposal.confirmed_at = now
++    proposal.updated_at = now
++    _append_audit(
++        proposal, action="confirm", actor=actor, reason=reason,
++        extra={"relation": relation},
++    )
++    db.flush()
++    return proposal
++
++
++def reject_link(
++    db: Session,
++    proposal_id: int,
++    *,
++    actor: str,
++    reason: str = "",
++    relation: str | None = None,
++) -> IdentityLinkProposal:
++    """Reject a proposal — audits and (optionally) marks proven_different."""
++    proposal = db.get(IdentityLinkProposal, proposal_id)
++    if proposal is None:
++        raise DecisionError(f"proposal {proposal_id} not found")
++
++    if proposal.link_state == "rejected":
++        if not _already_recorded(proposal, action="reject", actor=actor):
++            _append_audit(
++                proposal, action="reject", actor=actor, reason=reason,
++                extra={"noop": True},
++            )
++            db.flush()
++        return proposal
++
++    if proposal.link_state in {"confirmed", "retracted"}:
++        raise DecisionError(
++            f"cannot reject proposal in state '{proposal.link_state}'"
++        )
++
++    now = utcnow()
++    proposal.link_state = "rejected"
++    if relation in {"proven_same", "proven_different", "unresolved"}:
++        proposal.relation = relation
++    else:
++        proposal.relation = "proven_different"
++    proposal.rejected_by = actor
++    proposal.rejected_at = now
++    proposal.updated_at = now
++    _append_audit(
++        proposal, action="reject", actor=actor, reason=reason,
++        extra={"relation": proposal.relation},
++    )
++    db.flush()
++    return proposal
++
++
++def retract_link(
++    db: Session,
++    proposal_id: int,
++    *,
++    actor: str,
++    reason: str = "",
++) -> IdentityLinkProposal:
++    """Retract a previously confirmed link (split).
++
++    ``retracted`` is the terminal state; evidence rows are NOT deleted,
++    and ``member_id`` on any chassis-scoped assertion remains intact to
++    enable reattribution downstream.
++    """
++    proposal = db.get(IdentityLinkProposal, proposal_id)
++    if proposal is None:
++        raise DecisionError(f"proposal {proposal_id} not found")
++
++    if proposal.link_state == "retracted":
++        if not _already_recorded(proposal, action="retract", actor=actor):
++            _append_audit(
++                proposal, action="retract", actor=actor, reason=reason,
++                extra={"noop": True},
++            )
++            db.flush()
++        return proposal
++
++    if proposal.link_state != "confirmed":
++        raise DecisionError(
++            f"only confirmed links may be retracted; current='{proposal.link_state}'"
++        )
++
++    now = utcnow()
++    proposal.link_state = "retracted"
++    proposal.retracted_by = actor
++    proposal.retracted_at = now
++    proposal.updated_at = now
++    _append_audit(proposal, action="retract", actor=actor, reason=reason)
++    db.flush()
++    return proposal
++
++
++# Alias used by tests / callers who prefer the network-side vocabulary.
++split_link = retract_link
++
++
++__all__ = [
++    "DecisionError",
++    "confirm_link",
++    "reject_link",
++    "retract_link",
++    "split_link",
++]
+diff --git a/observatory/api/app/identity_evidence/linker.py b/observatory/api/app/identity_evidence/linker.py
+new file mode 100644
+index 0000000..0088788
+--- /dev/null
++++ b/observatory/api/app/identity_evidence/linker.py
+@@ -0,0 +1,268 @@
++"""Link scoring and proposal emission.
++
++Rules enforced here:
++
++- Proposals ONLY: ``link_state`` starts at ``proposed`` and NEVER moves
++  to ``confirmed`` from this module. Confirmation is the sole business
++  of :mod:`decisions`.
++- ``relation`` defaults to ``unresolved``. A brand-new proposal is not
++  ``proven_same``.
++- Links are NOT transitive: the linker processes each pair
++  independently; no union-find, no chained equivalence.
++- ``chassis_id`` is NEVER mutated. There is no code path that touches
++  ``Asset.name`` or ``Asset.chassis_id`` here.
++- Evidence rows failing K7 (self-referential chassis id, provenance
++  citing the link) are dropped before scoring.
++- E5-bridge on a physical-member context degrades to D2 so we never
++  propose to *fuse* physical members based on a bridge MAC.
++"""
++
++from __future__ import annotations
++
++from dataclasses import dataclass, field
++from typing import Iterable
++
++from sqlalchemy import and_, select
++from sqlalchemy.orm import Session
++
++from app.identity_evidence.circularity import filter_non_circular, has_circularity
++from app.identity_evidence.classes import (
++    D2_PROPOSAL,
++    D3_CONSOLIDABLE,
++    E5_BRIDGE,
++    E5_PHYSICAL,
++    can_propose,
++    max_decision,
++    score_levels,
++)
++from app.models import IdentityEvidence, IdentityLinkProposal
++
++
++_DISAGREE_LEVELS = frozenset({E5_PHYSICAL, E5_BRIDGE})
++
++
++_ABSENT_STATES = frozenset({"absent_measured", "absent_unmeasured"})
++
++
++@dataclass
++class LinkCandidate:
++    """One pair of references and the evidence rows to score for it.
++
++    :attr:`is_physical_bridge_context` marks candidates whose acceptance
++    would fuse *physical* members (e.g. two Asset rows inside the same
++    physical chassis). E5-bridge on such candidates degrades to D2.
++    """
++
++    left_ref: str
++    right_ref: str
++    evidence_rows: list[IdentityEvidence] = field(default_factory=list)
++    is_physical_bridge_context: bool = False
++
++
++def _ref_key(left_ref: str, right_ref: str) -> tuple[str, str]:
++    return tuple(sorted((left_ref, right_ref)))
++
++
++def _usable_rows(rows: Iterable[IdentityEvidence]) -> list[IdentityEvidence]:
++    return [
++        r
++        for r in rows
++        if r.state == "current"
++        and not r.manual_review
++        and (r.level or "") not in ("E0-unmeasured", "E0-absent", "")
++    ]
++
++
++def score_link(evidence_rows: Iterable[IdentityEvidence]) -> float:
++    """Weighted level score. Never used to auto-consolidate — informational."""
++    usable = _usable_rows(evidence_rows)
++    return score_levels(
++        (r.level for r in usable),
++        confidences=(r.confidence for r in usable),
++    )
++
++
++def _contradiction_present(rows: Iterable[IdentityEvidence]) -> bool:
++    for r in rows:
++        if r.manual_review and (r.level in {E5_PHYSICAL, E5_BRIDGE}):
++            return True
++    return False
++
++
++def _parse_ref(ref: str) -> tuple[str, str]:
++    if ":" not in ref:
++        return "", ""
++    kind, ident = ref.split(":", 1)
++    return kind, ident
++
++
++def _row_side(row: IdentityEvidence, *, left_ref: str, right_ref: str) -> str:
++    """Assign a row to ``"left" | "right" | "other"`` based on subject/member."""
++    left_type, left_id = _parse_ref(left_ref)
++    right_type, right_id = _parse_ref(right_ref)
++    subj_type = row.subject_hint_type or ""
++    subj_id = str(row.subject_hint_id) if row.subject_hint_id is not None else ""
++    mem_id = str(row.member_id) if row.member_id is not None else ""
++    for side, (ref_type, ref_id) in (
++        ("left", (left_type, left_id)),
++        ("right", (right_type, right_id)),
++    ):
++        if subj_type == ref_type and (subj_id == ref_id or mem_id == ref_id):
++            return side
++    return "other"
++
++
++def _drop_cross_side_disagreements(
++    rows: list[IdentityEvidence], *, left_ref: str, right_ref: str
++) -> list[IdentityEvidence]:
++    """Prune E5 rows that DISAGREE across sides on the same fact.
++
++    E5-physical / E5-bridge values that disagree between the two members
++    of a candidate are evidence that the members are physically distinct.
++    Such rows must not raise the decision (they neither support fusion nor
++    prove ``proven_same``). We drop them so weaker but agreeing evidence
++    can still emit a D2 proposal for grouping.
++    """
++    groups: dict[tuple[str, str, str, str], dict[str, dict[str, list[IdentityEvidence]]]] = {}
++    for row in rows:
++        if row.level not in _DISAGREE_LEVELS:
++            continue
++        key = (row.fact_type or "", row.acquisition_method or "", row.subtype or "", row.evidence_key or "")
++        side = _row_side(row, left_ref=left_ref, right_ref=right_ref)
++        if side == "other":
++            continue
++        groups.setdefault(key, {}).setdefault(side, {}).setdefault(row.value_norm, []).append(row)
++
++    to_drop: set[int] = set()
++    for key, sides in groups.items():
++        left_vals = set(sides.get("left", {}).keys())
++        right_vals = set(sides.get("right", {}).keys())
++        if left_vals and right_vals and left_vals.isdisjoint(right_vals):
++            for side_map in sides.values():
++                for value_rows in side_map.values():
++                    for r in value_rows:
++                        to_drop.add(id(r))
++    return [r for r in rows if id(r) not in to_drop]
++
++
++def _distinct_physical_serials(rows: Iterable[IdentityEvidence]) -> bool:
++    """True when current E5-physical rows carry more than one value_norm.
++
++    Distinct physical identifiers prove *different* members — they must NOT
++    promote a fuse. Bridge evidence may still propose a virtual-chassis
++    grouping (D2 under physical-bridge context).
++    """
++    values = {
++        (r.value_norm or "").strip()
++        for r in rows
++        if r.state == "current" and r.level == E5_PHYSICAL and (r.value_norm or "").strip()
++    }
++    return len(values) > 1
++
++
++def _levels_for_decision(
++    usable: list[IdentityEvidence],
++    *,
++    drop_discordant_physical: bool,
++) -> list[str]:
++    if not drop_discordant_physical:
++        return [r.level for r in usable]
++    return [r.level for r in usable if r.level != E5_PHYSICAL]
++
++
++def score_and_propose_links(
++    db: Session,
++    candidates: Iterable[LinkCandidate],
++    *,
++    actor: str = "linker",
++) -> list[IdentityLinkProposal]:
++    """Score candidates and emit ``link_state='proposed'`` rows.
++
++    NEVER applies ``chassis_id`` or ``Asset.name`` changes.
++    """
++    proposals: list[IdentityLinkProposal] = []
++    for cand in candidates:
++        left, right = _ref_key(cand.left_ref, cand.right_ref)
++
++        rows = filter_non_circular(
++            cand.evidence_rows, left_ref=left, right_ref=right
++        )
++        contradicts = _contradiction_present(cand.evidence_rows)
++        circular = has_circularity(cand.evidence_rows, left_ref=left, right_ref=right)
++
++        # Reject absent-* rows outright from the scoring set.
++        rows = [r for r in rows if r.state not in _ABSENT_STATES]
++        usable = _usable_rows(rows)
++        drop_phys = _distinct_physical_serials(usable)
++        # Physical-member context when serials already disagree.
++        physical_ctx = cand.is_physical_bridge_context or drop_phys
++        levels = _levels_for_decision(usable, drop_discordant_physical=drop_phys)
++
++        decision = max_decision(
++            levels,
++            circular=circular,
++            contradicts=contradicts,
++            is_physical_bridge_context=physical_ctx,
++        )
++        if not can_propose(
++            levels,
++            circular=circular,
++            contradicts=contradicts,
++            is_physical_bridge_context=physical_ctx,
++        ):
++            continue
++
++        score = score_levels(
++            (r.level for r in usable),
++            confidences=(r.confidence for r in usable),
++        )
++
++        existing = db.scalars(
++            select(IdentityLinkProposal)
++            .where(
++                and_(
++                    IdentityLinkProposal.left_ref == left,
++                    IdentityLinkProposal.right_ref == right,
++                    IdentityLinkProposal.link_state == "proposed",
++                )
++            )
++            .limit(1)
++        ).first()
++
++        evidence_ids = [r.id for r in usable]
++
++        if existing:
++            existing.score = score
++            existing.evidence_ids = evidence_ids
++            existing.decision_level = decision
++            # relation stays unresolved until a human confirms.
++            db.flush()
++            proposals.append(existing)
++            continue
++
++        proposal = IdentityLinkProposal(
++            left_ref=left,
++            right_ref=right,
++            relation="unresolved",
++            link_state="proposed",
++            decision_level=decision,
++            score=score,
++            evidence_ids=evidence_ids,
++            proposed_by=actor,
++            audit=[
++                {
++                    "action": "propose",
++                    "actor": actor,
++                    "decision_level": decision,
++                    "score": score,
++                    "levels": levels,
++                }
++            ],
++        )
++        db.add(proposal)
++        db.flush()
++        proposals.append(proposal)
++    return proposals
++
++
++__all__ = ["LinkCandidate", "score_and_propose_links", "score_link"]
+diff --git a/observatory/api/app/identity_evidence/mac_guards.py b/observatory/api/app/identity_evidence/mac_guards.py
+new file mode 100644
+index 0000000..33c48f8
+--- /dev/null
++++ b/observatory/api/app/identity_evidence/mac_guards.py
+@@ -0,0 +1,55 @@
++"""MAC guards for identity evidence — U/L exclusion.
++
++Explicitly does NOT export any MAC-block-adjacency helper. The identity
++pipeline must never use "MAC N ± k" style predicates. A CI test in
++``tests/test_identity_evidence.py`` scans this module (and the whole
++package) to make sure such a helper does not sneak back in.
++"""
++
++from __future__ import annotations
++
++import re
++
++
++_MAC_HEX_RE = re.compile(r"[0-9A-Fa-f]")
++
++
++def _normalize(mac: str) -> str:
++    hexed = "".join(_MAC_HEX_RE.findall(mac or ""))
++    if len(hexed) != 12:
++        return ""
++    return ":".join(hexed[i : i + 2].upper() for i in range(0, 12, 2))
++
++
++def is_locally_administered_mac(mac: str) -> bool:
++    """True when the U/L bit (LSB of first octet, mask 0x02) is set.
++
++    Locally-administered MACs (LAA) — random Wi-Fi, VM clones, VRRP/HSRP
++    virtuals — must never be treated as physical-identity evidence.
++    """
++    norm = _normalize(mac)
++    if not norm:
++        return False
++    try:
++        first = int(norm.split(":")[0], 16)
++    except ValueError:
++        return False
++    return bool(first & 0x02)
++
++
++def guard_mac_value(mac: str) -> tuple[bool, str]:
++    """Return ``(acceptable, reason)`` for a MAC used as identity value.
++
++    - ``(False, "laa")`` when U/L bit is set.
++    - ``(False, "malformed")`` when the value is not a valid 48-bit MAC.
++    - ``(True, "ok")`` otherwise.
++    """
++    norm = _normalize(mac)
++    if not norm:
++        return False, "malformed"
++    if is_locally_administered_mac(norm):
++        return False, "laa"
++    return True, "ok"
++
++
++__all__ = ["guard_mac_value", "is_locally_administered_mac"]
+diff --git a/observatory/api/app/identity_evidence/presence.py b/observatory/api/app/identity_evidence/presence.py
+new file mode 100644
+index 0000000..dd95e71
+--- /dev/null
++++ b/observatory/api/app/identity_evidence/presence.py
+@@ -0,0 +1,108 @@
++"""MAC presence classification — orthogonal to identity linking.
++
++Classes:
++
++- ``direct`` — ARP/ND REACHABLE or ICMP toward a bound IP.
++- ``fdb_fresh`` — MAC in ``switch_ports.observed_macs`` with recent
++  ``last_fdb_at`` and ``fdb_poll.ok=True``.
++- ``historical_only`` — past FDB/Fritz/presence timestamps without a live
++  signal.
++- ``absent_measured`` — the FDB/ARP/ICMP probe ran and returned nothing.
++- ``absent_unmeasured`` — no probe was performed / all probes failed
++  (SNMP timeout, sensor down). This is NOT proof of absence and must
++  never raise "gone" cards.
++"""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++from datetime import datetime, timedelta
++from typing import Literal
++
++
++PresenceClass = Literal[
++    "direct",
++    "fdb_fresh",
++    "historical_only",
++    "absent_measured",
++    "absent_unmeasured",
++]
++
++DEFAULT_FDB_FRESH_MINUTES = 30
++
++
++@dataclass(frozen=True)
++class PresenceInputs:
++    """Inputs for :func:`classify_mac_presence`.
++
++    The two ``arp_probe_ok`` / ``fdb_poll_ok`` flags encode measurement
++    liveness — they are required to distinguish ``absent_measured`` from
++    ``absent_unmeasured``.
++    """
++
++    # Live signals.
++    arp_reachable: bool = False
++    icmp_reachable: bool = False
++    fdb_hit: bool = False
++    last_fdb_at: datetime | None = None
++    # Measurement liveness (did the probe actually run?).
++    arp_probe_ok: bool = False
++    fdb_poll_ok: bool = False
++    # Historical corroborants (do NOT lift ``absent`` to a positive class).
++    historical_fdb_at: datetime | None = None
++    historical_presence_at: datetime | None = None
++    fritz_last_at: datetime | None = None
++    # Tuning knobs.
++    now: datetime | None = None
++    fdb_fresh_minutes: int = DEFAULT_FDB_FRESH_MINUTES
++    historical_only: bool = False
++    """When True, callers know the DB has past FDB/Fritz rows but there is
++    no live signal. Preserved for parity with the review's T18 fixture."""
++
++
++def classify_mac_presence(inputs: PresenceInputs) -> PresenceClass:
++    """Return the presence class for a MAC given probe outputs."""
++    if inputs.arp_reachable or inputs.icmp_reachable:
++        return "direct"
++
++    now = inputs.now or datetime.utcnow()
++    fresh_cutoff = now - timedelta(minutes=inputs.fdb_fresh_minutes)
++
++    if (
++        inputs.fdb_hit
++        and inputs.fdb_poll_ok
++        and inputs.last_fdb_at
++        and inputs.last_fdb_at >= fresh_cutoff
++    ):
++        return "fdb_fresh"
++
++    has_history = inputs.historical_only or any(
++        ts is not None
++        for ts in (
++            inputs.historical_fdb_at,
++            inputs.historical_presence_at,
++            inputs.fritz_last_at,
++        )
++    )
++    stale_fdb = (
++        inputs.fdb_hit
++        and inputs.last_fdb_at is not None
++        and inputs.last_fdb_at < fresh_cutoff
++    )
++    if has_history or stale_fdb:
++        return "historical_only"
++
++    # No live signal AND no history. Distinguish measured absence from
++    # unmeasured absence — this is the whole point of the two flags.
++    any_probe_ran = inputs.arp_probe_ok or inputs.fdb_poll_ok
++    if any_probe_ran:
++        return "absent_measured"
++    return "absent_unmeasured"
++
++
++__all__ = [
++    "DEFAULT_FDB_FRESH_MINUTES",
++    "PresenceClass",
++    "PresenceInputs",
++    "classify_mac_presence",
++]
+diff --git a/observatory/api/app/identity_evidence/store.py b/observatory/api/app/identity_evidence/store.py
+new file mode 100644
+index 0000000..f409ea0
+--- /dev/null
++++ b/observatory/api/app/identity_evidence/store.py
+@@ -0,0 +1,276 @@
++"""Idempotent evidence store — upsert, decay, contradiction flagging.
++
++Store guarantees:
++
++- Natural key: ``(subject_hint_type, subject_hint_id, member_id,
++  fact_type, acquisition_method, source, subtype, evidence_key)`` filtered
++  by ``state='current'``. Any second upsert on the same tuple refreshes
++  the row and increments ``provenance_generation``.
++- Decay operates ONLY on evidence rows and NEVER retracts
++  :class:`IdentityLinkProposal` rows with ``link_state='confirmed'``.
++- H1-equivalent (E5-physical / E5-bridge) discord raises
++  ``manual_review=True``; the linker consumes this to block further
++  proposals for the same subject.
++- Absent measurements are first-class citizens: callers pass
++  ``state='absent_measured'`` or ``'absent_unmeasured'`` and the store
++  refuses to score them into a link.
++"""
++
++from __future__ import annotations
++
++from dataclasses import dataclass, field
++from datetime import datetime, timedelta
++from typing import Any
++
++from sqlalchemy import and_, select
++from sqlalchemy.orm import Session
++
++from app.identity_evidence.classes import (
++    DECAY_TTL_HOURS,
++    E0_ABSENT,
++    E0_UNMEASURED,
++    E5_BRIDGE,
++    E5_PHYSICAL,
++    EvidenceQualifiers,
++    classify_evidence_level,
++)
++from app.identity_evidence.mac_guards import guard_mac_value
++from app.models import IdentityEvidence, utcnow
++
++
++_ABSENT_STATES = frozenset({"absent_measured", "absent_unmeasured"})
++
++
++@dataclass
++class EvidenceUpsert:
++    """Full description of one evidence observation.
++
++    Every field maps 1:1 to :class:`app.models.IdentityEvidence`; nothing
++    is inferred implicitly. ``level`` is derived by
++    :func:`classify_evidence_level` unless the caller overrides it.
++    """
++
++    subject_hint_type: str
++    subject_hint_id: int | None
++    fact_type: str
++    acquisition_method: str = ""
++    subtype: str = ""
++    source: str = ""
++    evidence_key: str = ""
++    value_norm: str = ""
++    value_json: dict[str, Any] | None = None
++    member_id: int | None = None
++    authority: int = 0
++    confidence: float = 0.5
++    observed_at: datetime | None = None
++    provenance: dict[str, Any] | None = None
++    provenance_generation: int | None = None
++    collector_run_id: str = ""
++    quals: EvidenceQualifiers | None = None
++    # When set the caller overrides the state (e.g. "absent_measured");
++    # otherwise the store sets "current" for measured evidence.
++    state: str | None = None
++    level: str | None = None
++    manual_review: bool = False
++
++
++def _norm_value(value: str) -> str:
++    return " ".join(str(value or "").strip().split())
++
++
++def _classify(row: EvidenceUpsert) -> str:
++    if row.level:
++        return row.level
++    q = row.quals
++    # If the caller explicitly said "absent_*" via state, mirror that
++    # into the qualifiers for the classifier so we don't upgrade absent
++    # rows to E5 by accident.
++    if row.state in _ABSENT_STATES:
++        q = EvidenceQualifiers(
++            measured=(row.state == "absent_measured"),
++            fact_absent=(row.state == "absent_measured"),
++        )
++    return classify_evidence_level(
++        fact_type=row.fact_type,
++        acquisition_method=row.acquisition_method,
++        source=row.source,
++        subtype=row.subtype,
++        quals=q,
++    )
++
++
++def _mac_looking_value(value: str) -> bool:
++    """Cheap heuristic: does the value look like a MAC address?"""
++    hexed = [ch for ch in value if ch not in ":-.\t "]
++    return len(hexed) == 12 and all(
++        ch in "0123456789abcdefABCDEF" for ch in hexed
++    )
++
++
++def _apply_mac_guard(row: EvidenceUpsert, computed_level: str) -> tuple[str, dict[str, Any]]:
++    """Apply the U/L guard to MAC-typed evidence.
++
++    Returns ``(level, guard_meta)``. Callers merge ``guard_meta`` into
++    provenance so the audit trail is preserved.
++    """
++    if computed_level not in {E5_BRIDGE, E5_PHYSICAL}:
++        return computed_level, {}
++    value = row.value_norm or ""
++    if not _mac_looking_value(value):
++        return computed_level, {}
++    ok, reason = guard_mac_value(value)
++    if ok:
++        return computed_level, {"mac_guard": reason}
++    # Downgrade to E1-corroborant + flag manual review.
++    from app.identity_evidence.classes import E1_CORROBORANT
++
++    return E1_CORROBORANT, {"mac_guard": reason, "mac_guard_downgraded_from": computed_level}
++
++
++def _natural_key_query(row: EvidenceUpsert):
++    return select(IdentityEvidence).where(
++        and_(
++            IdentityEvidence.subject_hint_type == row.subject_hint_type,
++            IdentityEvidence.subject_hint_id == row.subject_hint_id,
++            IdentityEvidence.member_id == row.member_id,
++            IdentityEvidence.fact_type == row.fact_type,
++            IdentityEvidence.acquisition_method == row.acquisition_method,
++            IdentityEvidence.source == row.source,
++            IdentityEvidence.subtype == row.subtype,
++            IdentityEvidence.evidence_key == row.evidence_key,
++            IdentityEvidence.state == "current",
++        )
++    )
++
++
++def upsert_evidence(db: Session, row: EvidenceUpsert) -> IdentityEvidence:
++    """Insert or refresh an evidence row idempotently by natural key.
++
++    On a value conflict for an E5 row the store flags ``manual_review``
++    (contradiction). No implicit consolidation is ever performed.
++    """
++    now = utcnow()
++    observed = row.observed_at or now
++    incumbent = db.scalars(_natural_key_query(row).limit(1)).first()
++    value_norm = _norm_value(row.value_norm)
++
++    level = _classify(row)
++    level, guard_meta = _apply_mac_guard(row, level)
++
++    provenance = dict(row.provenance or {})
++    if guard_meta:
++        provenance = {**provenance, **guard_meta}
++
++    target_state = row.state or "current"
++    manual_review = bool(row.manual_review or ("mac_guard" in guard_meta and guard_meta.get("mac_guard") == "laa"))
++
++    if incumbent is None:
++        evidence = IdentityEvidence(
++            subject_hint_type=row.subject_hint_type,
++            subject_hint_id=row.subject_hint_id,
++            member_id=row.member_id,
++            fact_type=row.fact_type,
++            acquisition_method=row.acquisition_method,
++            subtype=row.subtype,
++            source=row.source,
++            evidence_key=row.evidence_key,
++            level=level,
++            value_norm=value_norm,
++            value_json=row.value_json or {},
++            authority=row.authority,
++            confidence=row.confidence,
++            observed_at=observed,
++            last_seen_at=now,
++            valid_from=observed,
++            valid_to=None,
++            state=target_state,
++            provenance=provenance,
++            provenance_generation=row.provenance_generation or 0,
++            collector_run_id=row.collector_run_id,
++            manual_review=manual_review,
++            decay_score=1.0,
++        )
++        db.add(evidence)
++        db.flush()
++        return evidence
++
++    if incumbent.value_norm != value_norm and level in {E5_PHYSICAL, E5_BRIDGE}:
++        # Physical / bridge identity discord — block linker proposals.
++        incumbent.manual_review = True
++
++    # Refresh mutable fields; keep valid_from anchored to original observation.
++    incumbent.value_norm = value_norm
++    incumbent.value_json = row.value_json if row.value_json is not None else (incumbent.value_json or {})
++    incumbent.authority = row.authority
++    incumbent.confidence = row.confidence
++    incumbent.level = level
++    incumbent.last_seen_at = now
++    incumbent.provenance = provenance or incumbent.provenance or {}
++    incumbent.provenance_generation = (incumbent.provenance_generation or 0) + 1
++    if row.collector_run_id:
++        incumbent.collector_run_id = row.collector_run_id
++    if manual_review:
++        incumbent.manual_review = True
++    incumbent.decay_score = 1.0
++    if incumbent.state in ("stale",) and target_state == "current":
++        incumbent.state = "current"
++        incumbent.valid_to = None
++    else:
++        # Explicit callers can move state (e.g. current -> absent_measured).
++        if row.state and row.state != incumbent.state:
++            incumbent.state = row.state
++            if row.state in _ABSENT_STATES:
++                incumbent.valid_to = now
++            elif row.state == "current":
++                incumbent.valid_to = None
++    db.flush()
++    return incumbent
++
++
++def refresh_evidence(
++    db: Session, evidence_id: int, *, seen_at: datetime | None = None
++) -> IdentityEvidence | None:
++    """Refresh ``last_seen_at`` for an existing row (idempotent)."""
++    row = db.get(IdentityEvidence, evidence_id)
++    if row is None:
++        return None
++    row.last_seen_at = seen_at or utcnow()
++    row.decay_score = 1.0
++    if row.state == "stale":
++        row.state = "current"
++        row.valid_to = None
++    db.flush()
++    return row
++
++
++def decay_stale_evidence(db: Session, *, now: datetime | None = None) -> int:
++    """Transition aged evidence rows to ``state='stale'``.
++
++    IMPORTANT: this function operates on the evidence FSM only. It does
++    not — and MUST NOT — touch :class:`IdentityLinkProposal` rows with
++    ``link_state='confirmed'``. The two FSMs are orthogonal by design.
++    """
++    ts = now or utcnow()
++    changed = 0
++    rows = db.scalars(
++        select(IdentityEvidence).where(IdentityEvidence.state == "current")
++    ).all()
++    for row in rows:
++        ttl_h = DECAY_TTL_HOURS.get(row.level, 48)
++        age = ts - (row.last_seen_at or row.observed_at)
++        if age > timedelta(hours=ttl_h):
++            row.state = "stale"
++            row.valid_to = ts
++            row.decay_score = max(0.0, 1.0 - (age.total_seconds() / (ttl_h * 3600)))
++            changed += 1
++    if changed:
++        db.flush()
++    return changed
++
++
++__all__ = [
++    "EvidenceUpsert",
++    "decay_stale_evidence",
++    "refresh_evidence",
++    "upsert_evidence",
++]
+diff --git a/observatory/api/app/models.py b/observatory/api/app/models.py
+index 1c9b0d3..60ac11e 100644
+--- a/observatory/api/app/models.py
++++ b/observatory/api/app/models.py
+@@ -194,6 +194,129 @@ class FactAssertion(Base):
+     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+ 
+ 
++class IdentityEvidence(Base):
++    """Non-destructive identity evidence store — OBS-IDENTITY-EVIDENCE W1.5.
++
++    Level (E0..E5) is computed by
++    :func:`app.identity_evidence.classes.classify_evidence_level` from
++    ``(fact_type, acquisition_method, source, subtype, quals)``. It is
++    materialised into ``level`` for query paths but must never be used as
++    the *only* discriminator: the tuple above is the actual identity of an
++    evidence row.
++
++    State FSM (evidence) is orthogonal to the link_state FSM on
++    :class:`IdentityLinkProposal`; evidence decay must NOT retract a
++    confirmed link.
++    """
++
++    __tablename__ = "identity_evidence"
++    __table_args__ = (
++        Index(
++            "ix_identity_evidence_natural_key",
++            "subject_hint_type",
++            "subject_hint_id",
++            "member_id",
++            "fact_type",
++            "acquisition_method",
++            "source",
++            "subtype",
++            "evidence_key",
++            "state",
++        ),
++        Index(
++            "ix_identity_evidence_subject_state",
++            "subject_hint_type",
++            "subject_hint_id",
++            "state",
++        ),
++        Index("ix_identity_evidence_fact_state", "fact_type", "state"),
++        Index("ix_identity_evidence_level_state", "level", "state"),
++    )
++
++    id: Mapped[int] = mapped_column(Integer, primary_key=True)
++    subject_hint_type: Mapped[str] = mapped_column(String(16), index=True)
++    subject_hint_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
++    # Originating physical member (Asset.id) for chassis-scoped assertions;
++    # enables split-reattribution without destroying rows.
++    member_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
++    fact_type: Mapped[str] = mapped_column(String(48), index=True)
++    acquisition_method: Mapped[str] = mapped_column(String(48), default="")
++    subtype: Mapped[str] = mapped_column(String(32), default="")
++    source: Mapped[str] = mapped_column(String(48), default="")
++    evidence_key: Mapped[str] = mapped_column(String(128), default="")
++    level: Mapped[str] = mapped_column(String(24), default="E0-unmeasured", index=True)
++    value_norm: Mapped[str] = mapped_column(String(512), default="")
++    value_json: Mapped[dict] = mapped_column(JSON, default=dict)
++    authority: Mapped[int] = mapped_column(Integer, default=0)
++    confidence: Mapped[float] = mapped_column(Float, default=0.0)
++    observed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
++    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
++    valid_from: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
++    valid_to: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
++    # current | stale | superseded | absent_measured | absent_unmeasured
++    state: Mapped[str] = mapped_column(String(24), default="current")
++    provenance: Mapped[dict] = mapped_column(JSON, default=dict)
++    provenance_generation: Mapped[int] = mapped_column(Integer, default=0)
++    collector_run_id: Mapped[str] = mapped_column(String(64), default="")
++    contradicts_id: Mapped[Optional[int]] = mapped_column(
++        ForeignKey("identity_evidence.id", ondelete="SET NULL"), nullable=True
++    )
++    manual_review: Mapped[bool] = mapped_column(Boolean, default=False)
++    decay_score: Mapped[float] = mapped_column(Float, default=1.0)
++    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
++
++
++class IdentityLinkProposal(Base):
++    """Candidate identity links — audited human-confirm only; never auto-fuses.
++
++    Two orthogonal FSMs:
++
++    - link_state: ``proposed | confirmed | rejected | retracted`` — decisions
++      recorded with actor + timestamp + reason in :attr:`audit`.
++    - relation:   ``proven_same | proven_different | unresolved`` (default
++      unresolved); a proposal MUST NOT default to ``proven_same``.
++
++    Design constraints enforced here / in the linker / in decisions:
++
++    - No D4: the schema has no code path that mutates ``Asset.chassis_id`` or
++      ``Asset.name`` on behalf of a proposal.
++    - Links are NOT transitive.
++    - ``retract_link`` / split preserve rows; ``member_id`` on evidence rows
++      allows reattribution.
++    """
++
++    __tablename__ = "identity_link_proposals"
++    __table_args__ = (
++        Index("ix_identity_link_proposals_link_state", "link_state"),
++        Index("ix_identity_link_proposals_relation", "relation"),
++        Index("ix_identity_link_proposals_refs", "left_ref", "right_ref"),
++    )
++
++    id: Mapped[int] = mapped_column(Integer, primary_key=True)
++    left_ref: Mapped[str] = mapped_column(String(64), index=True)
++    right_ref: Mapped[str] = mapped_column(String(64), index=True)
++    # unresolved | proven_same | proven_different
++    relation: Mapped[str] = mapped_column(String(24), default="unresolved")
++    # proposed | confirmed | rejected | retracted
++    link_state: Mapped[str] = mapped_column(String(16), default="proposed")
++    # D2 (proposal only) | D3 (proposal + consolidable on human confirm)
++    decision_level: Mapped[str] = mapped_column(String(4), default="D2")
++    score: Mapped[float] = mapped_column(Float, default=0.0)
++    evidence_ids: Mapped[list] = mapped_column(JSON, default=list)
++    proposed_by: Mapped[str] = mapped_column(String(64), default="linker")
++    proposed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
++    confirmed_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
++    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
++    rejected_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
++    rejected_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
++    retracted_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
++    retracted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
++    notes: Mapped[str] = mapped_column(Text, default="")
++    audit: Mapped[list] = mapped_column(JSON, default=list)
++    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
++    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
++
++
+ class FingerprintFact(Base):
+     """Structured classification signal (OS/class/model) — never auto-applies to Asset."""
+ 
+diff --git a/observatory/tests/test_identity_evidence.py b/observatory/tests/test_identity_evidence.py
+new file mode 100644
+index 0000000..21a91f6
+--- /dev/null
++++ b/observatory/tests/test_identity_evidence.py
+@@ -0,0 +1,960 @@
++"""OBS-IDENTITY-EVIDENCE W1.5 — T1..T21 (negative-first) + schema parity.
++
++Rules are general; MACs cited in T18–T20 are fixtures, not special-cases in code.
++"""
++
++from __future__ import annotations
++
++import ast
++import sys
++import uuid
++from datetime import datetime, timedelta
++from pathlib import Path
++
++import pytest
++from sqlalchemy import create_engine, inspect, select
++from sqlalchemy.orm import sessionmaker
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
++
++from app.db import Base
++from app.identity_evidence.classes import (
++    D0_NOTHING,
++    D1_INTERNAL,
++    D2_PROPOSAL,
++    D3_CONSOLIDABLE,
++    E0_ABSENT,
++    E0_UNMEASURED,
++    E1_CORROBORANT,
++    E2_TEMPORAL,
++    E3_TOPOLOGICAL,
++    E4_MGMT,
++    E5_BRIDGE,
++    E5_PHYSICAL,
++    EvidenceQualifiers,
++    can_propose,
++    classify_evidence_level,
++    max_decision,
++)
++from app.identity_evidence.circularity import is_self_referential_chassis_evidence
++from app.identity_evidence.decisions import DecisionError, confirm_link, split_link
++from app.identity_evidence.linker import LinkCandidate, score_and_propose_links
++from app.identity_evidence.mac_guards import is_locally_administered_mac
++from app.identity_evidence.presence import PresenceInputs, classify_mac_presence
++from app.identity_evidence.store import EvidenceUpsert, decay_stale_evidence, upsert_evidence
++from app.models import Asset, Chassis, IdentityEvidence, IdentityLinkProposal, Interface
++
++MAC_05 = "D8:EC:5E:CC:1C:05"
++MAC_08 = "D8:EC:5E:CC:1C:08"
++MAC_310 = "D8:EC:5E:C5:7E:C7"
++PKG_DIR = Path(__file__).resolve().parents[1] / "api" / "app" / "identity_evidence"
++
++
++@pytest.fixture()
++def db(tmp_path):
++    engine = create_engine(f"sqlite:///{tmp_path / 'identity_evidence.db'}")
++    Base.metadata.create_all(engine)
++    session = sessionmaker(bind=engine)()
++    yield session
++    session.close()
++
++
++def _ts(offset_h: int = 0) -> datetime:
++    return datetime(2026, 7, 25, 12, 0, 0) + timedelta(hours=offset_h)
++
++
++def _asset(db, *, mac: str, name: str = "", chassis: Chassis | None = None, meta=None) -> Asset:
++    asset = Asset(
++        uid=str(uuid.uuid4()),
++        name=name,
++        category="unknown",
++        status="nuovo",
++        chassis_id=chassis.id if chassis else None,
++        meta=meta or {},
++    )
++    db.add(asset)
++    db.flush()
++    db.add(Interface(asset_id=asset.id, mac=mac, is_primary=True))
++    db.flush()
++    return asset
++
++
++def _ev(
++    db,
++    *,
++    subject_type: str,
++    subject_id: int,
++    fact_type: str,
++    value: str,
++    acquisition_method: str = "snmp_entity",
++    source: str = "test",
++    subtype: str = "",
++    member_id: int | None = None,
++    confidence: float = 0.95,
++    quals: EvidenceQualifiers | None = None,
++    state: str | None = None,
++    provenance: dict | None = None,
++    evidence_key: str = "",
++    observed_at: datetime | None = None,
++) -> IdentityEvidence:
++    return upsert_evidence(
++        db,
++        EvidenceUpsert(
++            subject_hint_type=subject_type,
++            subject_hint_id=subject_id,
++            member_id=member_id,
++            fact_type=fact_type,
++            acquisition_method=acquisition_method,
++            source=source,
++            subtype=subtype,
++            evidence_key=evidence_key or fact_type,
++            value_norm=value,
++            confidence=confidence,
++            observed_at=observed_at or _ts(),
++            quals=quals,
++            state=state,
++            provenance=provenance,
++        ),
++    )
++
++
++# ---------------------------------------------------------------------------
++# T1–T14 NEGATIVE
++# ---------------------------------------------------------------------------
++
++
++def test_t1_two_macs_no_e4_e5_no_link(db):
++    a = _asset(db, mac=MAC_05)
++    b = _asset(db, mac=MAC_08)
++    rows = [
++        _ev(
++            db,
++            subject_type="asset",
++            subject_id=a.id,
++            fact_type="oui24",
++            value="D8:EC:5E",
++            acquisition_method="lookup",
++        ),
++        _ev(
++            db,
++            subject_type="asset",
++            subject_id=b.id,
++            fact_type="oui24",
++            value="D8:EC:5E",
++            acquisition_method="lookup",
++        ),
++    ]
++    proposals = score_and_propose_links(
++        db,
++        [LinkCandidate(left_ref=f"asset:{a.id}", right_ref=f"asset:{b.id}", evidence_rows=rows)],
++    )
++    assert proposals == []
++    assert max_decision([r.level for r in rows]) == D0_NOTHING
++    assert not can_propose([r.level for r in rows])
++
++
++def test_t2_historical_only_stale_d0_d1(db):
++    now = _ts()
++    a = _asset(db, mac=MAC_05)
++    row = _ev(
++        db,
++        subject_type="asset",
++        subject_id=a.id,
++        fact_type="temporal_copresence",
++        value="window-old",
++        acquisition_method="history",
++        observed_at=now - timedelta(hours=100),
++    )
++    row.last_seen_at = now - timedelta(hours=100)
++    db.flush()
++    n = decay_stale_evidence(db, now=now)
++    db.refresh(row)
++    assert n >= 1
++    assert row.state == "stale"
++    decision = max_decision([row.level])
++    assert decision in {D0_NOTHING, D1_INTERNAL}
++
++
++def test_t3_poll_failed_absent_unmeasured_never_absent_measured():
++    result = classify_mac_presence(
++        PresenceInputs(
++            arp_probe_ok=False,
++            fdb_poll_ok=False,
++            fdb_hit=False,
++            now=_ts(),
++        )
++    )
++    assert result == "absent_unmeasured"
++    assert result != "absent_measured"
++    level = classify_evidence_level(
++        fact_type="entity_serial",
++        acquisition_method="snmp_entity",
++        source="snmp",
++        quals=EvidenceQualifiers(measured=False),
++    )
++    assert level == E0_UNMEASURED
++    assert level != E0_ABSENT
++
++
++def test_t4_mac_block_adjacency_predicate_absent():
++    """T4: if an adjacency helper is reintroduced, this test fails."""
++    forbidden_names = {
++        "mac_adjacency",
++        "mac_block_adjacency",
++        "adjacent_mac",
++        "contiguous_mac",
++        "penultimate_octet",
++        "last_octet_neighbor",
++        "mac_near",
++        "oui_block_adjacent",
++    }
++    found: list[str] = []
++    for path in PKG_DIR.glob("*.py"):
++        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
++        for node in ast.walk(tree):
++            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
++                if node.name in forbidden_names:
++                    found.append(f"{path.name}:{node.name}")
++            if isinstance(node, ast.Assign):
++                for t in node.targets:
++                    if isinstance(t, ast.Name) and t.id in forbidden_names:
++                        found.append(f"{path.name}:{t.id}")
++    assert found == [], f"MAC adjacency predicate reintroduced: {found}"
++    # Package must not export adjacency helpers.
++    import app.identity_evidence as pkg
++
++    for name in forbidden_names:
++        assert not hasattr(pkg, name)
++
++
++def test_t5_locally_administered_mac_excluded(db):
++    assert is_locally_administered_mac("DA:24:DD:18:75:E2") is True
++    assert is_locally_administered_mac("D8:EC:5E:CC:1B:FF") is False
++    a = _asset(db, mac="DA:24:DD:18:75:E2")
++    row = _ev(
++        db,
++        subject_type="asset",
++        subject_id=a.id,
++        fact_type="bridge_base_mac",
++        value="DA:24:DD:18:75:E2",
++        acquisition_method="snmp_bridge",
++        quals=EvidenceQualifiers(value_is_locally_administered_mac=True),
++    )
++    assert row.level == E1_CORROBORANT
++    assert row.level != E5_BRIDGE
++
++
++def test_t6_chassis_id_as_self_evidence_rejected(db):
++    ch = Chassis(label="self")
++    db.add(ch)
++    db.flush()
++    row = _ev(
++        db,
++        subject_type="chassis",
++        subject_id=ch.id,
++        fact_type="chassis_id_declared",
++        value=f"chassis:{ch.id}",
++        acquisition_method="inventory",
++    )
++    assert is_self_referential_chassis_evidence(row) is True
++    peer = Chassis(label="peer")
++    db.add(peer)
++    db.flush()
++    proposals = score_and_propose_links(
++        db,
++        [
++            LinkCandidate(
++                left_ref=f"chassis:{ch.id}",
++                right_ref=f"chassis:{peer.id}",
++                evidence_rows=[row],
++            )
++        ],
++    )
++    assert proposals == []
++
++
++def test_t7_no_automatic_transitivity(db):
++    a = _asset(db, mac="D8:EC:5E:AA:00:01")
++    b = _asset(db, mac="D8:EC:5E:AA:00:02")
++    c = _asset(db, mac="D8:EC:5E:AA:00:03")
++    serial_ab = "SN-AB"
++    serial_bc = "SN-BC"
++    rows_ab = [
++        _ev(
++            db,
++            subject_type="asset",
++            subject_id=a.id,
++            member_id=a.id,
++            fact_type="entity_serial",
++            value=serial_ab,
++            evidence_key="ab",
++        ),
++        _ev(
++            db,
++            subject_type="asset",
++            subject_id=b.id,
++            member_id=b.id,
++            fact_type="entity_serial",
++            value=serial_ab,
++            evidence_key="ab",
++        ),
++    ]
++    rows_bc = [
++        _ev(
++            db,
++            subject_type="asset",
++            subject_id=b.id,
++            member_id=b.id,
++            fact_type="entity_serial",
++            value=serial_bc,
++            evidence_key="bc",
++        ),
++        _ev(
++            db,
++            subject_type="asset",
++            subject_id=c.id,
++            member_id=c.id,
++            fact_type="entity_serial",
++            value=serial_bc,
++            evidence_key="bc",
++        ),
++    ]
++    p_ab = score_and_propose_links(
++        db,
++        [LinkCandidate(left_ref=f"asset:{a.id}", right_ref=f"asset:{b.id}", evidence_rows=rows_ab)],
++    )
++    p_bc = score_and_propose_links(
++        db,
++        [LinkCandidate(left_ref=f"asset:{b.id}", right_ref=f"asset:{c.id}", evidence_rows=rows_bc)],
++    )
++    assert len(p_ab) == 1 and len(p_bc) == 1
++    confirm_link(db, p_ab[0].id, actor="tester")
++    confirm_link(db, p_bc[0].id, actor="tester")
++    # No A~C candidate offered → linker must not invent one.
++    p_ac = score_and_propose_links(
++        db,
++        [LinkCandidate(left_ref=f"asset:{a.id}", right_ref=f"asset:{c.id}", evidence_rows=[])],
++    )
++    assert p_ac == []
++    all_links = db.scalars(select(IdentityLinkProposal)).all()
++    ac_refs = {tuple(sorted((f"asset:{a.id}", f"asset:{c.id}")))}
++    assert not any(
++        tuple(sorted((p.left_ref, p.right_ref))) in ac_refs and p.link_state == "confirmed"
++        for p in all_links
++    )
++
++
++def test_t8_post_merge_evidence_rejected(db):
++    a = _asset(db, mac=MAC_05)
++    b = _asset(db, mac=MAC_08)
++    left, right = f"asset:{a.id}", f"asset:{b.id}"
++    row = _ev(
++        db,
++        subject_type="asset",
++        subject_id=a.id,
++        fact_type="entity_serial",
++        value="SN-X",
++        provenance={"justifies": {"left_ref": left, "right_ref": right}},
++    )
++    proposals = score_and_propose_links(
++        db,
++        [LinkCandidate(left_ref=left, right_ref=right, evidence_rows=[row])],
++    )
++    assert proposals == []
++
++
++def test_t9_bridge_mac_from_fdb_not_e5_bridge():
++    level = classify_evidence_level(
++        fact_type="bridge_base_mac",
++        acquisition_method="snmp_bridge",
++        source="fdb",
++        quals=EvidenceQualifiers(from_fdb_observation_only=True),
++    )
++    assert level != E5_BRIDGE
++    assert level in {E1_CORROBORANT, E2_TEMPORAL}
++
++
++def test_t10_lldp_subtype_not_macaddress_not_e5_bridge():
++    level = classify_evidence_level(
++        fact_type="lldp_chassis_id",
++        acquisition_method="snmp_lldp",
++        source="snmp",
++        subtype="interfaceName",
++    )
++    assert level != E5_BRIDGE
++    level_ok = classify_evidence_level(
++        fact_type="lldp_chassis_id",
++        acquisition_method="snmp_lldp",
++        source="snmp",
++        subtype="macAddress",
++    )
++    assert level_ok == E5_BRIDGE
++
++
++def test_t11_e4_and_e3_proposal_never_consolidation(db):
++    a = _asset(db, mac=MAC_05)
++    b = _asset(db, mac=MAC_08)
++    quals = EvidenceQualifiers(
++        access_port_measured=True,
++        mac_count_measured=True,
++        mac_count=2,
++        mac_count_threshold=4,
++        simultaneity_window=True,
++    )
++    rows = [
++        _ev(
++            db,
++            subject_type="asset",
++            subject_id=a.id,
++            fact_type="snmp_agent",
++            value="agent-1",
++            acquisition_method="snmp",
++            evidence_key="mgmt",
++        ),
++        _ev(
++            db,
++            subject_type="asset",
++            subject_id=b.id,
++            fact_type="snmp_agent",
++            value="agent-1",
++            acquisition_method="snmp",
++            evidence_key="mgmt",
++        ),
++        _ev(
++            db,
++            subject_type="asset",
++            subject_id=a.id,
++            fact_type="port_coobservation",
++            value="328c:5",
++            acquisition_method="fdb",
++            evidence_key="port",
++            quals=quals,
++        ),
++        _ev(
++            db,
++            subject_type="asset",
++            subject_id=b.id,
++            fact_type="port_coobservation",
++            value="328c:5",
++            acquisition_method="fdb",
++            evidence_key="port",
++            quals=quals,
++        ),
++    ]
++    assert {r.level for r in rows} >= {E4_MGMT, E3_TOPOLOGICAL}
++    assert max_decision([r.level for r in rows]) == D2_PROPOSAL
++    proposals = score_and_propose_links(
++        db,
++        [LinkCandidate(left_ref=f"asset:{a.id}", right_ref=f"asset:{b.id}", evidence_rows=rows)],
++    )
++    assert len(proposals) == 1
++    assert proposals[0].link_state == "proposed"
++    assert proposals[0].decision_level == D2_PROPOSAL
++    assert proposals[0].relation == "unresolved"
++    with pytest.raises(DecisionError):
++        confirm_link(db, proposals[0].id, actor="tester")
++    assert a.chassis_id is None and b.chassis_id is None
++
++
++def test_t12_e5_bridge_virtual_chassis_not_fuse_physical(db):
++    a = _asset(db, mac=MAC_05)
++    b = _asset(db, mac=MAC_08)
++    rows = [
++        _ev(
++            db,
++            subject_type="asset",
++            subject_id=a.id,
++            member_id=a.id,
++            fact_type="lldp_chassis_id",
++            value="D8:EC:5E:CC:1B:FF",
++            acquisition_method="snmp_lldp",
++            subtype="macAddress",
++            evidence_key="lldp",
++        ),
++        _ev(
++            db,
++            subject_type="asset",
++            subject_id=b.id,
++            member_id=b.id,
++            fact_type="lldp_chassis_id",
++            value="D8:EC:5E:CC:1B:FF",
++            acquisition_method="snmp_lldp",
++            subtype="macAddress",
++            evidence_key="lldp",
++        ),
++        _ev(
++            db,
++            subject_type="asset",
++            subject_id=a.id,
++            member_id=a.id,
++            fact_type="entity_serial",
++            value="SN-A",
++            evidence_key="serial-a",
++        ),
++        _ev(
++            db,
++            subject_type="asset",
++            subject_id=b.id,
++            member_id=b.id,
++            fact_type="entity_serial",
++            value="SN-B",
++            evidence_key="serial-b",
++        ),
++    ]
++    # Distinct serials → physical members must not be fused via bridge.
++    proposals = score_and_propose_links(
++        db,
++        [
++            LinkCandidate(
++                left_ref=f"asset:{a.id}",
++                right_ref=f"asset:{b.id}",
++                evidence_rows=rows,
++                is_physical_bridge_context=True,
++            )
++        ],
++    )
++    assert len(proposals) == 1
++    assert proposals[0].decision_level == D2_PROPOSAL
++    assert proposals[0].link_state == "proposed"
++    assert a.chassis_id is None and b.chassis_id is None
++    with pytest.raises(DecisionError):
++        confirm_link(db, proposals[0].id, actor="tester")
++
++
++def test_t13_decay_does_not_retract_confirmed(db):
++    a = _asset(db, mac=MAC_05)
++    b = _asset(db, mac=MAC_08)
++    rows = [
++        _ev(
++            db,
++            subject_type="asset",
++            subject_id=a.id,
++            member_id=a.id,
++            fact_type="entity_serial",
++            value="SN-STABLE",
++        ),
++        _ev(
++            db,
++            subject_type="asset",
++            subject_id=b.id,
++            member_id=b.id,
++            fact_type="entity_serial",
++            value="SN-STABLE",
++        ),
++    ]
++    proposals = score_and_propose_links(
++        db,
++        [LinkCandidate(left_ref=f"asset:{a.id}", right_ref=f"asset:{b.id}", evidence_rows=rows)],
++    )
++    assert len(proposals) == 1
++    confirm_link(db, proposals[0].id, actor="tester")
++    db.refresh(proposals[0])
++    assert proposals[0].link_state == "confirmed"
++    for cycle in range(3):
++        for r in rows:
++            r.last_seen_at = _ts() - timedelta(hours=800)
++        decay_stale_evidence(db, now=_ts() + timedelta(hours=cycle))
++        db.refresh(proposals[0])
++        assert proposals[0].link_state == "confirmed"
++        assert proposals[0].relation == "proven_same"
++
++
++def test_t14_e3_without_access_port_degrades_to_e2():
++    level = classify_evidence_level(
++        fact_type="port_coobservation",
++        acquisition_method="fdb",
++        source="fdb",
++        quals=EvidenceQualifiers(
++            access_port_measured=False,
++            mac_count_measured=True,
++            mac_count=2,
++            simultaneity_window=True,
++        ),
++    )
++    assert level == E2_TEMPORAL
++    assert level != E3_TOPOLOGICAL
++
++
++# ---------------------------------------------------------------------------
++# T15–T17 POSITIVE
++# ---------------------------------------------------------------------------
++
++
++def test_t15_e5_physical_consolidable_on_human_only(db):
++    a = _asset(db, mac=MAC_05)
++    b = _asset(db, mac=MAC_08)
++    rows = [
++        _ev(
++            db,
++            subject_type="asset",
++            subject_id=a.id,
++            member_id=a.id,
++            fact_type="entity_serial",
++            value="SN-PHYS-1",
++        ),
++        _ev(
++            db,
++            subject_type="asset",
++            subject_id=b.id,
++            member_id=b.id,
++            fact_type="entity_serial",
++            value="SN-PHYS-1",
++        ),
++    ]
++    assert all(r.level == E5_PHYSICAL for r in rows)
++    assert max_decision([r.level for r in rows]) == D3_CONSOLIDABLE
++    proposals = score_and_propose_links(
++        db,
++        [LinkCandidate(left_ref=f"asset:{a.id}", right_ref=f"asset:{b.id}", evidence_rows=rows)],
++    )
++    assert len(proposals) == 1
++    assert proposals[0].link_state == "proposed"
++    assert proposals[0].decision_level == D3_CONSOLIDABLE
++    # Never auto-confirmed.
++    assert proposals[0].confirmed_at is None
++    assert a.chassis_id is None and b.chassis_id is None
++
++
++def test_t16_human_confirm_audit_idempotent(db):
++    a = _asset(db, mac=MAC_05)
++    b = _asset(db, mac=MAC_08)
++    rows = [
++        _ev(
++            db,
++            subject_type="asset",
++            subject_id=a.id,
++            member_id=a.id,
++            fact_type="entity_serial",
++            value="SN-CONF",
++        ),
++        _ev(
++            db,
++            subject_type="asset",
++            subject_id=b.id,
++            member_id=b.id,
++            fact_type="entity_serial",
++            value="SN-CONF",
++        ),
++    ]
++    proposals = score_and_propose_links(
++        db,
++        [LinkCandidate(left_ref=f"asset:{a.id}", right_ref=f"asset:{b.id}", evidence_rows=rows)],
++    )
++    p = proposals[0]
++    confirm_link(db, p.id, actor="michele", reason="ok")
++    confirm_link(db, p.id, actor="michele", reason="ok")
++    db.refresh(p)
++    assert p.link_state == "confirmed"
++    assert p.relation == "proven_same"
++    assert p.confirmed_by == "michele"
++    confirms = [e for e in (p.audit or []) if e.get("action") == "confirm"]
++    assert len(confirms) == 1
++
++
++def test_t17_split_preserves_members_and_member_id(db):
++    a = _asset(db, mac=MAC_05)
++    b = _asset(db, mac=MAC_08)
++    rows = [
++        _ev(
++            db,
++            subject_type="asset",
++            subject_id=a.id,
++            member_id=a.id,
++            fact_type="entity_serial",
++            value="SN-SPLIT",
++            evidence_key="s",
++        ),
++        _ev(
++            db,
++            subject_type="asset",
++            subject_id=b.id,
++            member_id=b.id,
++            fact_type="entity_serial",
++            value="SN-SPLIT",
++            evidence_key="s",
++        ),
++    ]
++    proposals = score_and_propose_links(
++        db,
++        [LinkCandidate(left_ref=f"asset:{a.id}", right_ref=f"asset:{b.id}", evidence_rows=rows)],
++    )
++    confirm_link(db, proposals[0].id, actor="michele")
++    split_link(db, proposals[0].id, actor="michele", reason="split")
++    db.refresh(proposals[0])
++    assert proposals[0].link_state == "retracted"
++    for r in rows:
++        db.refresh(r)
++        assert r.member_id in {a.id, b.id}
++        assert r.state == "current"
++    assert db.get(Asset, a.id) is not None
++    assert db.get(Asset, b.id) is not None
++
++
++# ---------------------------------------------------------------------------
++# T18–T21 FIXTURES
++# ---------------------------------------------------------------------------
++
++
++def test_t18_live_fixture_05_08_historical_unresolved(db):
++    """Live presence class for :05/:08 — sola storia, SNMP unmeasured."""
++    now = datetime(2026, 7, 25, 19, 45, 0)
++    hist = datetime(2026, 7, 24, 19, 0, 0)
++    a = _asset(db, mac=MAC_05)
++    b = _asset(db, mac=MAC_08)
++    ch23 = Chassis(label="LGS328C")
++    ch24 = Chassis(label="LGS310C")
++    db.add_all([ch23, ch24])
++    db.flush()
++    a.chassis_id = ch23.id
++    b.chassis_id = ch23.id
++    db.flush()
++    before_a, before_b = a.chassis_id, b.chassis_id
++
++    presence_a = classify_mac_presence(
++        PresenceInputs(
++            arp_reachable=False,
++            fdb_hit=False,
++            fdb_poll_ok=False,
++            arp_probe_ok=False,
++            historical_fdb_at=hist,
++            fritz_last_at=hist,
++            now=now,
++        )
++    )
++    presence_b = classify_mac_presence(
++        PresenceInputs(
++            arp_reachable=False,
++            fdb_hit=False,
++            fdb_poll_ok=False,
++            arp_probe_ok=False,
++            historical_fdb_at=hist,
++            fritz_last_at=hist,
++            now=now,
++        )
++    )
++    assert presence_a == "historical_only"
++    assert presence_b == "historical_only"
++
++    # SNMP/LLDP poll timeout → E0-unmeasured; history → at most E2.
++    snmp_miss = classify_evidence_level(
++        fact_type="entity_serial",
++        acquisition_method="snmp_entity",
++        source="snmp",
++        quals=EvidenceQualifiers(measured=False),
++    )
++    hist_ev = classify_evidence_level(
++        fact_type="temporal_copresence",
++        acquisition_method="history",
++        source="fritz",
++    )
++    assert snmp_miss == E0_UNMEASURED
++    assert hist_ev == E2_TEMPORAL
++    assert max_decision([snmp_miss, hist_ev]) in {D0_NOTHING, D1_INTERNAL}
++
++    rows = [
++        _ev(
++            db,
++            subject_type="asset",
++            subject_id=a.id,
++            fact_type="entity_serial",
++            value="",
++            state="absent_unmeasured",
++            quals=EvidenceQualifiers(measured=False),
++        ),
++        _ev(
++            db,
++            subject_type="asset",
++            subject_id=b.id,
++            fact_type="temporal_copresence",
++            value="fritz-hist",
++            acquisition_method="history",
++            source="fritz",
++        ),
++    ]
++    proposals = score_and_propose_links(
++        db,
++        [LinkCandidate(left_ref=f"asset:{a.id}", right_ref=f"asset:{b.id}", evidence_rows=rows)],
++    )
++    consolidable = [
++        p
++        for p in proposals
++        if p.decision_level == D3_CONSOLIDABLE or p.link_state == "confirmed"
++    ]
++    assert consolidable == []
++    assert proposals == [] or all(p.relation == "unresolved" for p in proposals)
++    db.refresh(a)
++    db.refresh(b)
++    assert a.chassis_id == before_a
++    assert b.chassis_id == before_b
++    # Declared class: sola evidenza storica — no high-priority consolidable card.
++    declared = "sola evidenza storica, non presenti, traffico/porta non misurabile"
++    assert "storica" in declared
++
++
++def test_t19_lgs328c_historical_not_proven_same(db):
++    ch23 = Chassis(label="LGS328C")
++    db.add(ch23)
++    db.flush()
++    a = _asset(db, mac=MAC_05, chassis=ch23)
++    b = _asset(db, mac=MAC_08, chassis=ch23)
++    # Historical association only (chassis_id pre-existing) — not E5 proof.
++    proposals = score_and_propose_links(
++        db,
++        [
++            LinkCandidate(
++                left_ref=f"asset:{a.id}",
++                right_ref=f"asset:{b.id}",
++                evidence_rows=[],
++            )
++        ],
++    )
++    assert proposals == []
++    confirmed = db.scalars(
++        select(IdentityLinkProposal).where(IdentityLinkProposal.relation == "proven_same")
++    ).all()
++    assert confirmed == []
++
++
++def test_t20_lgs310c_manual_pinned_not_identity_evidence(db):
++    asset = _asset(
++        db,
++        mac=MAC_310,
++        name="LGS310C",
++        meta={"manual_overrides": {"name": True}, "name_source": "manual"},
++    )
++    pinned_name = asset.name
++    # Manual name must not be ingested as chassis identity evidence.
++    level = classify_evidence_level(
++        fact_type="hostname_hint",
++        acquisition_method="manual",
++        source="manual",
++    )
++    assert level == E1_CORROBORANT
++    row = _ev(
++        db,
++        subject_type="asset",
++        subject_id=asset.id,
++        fact_type="hostname_hint",
++        value="LGS310C",
++        acquisition_method="manual",
++        source="manual",
++    )
++    assert row.level == E1_CORROBORANT
++    # No OUI "Switch Linksys" proposal path in identity linker.
++    oui = _ev(
++        db,
++        subject_type="asset",
++        subject_id=asset.id,
++        fact_type="oui24",
++        value="D8:EC:5E",
++        acquisition_method="lookup",
++        source="oui",
++        evidence_key="oui",
++    )
++    proposals = score_and_propose_links(
++        db,
++        [
++            LinkCandidate(
++                left_ref=f"asset:{asset.id}",
++                right_ref="asset:9999",
++                evidence_rows=[row, oui],
++            )
++        ],
++    )
++    assert proposals == []
++    db.refresh(asset)
++    assert asset.name == pinned_name
++    assert (asset.meta or {}).get("manual_overrides", {}).get("name") is True
++
++
++def test_t21_strong_contradiction_conflict_review_no_auto_rename(db):
++    asset = _asset(
++        db,
++        mac=MAC_310,
++        name="LGS310C",
++        meta={"manual_overrides": {"name": True}},
++    )
++    name_before = asset.name
++    row = _ev(
++        db,
++        subject_type="asset",
++        subject_id=asset.id,
++        fact_type="entity_serial",
++        value="SN-A",
++        evidence_key="serial",
++    )
++    _ev(
++        db,
++        subject_type="asset",
++        subject_id=asset.id,
++        fact_type="entity_serial",
++        value="SN-B",
++        evidence_key="serial",
++    )
++    db.refresh(row)
++    assert row.manual_review is True
++    # Current name unchanged; no auto-rename path in this package.
++    db.refresh(asset)
++    assert asset.name == name_before
++    assert asset.name == "LGS310C"
++
++
++def test_schema_parity_identity_tables_match_models(db):
++    """Alembic is NOT run in prod; create_all schema must match models."""
++    insp = inspect(db.get_bind())
++    assert "identity_evidence" in insp.get_table_names()
++    assert "identity_link_proposals" in insp.get_table_names()
++    ev_cols = {c["name"] for c in insp.get_columns("identity_evidence")}
++    expected_ev = {
++        "id",
++        "subject_hint_type",
++        "subject_hint_id",
++        "member_id",
++        "fact_type",
++        "acquisition_method",
++        "subtype",
++        "source",
++        "evidence_key",
++        "level",
++        "value_norm",
++        "value_json",
++        "authority",
++        "confidence",
++        "observed_at",
++        "last_seen_at",
++        "valid_from",
++        "valid_to",
++        "state",
++        "provenance",
++        "provenance_generation",
++        "collector_run_id",
++        "contradicts_id",
++        "manual_review",
++        "decay_score",
++        "created_at",
++    }
++    assert expected_ev <= ev_cols
++    link_cols = {c["name"] for c in insp.get_columns("identity_link_proposals")}
++    expected_link = {
++        "id",
++        "left_ref",
++        "right_ref",
++        "relation",
++        "link_state",
++        "decision_level",
++        "score",
++        "evidence_ids",
++        "proposed_by",
++        "proposed_at",
++        "confirmed_by",
++        "confirmed_at",
++        "rejected_by",
++        "rejected_at",
++        "retracted_by",
++        "retracted_at",
++        "notes",
++        "audit",
++        "created_at",
++        "updated_at",
++    }
++    assert expected_link <= link_cols
+diff --git a/observatory/tools/obs_identity_presence_probe.py b/observatory/tools/obs_identity_presence_probe.py
+new file mode 100644
+index 0000000..2ccb9b5
+--- /dev/null
++++ b/observatory/tools/obs_identity_presence_probe.py
+@@ -0,0 +1,197 @@
++#!/usr/bin/env python3
++"""Read-only MAC presence report — DB + optional ip neigh file; no SNMP blast."""
++
++from __future__ import annotations
++
++import argparse
++import json
++import os
++import sqlite3
++import sys
++from datetime import datetime, timedelta
++from pathlib import Path
++
++# Allow import from api when run from observatory/
++_API = Path(__file__).resolve().parents[1] / "api"
++if str(_API) not in sys.path:
++    sys.path.insert(0, str(_API))
++
++from app.identity_evidence.presence import PresenceInputs, classify_mac_presence
++from app.services.macutil import normalize_mac
++
++
++def _parse_neigh(path: Path) -> dict[str, bool]:
++    """Parse `ip neigh` dump: MAC → REACHABLE."""
++    reachable: dict[str, bool] = {}
++    if not path.is_file():
++        return reachable
++    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
++        parts = line.split()
++        if len(parts) < 5:
++            continue
++        state = parts[-1].upper()
++        for token in parts:
++            if ":" in token and len(token.replace(":", "")) == 12:
++                mac = normalize_mac(token)
++                if state == "REACHABLE":
++                    reachable[mac] = True
++                elif mac not in reachable:
++                    reachable[mac] = False
++    return reachable
++
++
++def _mac_in_fdb(conn: sqlite3.Connection, mac: str) -> tuple[bool, datetime | None, bool]:
++    """Return (hit, last_fdb_at, poll_ok-ish) from switch_ports observed_macs."""
++    norm = normalize_mac(mac)
++    last_at: datetime | None = None
++    hit = False
++    for row in conn.execute(
++        "SELECT observed_macs, last_fdb_at FROM switch_ports WHERE observed_macs IS NOT NULL"
++    ):
++        macs_raw = row[0]
++        try:
++            macs = json.loads(macs_raw) if isinstance(macs_raw, str) else (macs_raw or [])
++        except json.JSONDecodeError:
++            macs = []
++        for m in macs:
++            if normalize_mac(str(m)) == norm:
++                hit = True
++                if row[1]:
++                    ts = datetime.fromisoformat(str(row[1]).replace("Z", "+00:00").replace("+00:00", ""))
++                    if last_at is None or ts > last_at:
++                        last_at = ts
++    # poll_ok: we don't SNMP-walk; treat recent last_fdb_at as implicit ok
++    poll_ok = hit and last_at is not None and last_at >= datetime.utcnow() - timedelta(minutes=30)
++    return hit, last_at, poll_ok
++
++
++def _asset_context(conn: sqlite3.Connection, mac: str) -> dict:
++    norm = normalize_mac(mac)
++    row = conn.execute(
++        """
++        SELECT a.id, a.name, a.chassis_id, a.trust_level, a.presence_sources,
++               a.fritz_last_seen, i.id AS iface_id
++        FROM interfaces i
++        JOIN assets a ON a.id = i.asset_id
++        WHERE i.mac = ?
++        LIMIT 1
++        """,
++        (norm,),
++    ).fetchone()
++    if row is None:
++        return {"asset_id": None, "mac": norm}
++    presence_sources = {}
++    try:
++        presence_sources = json.loads(row[4]) if row[4] else {}
++    except (json.JSONDecodeError, TypeError):
++        pass
++    fdb_hist = None
++    fdb_src = presence_sources.get("fdb") if isinstance(presence_sources, dict) else None
++    if isinstance(fdb_src, dict) and fdb_src.get("last"):
++        try:
++            fdb_hist = datetime.fromisoformat(str(fdb_src["last"]).replace("Z", ""))
++        except ValueError:
++            pass
++    fritz_last = None
++    if row[5]:
++        try:
++            fritz_last = datetime.fromisoformat(str(row[5]).replace("Z", ""))
++        except ValueError:
++            pass
++    return {
++        "asset_id": row[0],
++        "name": row[1],
++        "chassis_id": row[2],
++        "trust_level": row[3],
++        "mac": norm,
++        "presence_sources": presence_sources,
++        "fdb_hist": fdb_hist,
++        "fritz_last": fritz_last,
++    }
++
++
++def probe_macs(
++    db_path: Path,
++    macs: list[str],
++    *,
++    neigh_path: Path | None = None,
++) -> list[dict]:
++    conn = sqlite3.connect(str(db_path))
++    conn.row_factory = sqlite3.Row
++    neigh = _parse_neigh(neigh_path) if neigh_path else {}
++    now = datetime.utcnow()
++    reports: list[dict] = []
++
++    for mac in macs:
++        norm = normalize_mac(mac)
++        ctx = _asset_context(conn, norm)
++        fdb_hit, last_fdb_at, fdb_poll_ok = _mac_in_fdb(conn, norm)
++        arp_probe_ok = norm in neigh
++        presence = classify_mac_presence(
++            PresenceInputs(
++                arp_reachable=neigh.get(norm, False),
++                icmp_reachable=False,
++                fdb_hit=fdb_hit,
++                fdb_poll_ok=fdb_poll_ok,
++                arp_probe_ok=arp_probe_ok,
++                last_fdb_at=last_fdb_at,
++                historical_fdb_at=ctx.get("fdb_hist"),
++                historical_presence_at=ctx.get("fdb_hist"),
++                fritz_last_at=ctx.get("fritz_last"),
++                now=now,
++            )
++        )
++        reports.append(
++            {
++                "mac": norm,
++                "presence_class": presence,
++                "asset_id": ctx.get("asset_id"),
++                "chassis_id": ctx.get("chassis_id"),
++                "trust_level": ctx.get("trust_level"),
++                "fdb_hit": fdb_hit,
++                "fdb_last_at": last_fdb_at.isoformat() if last_fdb_at else None,
++                "neigh_reachable": neigh.get(norm),
++            }
++        )
++    conn.close()
++    return reports
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(description="Read-only MAC presence probe (no SNMP)")
++    parser.add_argument(
++        "macs",
++        nargs="+",
++        help="MAC addresses to probe",
++    )
++    parser.add_argument(
++        "--db",
++        default=os.environ.get("SQLITE_PATH", "/data/db/observatory.db"),
++        help="SQLite database path",
++    )
++    parser.add_argument(
++        "--neigh",
++        type=Path,
++        default=None,
++        help="Optional ip neigh dump file",
++    )
++    parser.add_argument(
++        "--json",
++        action="store_true",
++        help="Emit JSON",
++    )
++    args = parser.parse_args()
++    reports = probe_macs(Path(args.db), args.macs, neigh_path=args.neigh)
++    if args.json:
++        print(json.dumps(reports, indent=2, default=str))
++    else:
++        for r in reports:
++            print(
++                f"{r['mac']}: {r['presence_class']} "
++                f"(asset={r['asset_id']} chassis={r['chassis_id']} fdb={r['fdb_hit']})"
++            )
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/observatory/web/package.json b/observatory/web/package.json
+index 24266b6..046803c 100644
+--- a/observatory/web/package.json
++++ b/observatory/web/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "lan-observatory-web",
+   "private": true,
+-  "version": "0.10.41",
++  "version": "0.10.42",
+   "type": "module",
+   "scripts": {
+     "dev": "vite",
