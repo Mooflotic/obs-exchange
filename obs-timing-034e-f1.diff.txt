@@ -1,0 +1,42 @@
+diff --git a/observatory/docs/obs-timing-034b.md b/observatory/docs/obs-timing-034b.md
+index 837df7d..72871ce 100644
+--- a/observatory/docs/obs-timing-034b.md
++++ b/observatory/docs/obs-timing-034b.md
+@@ -69,6 +69,15 @@ Fondo provvisorio ~**5–11 s**, ceiling ~**48 s**. Da certificare post-deploy (
+ - **`t_total_level_check": "identity"`** — a livello `T_total` i componenti (`T_import`, `T_bootstrap_wall`, `T_uvicorn_to_ready`) sono intervalli consecutivi che partizionano `[epoch_start, epoch_ready]`; la somma è un’**identità aritmetica**, **non** un gate.
+ - Gate di somma con residuo significativo: solo **`T_trust`** e **`T_dry_run`**.
+ 
++### Cosa misura `T_import` (nome ereditato)
++
++`T_import` = `OBS_BOOT_EPOCH_IMPORT_END − OBS_BOOT_EPOCH_START`.  
++Fra i due epoch l’entrypoint esegue solo:
++1. `rm -f` del fragment timing
++2. `mkdir -p /data/db /data/backups`
++
++**Non** è l’import Python del modulo app, né l’import legacy SQLite. Il nome è storico; la grandezza reale è «pre-bootstrap filesystem prep» (tipicamente ~0 s). Non confrontarlo con tempi di `import_legacy` / step 5 bootstrap.
++
+ ## Strumentazione 0.10.26
+ 
+ Entrypoint esporta: `OBS_BOOT_EPOCH_START`, `OBS_BOOT_EPOCH_IMPORT_END`, `OBS_BOOT_EPOCH_BOOTSTRAP_END`, `OBS_BOOT_VERSION`, `OBS_BOOT_TIMING_FILE`.  
+diff --git a/observatory/tests/test_boot_timing.py b/observatory/tests/test_boot_timing.py
+index b79eccf..0698700 100644
+--- a/observatory/tests/test_boot_timing.py
++++ b/observatory/tests/test_boot_timing.py
+@@ -119,7 +119,11 @@ def test_fragment_stale_trust_timers_are_null(tmp_path: Path):
+         epoch_ready=1100.0, env=_env(), fragment_path=frag
+     )
+     assert payload["bootstrap_timing_stale"] is True
++    assert payload["fragment_epoch_start"] == 999.0
++    assert payload["host_epoch_start"] == 1000.0
++    assert payload["needs_apply"] is None
+     assert payload["timers"]["T_prefetch_obs"]["s"] is None
++    assert payload["timers"]["T_trust"]["s"] is None
+     assert payload["timers"]["T_bootstrap_wall"]["s"] == 9.5
+ 
+ 
+@@ -130,4 +134,5 @@ def test_fragment_missing_trust_timers_are_null(tmp_path: Path):
+     )
+     assert payload["bootstrap_timing_missing"] is True
+     assert payload["timers"]["T_prefetch_obs"]["s"] is None
++    assert payload["timers"]["T_backup"]["s"] is None
+     assert payload["timers"]["T_total"]["s"] == 100.0
