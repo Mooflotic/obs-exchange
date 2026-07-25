@@ -1,0 +1,580 @@
+diff --git a/observatory/api/app/bootstrap.py b/observatory/api/app/bootstrap.py
+index a171d5b..5cc84a6 100644
+--- a/observatory/api/app/bootstrap.py
++++ b/observatory/api/app/bootstrap.py
+@@ -227,7 +227,9 @@ def main() -> None:
+             epoch_start_env = os.environ.get("OBS_BOOT_EPOCH_START")
+             try:
+                 epoch_start_val = (
+-                    int(epoch_start_env) if epoch_start_env not in (None, "") else None
++                    round(float(epoch_start_env), 3)
++                    if epoch_start_env not in (None, "")
++                    else None
+                 )
+             except ValueError:
+                 epoch_start_val = None
+diff --git a/observatory/api/app/main.py b/observatory/api/app/main.py
+index c70b5f8..d79b9d5 100644
+--- a/observatory/api/app/main.py
++++ b/observatory/api/app/main.py
+@@ -72,12 +72,6 @@ async def _native_monitor_scheduler() -> None:
+ 
+ @asynccontextmanager
+ async def lifespan(_app: FastAPI):
+-    # OBS-TIMING-034c: one [timing] line at lifespan startup complete (before yield).
+-    # Must never delay or fail boot — emit swallows all exceptions.
+-    from app.services.boot_timing import emit_api_boot_timing
+-
+-    emit_api_boot_timing()
+-
+     task = asyncio.create_task(_unblock_scheduler())
+     settings = get_settings()
+     monitor_task = (
+@@ -85,6 +79,12 @@ async def lifespan(_app: FastAPI):
+         if settings.native_monitor_scheduler_enabled
+         else None
+     )
++    # OBS-TIMING-034d: emit immediately before yield = startup complete.
++    # If lifespan raises before this point, no [timing] line is emitted (diagnostic).
++    # Must never delay or fail boot — emit swallows all exceptions.
++    from app.services.boot_timing import emit_api_boot_timing
++
++    emit_api_boot_timing()
+     try:
+         yield
+     finally:
+diff --git a/observatory/api/app/services/boot_timing.py b/observatory/api/app/services/boot_timing.py
+index 8dcd57d..8196c8f 100644
+--- a/observatory/api/app/services/boot_timing.py
++++ b/observatory/api/app/services/boot_timing.py
+@@ -1,4 +1,4 @@
+-"""Boot timing telemetry (OBS-TIMING-034b/c) — logging only, never raises to callers."""
++"""Boot timing telemetry (OBS-TIMING-034b/c/d) — logging only, never raises to callers."""
+ 
+ from __future__ import annotations
+ 
+@@ -10,11 +10,13 @@ from typing import Any
+ 
+ 
+ def _timer(s: float | None, parent: str | None) -> dict[str, Any]:
++    if s is not None:
++        s = round(float(s), 3)
+     return {"s": s, "parent": parent}
+ 
+ 
+ def _float_or_none(value: Any) -> float | None:
+-    if value is None:
++    if value is None or value == "":
+         return None
+     try:
+         return float(value)
+@@ -22,9 +24,17 @@ def _float_or_none(value: Any) -> float | None:
+         return None
+ 
+ 
++def _epoch_or_none(value: Any) -> float | None:
++    """Parse epoch as float, rounded to 3 decimals (match payload precision)."""
++    parsed = _float_or_none(value)
++    if parsed is None:
++        return None
++    return round(parsed, 3)
++
++
+ def build_api_boot_payload(
+     *,
+-    epoch_ready: int,
++    epoch_ready: float,
+     env: dict[str, str] | None = None,
+     fragment_path: Path | None = None,
+ ) -> dict[str, Any]:
+@@ -32,41 +42,54 @@ def build_api_boot_payload(
+ 
+     Trust timers are merged only when fragment.epoch_start matches host epoch_start.
+     Stale/missing → trust timers null (never 0.0).
++
++    T_uvicorn_to_ready is measured (epoch_ready − epoch_bootstrap_end), never inferred
++    by subtracting wall components from T_total.
+     """
+     env = env if env is not None else dict(os.environ)
+     path = fragment_path or Path(
+         env.get("OBS_BOOT_TIMING_FILE", "/tmp/obs_boot_timing.json")
+     )
+ 
+-    epoch_start_raw = env.get("OBS_BOOT_EPOCH_START")
+-    try:
+-        epoch_start = int(epoch_start_raw) if epoch_start_raw not in (None, "") else None
+-    except ValueError:
+-        epoch_start = None
++    epoch_start = _epoch_or_none(env.get("OBS_BOOT_EPOCH_START"))
++    epoch_bootstrap_end = _epoch_or_none(env.get("OBS_BOOT_EPOCH_BOOTSTRAP_END"))
++    epoch_ready_r = round(float(epoch_ready), 3)
+ 
+     t_import = _float_or_none(env.get("OBS_BOOT_T_IMPORT"))
++    if t_import is not None:
++        t_import = round(t_import, 3)
+     t_bootstrap = _float_or_none(env.get("OBS_BOOT_T_BOOTSTRAP_WALL"))
++    if t_bootstrap is not None:
++        t_bootstrap = round(t_bootstrap, 3)
+     version = (env.get("OBS_BOOT_VERSION") or "").strip() or "unknown"
+ 
+     t_total = None
+-    t_uvicorn_to_ready = None
+     if epoch_start is not None:
+-        t_total = float(epoch_ready - epoch_start)
+-        if t_import is not None and t_bootstrap is not None:
+-            t_uvicorn_to_ready = t_total - t_import - t_bootstrap
++        t_total = round(epoch_ready_r - epoch_start, 3)
++
++    # Measured only — never t_total − t_import − t_bootstrap.
++    t_uvicorn_to_ready = None
++    if epoch_bootstrap_end is not None:
++        t_uvicorn_to_ready = round(epoch_ready_r - epoch_bootstrap_end, 3)
+ 
++    # t_total_level_check: at T_total the components are consecutive intervals that
++    # partition [start, ready], so their sum is an arithmetic identity — NOT a gate.
++    # Real sum gates (with residual meaning) are only T_trust and T_dry_run.
+     payload: dict[str, Any] = {
+         "event": "api_boot",
+         "version": version,
+         "epoch_start": epoch_start,
+-        "epoch_ready": epoch_ready,
++        "epoch_ready": epoch_ready_r,
++        "epoch_bootstrap_end": epoch_bootstrap_end,
+         "needs_backup": None,
+         "needs_apply": None,
++        "t_total_level_check": "identity",
+         "timers": {
+             "T_total": _timer(t_total, None),
+             "T_import": _timer(t_import, "T_total"),
+             "T_bootstrap_wall": _timer(t_bootstrap, "T_total"),
+             # Renamed from T_uvicorn_to_health (external /api/health poll) — 034c.
++            # Measured: epoch_ready − OBS_BOOT_EPOCH_BOOTSTRAP_END (034d).
+             "T_uvicorn_to_ready": _timer(t_uvicorn_to_ready, "T_total"),
+             "T_trust": _timer(None, "T_bootstrap_wall"),
+             "T_dry_run": _timer(None, "T_trust"),
+@@ -80,7 +103,6 @@ def build_api_boot_payload(
+         },
+     }
+ 
+-    frag: dict[str, Any] | None = None
+     if not path.is_file():
+         payload["bootstrap_timing_missing"] = True
+         return payload
+@@ -95,15 +117,11 @@ def build_api_boot_payload(
+         payload["bootstrap_timing_missing"] = True
+         return payload
+ 
+-    frag_epoch = frag.get("epoch_start")
+-    try:
+-        frag_epoch_i = int(frag_epoch) if frag_epoch is not None else None
+-    except (TypeError, ValueError):
+-        frag_epoch_i = None
++    frag_epoch = _epoch_or_none(frag.get("epoch_start"))
+ 
+-    if epoch_start is None or frag_epoch_i is None or frag_epoch_i != epoch_start:
++    if epoch_start is None or frag_epoch is None or frag_epoch != epoch_start:
+         payload["bootstrap_timing_stale"] = True
+-        payload["fragment_epoch_start"] = frag_epoch_i
++        payload["fragment_epoch_start"] = frag_epoch
+         payload["host_epoch_start"] = epoch_start
+         return payload
+ 
+@@ -129,7 +147,7 @@ def build_api_boot_payload(
+ def emit_api_boot_timing() -> None:
+     """Print one [timing] JSON line. Never raises; never blocks startup on failure."""
+     try:
+-        payload = build_api_boot_payload(epoch_ready=int(time.time()))
++        payload = build_api_boot_payload(epoch_ready=time.time())
+         print("[timing] " + json.dumps(payload, separators=(",", ":")), flush=True)
+     except Exception as exc:  # noqa: BLE001 — telemetry must not kill the service
+         try:
+diff --git a/observatory/api/entrypoint.sh b/observatory/api/entrypoint.sh
+index 5dca9e6..1d4caf9 100755
+--- a/observatory/api/entrypoint.sh
++++ b/observatory/api/entrypoint.sh
+@@ -1,10 +1,16 @@
+ #!/bin/sh
+-# OBS-TIMING-034c: exec uvicorn (PID 1). Telemetria emessa in-app (lifespan).
+-# Host timers → env; fragment JSON scritto da bootstrap; emit in main.lifespan.
++# OBS-TIMING-034c/d: exec uvicorn (PID 1). Telemetria emessa in-app (lifespan, pre-yield).
++# Host timers → env; fragment JSON da bootstrap; emit in main.lifespan.
+ set -e
+ BOOT_TIMING_FILE="${OBS_BOOT_TIMING_FILE:-/tmp/obs_boot_timing.json}"
+ export OBS_BOOT_TIMING_FILE="$BOOT_TIMING_FILE"
+ 
++# Epoch sub-secondo: sul container live `date +%s%N` è supportato (verificato 034d),
++# ma usiamo python time.time() per un float diretto (2–3 spawn/boot, no poll loop).
++_obs_epoch() {
++  python -c "import time; print(f'{time.time():.6f}')"
++}
++
+ # Path VERSION accertato C1.1 live: /VERSION (Dockerfile COPY + compose bind).
+ if [ -r /VERSION ]; then
+   OBS_BOOT_VERSION=$(tr -d ' \n\r\t' </VERSION)
+@@ -13,18 +19,21 @@ else
+ fi
+ export OBS_BOOT_VERSION
+ 
+-OBS_BOOT_EPOCH_START=$(date +%s)
++OBS_BOOT_EPOCH_START=$(_obs_epoch)
+ export OBS_BOOT_EPOCH_START
+ 
+ # Fix S2: nessun boot eredita il fragment del precedente (sopravvive a stop+start).
+ rm -f "$BOOT_TIMING_FILE"
+ 
+ mkdir -p /data/db /data/backups
+-T_IMPORT_END=$(date +%s)
+-export OBS_BOOT_T_IMPORT=$((T_IMPORT_END - OBS_BOOT_EPOCH_START))
++T_IMPORT_END=$(_obs_epoch)
++OBS_BOOT_T_IMPORT=$(python -c "print(round(float('$T_IMPORT_END')-float('$OBS_BOOT_EPOCH_START'), 3))")
++export OBS_BOOT_T_IMPORT
+ 
+ python -m app.bootstrap
+-T_BOOT_END=$(date +%s)
+-export OBS_BOOT_T_BOOTSTRAP_WALL=$((T_BOOT_END - T_IMPORT_END))
++OBS_BOOT_EPOCH_BOOTSTRAP_END=$(_obs_epoch)
++export OBS_BOOT_EPOCH_BOOTSTRAP_END
++OBS_BOOT_T_BOOTSTRAP_WALL=$(python -c "print(round(float('$OBS_BOOT_EPOCH_BOOTSTRAP_END')-float('$T_IMPORT_END'), 3))")
++export OBS_BOOT_T_BOOTSTRAP_WALL
+ 
+ exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+diff --git a/observatory/docs/KNOWN_DEBT.md b/observatory/docs/KNOWN_DEBT.md
+index c43cc56..ddad597 100644
+--- a/observatory/docs/KNOWN_DEBT.md
++++ b/observatory/docs/KNOWN_DEBT.md
+@@ -177,3 +177,17 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+ - **Cosa:** `versionLabel` in `App.vue` senza `health.version` mostra solo `__BUILD_ID__` (gg/mm). Sembra una versione valida («24/07»), non un dato mancante.
+ - **Fix quando servirà:** dichiarare esplicitamente «versione non disponibile» (o equivalente) finché `/api/health` non risponde.
+ - **Vietato:** fallback che sembrano un dato valido.
++
++## DEBT-BACKUP-ROTATION-SPLIT
++
++- **Priorità:** media — spazio disco / costi deploy; **fuori perimetro** OBS-TIMING-034* (solo registrazione)
++- **Premessa storica del debt:** le copie `observatory-*.db` da bootstrap trust crescerebbero senza limite (N file). **Da riverificare** con i dati sotto.
++- **EVIDENZA 2026-07-25** (C1.3 / D0.4, nessuna cancellazione):
++  - `pre-deploy-*.db`: **3** file / **7.53 GiB** (8087683072 B)
++  - `observatory-*.db`: **3** file / **7.60 GiB** (8158060544 B al C1.3; poi +1 copy da C1.4 → `observatory-20260725-120044-164566.db` size **2786009088** B — rotazione keep-3 ha lasciato comunque 3 file listati a D0.4)
++  - directory `data/backups` totale: **18924423357** B ≈ **17.6 GiB**
++  - **Delta non spiegato ≈ 2.4 GiB** fra totale directory e somma dei due prefissi `*.db`. **APERTO:** cosa occupa la differenza (altri file? WAL? `.bak`? json snapshot?).
++  - Accoppiamento osservato (mtime): pre-deploy `01:23` → observatory `01:25`; `09:34` → `09:36`. **Ipotesi NON verificata:** un deploy costa due copie da ~2.7 GiB.
++  - Premessa «crescita senza limite»: gli `observatory-*` osservati sono **3**, non N. O qualcosa li ruota (keep-3 in `backup.py`), o ne sono stati creati solo 3. Il debt che afferma crescita illimitata **non è confermato** da questi dati.
++  - Crescita size DB nelle copie: **2.677 → 2.733 → 2.747 GiB** in ~9 h (≈ **+190 MiB/giorno** se il ritmo regge). Rilevante per §13 e dimensionamento 4b.
++- **Vietato in cantieri timing:** modificare `deploy.sh`, `backup.py`, rotazione o retention.
+diff --git a/observatory/docs/obs-timing-034b.md b/observatory/docs/obs-timing-034b.md
+index e65bf57..46f4b03 100644
+--- a/observatory/docs/obs-timing-034b.md
++++ b/observatory/docs/obs-timing-034b.md
+@@ -28,7 +28,8 @@ La copia SQLite effettiva dipende da `bootstrap_should_backup(mode, has_changes=
+ | default codice (`settings.bootstrap_backup`) | **`auto`** |
+ | env nel container | unset → vince il default **`auto`** |
+ 
+-Quindi su restart steady (`needs_apply=False`) ci si aspetta log `backup saltato` e T_backup≈0 (overhead chiamata), non una copy integrale.
++Quindi su restart steady (`needs_apply=False`) ci si aspetta log `backup saltato` e T_backup≈0 (overhead chiamata), non una copy integrale.  
++**Eccezione osservata (C1.4 / D0):** lo stop+start della prova ha trovato `needs_apply=True` / `needs_backup=True` → copy `observatory-20260725-120044-164566.db`, T_backup=**302.3 s**.
+ 
+ ## Numero APERTO (non spiegato)
+ 
+@@ -36,27 +37,41 @@ Quindi su restart steady (`needs_apply=False`) ci si aspetta log `backup saltato
+ |-------|--------------|----------|
+ | Report precedente (pre-034) | **198** | citato come parte di «trust 234.9» |
+ | RUN1 2026-07-25 (obs-3b-iii-baseline-034) | **263.7** | needs_apply=True, needs_backup=True |
++| Boot post-C1.4 (D0, 12:00) | **302.3** | needs_backup=True, structural=53 |
+ 
+-Δ = **+65.7 s (+33% circa)**. Causa: **APERTA** — non spiegata in questo cantiere. Non attribuire a prefetch né a cache senza misura dedicata. (Con `BOOTSTRAP_BACKUP=auto` **non** è candidata l’ipotesi «ogni restart fa copy integrale».)
++Δ RUN1 vs 198 = **+65.7 s (+33% circa)**. Causa: **APERTA**.
+ 
+-## Difetti S1–S4 e risoluzione (034c)
++## Difetti S1–S4 e risoluzione (034c) + correzioni 034d
+ 
+ | ID | Difetto | Risoluzione |
+ |----|---------|-------------|
+-| S1 | Telemetria nell’entrypoint (poll health + python spawn) poteva ritardare/uccidere il boot; uvicorn non era PID 1 | `exec uvicorn` ripristinato; emit `[timing]` in `main.lifespan` avvolto in try/except che non propaga |
+-| S2 | `/tmp/obs_boot_timing.json` sopravvive a `compose stop`+`start` (verificato C1.4) → merge di timer di un boot precedente | `rm -f` del fragment **prima** di bootstrap; merge solo se `fragment.epoch_start == OBS_BOOT_EPOCH_START`; altrimenti `bootstrap_timing_stale` e timer trust=`null` |
+-| S3 | `trap`+background uvicorn non equivale a PID 1 (signal/docker stop) | Eliminata la causa: di nuovo `exec` |
+-| S4 | Nome `T_uvicorn_to_health` riusato per grandezza diversa | Rinominato in **`T_uvicorn_to_ready`** (lifespan startup completo in-process). `epoch_health` → **`epoch_ready`**. Vecchi nomi ritirati. |
++| S1 | Telemetria nell’entrypoint poteva ritardare/uccidere il boot; uvicorn non PID 1 | `exec uvicorn`; emit in lifespan |
++| S2 | fragment `/tmp` sopravvive a stop+start | `rm -f` pre-bootstrap + match `epoch_start` |
++| S3 | trap+background ≠ PID 1 | di nuovo `exec` |
++| S4 | nome/semantica health vs ready | `T_uvicorn_to_ready` / `epoch_ready` |
++| 034d | emit era prima degli scheduler (nome “startup completo” falso) | emit **immediatamente prima dello `yield`** |
++| 034d | `T_uvicorn_to_ready` inferito per sottrazione | misurato: `epoch_ready − OBS_BOOT_EPOCH_BOOTSTRAP_END`; se manca → `null` |
++| 034d | epoch interi (quantizzazione 1 s) | epoch float via `time.time()`, arrotondati a 3 decimali nel payload |
++
++**Conseguenza 034d:** se il lifespan solleva **prima** dello `yield`, **non** viene emessa alcuna riga `[timing]`. L’assenza è diagnostica; non c’è un secondo punto di emissione.
++
++## Livelli e gate di somma
++
++- **`t_total_level_check": "identity"`** — a livello `T_total` i componenti (`T_import`, `T_bootstrap_wall`, `T_uvicorn_to_ready`) sono intervalli consecutivi che partizionano `[epoch_start, epoch_ready]`; la somma è un’**identità aritmetica**, **non** un gate.
++- Gate di somma con residuo significativo: solo **`T_trust`** e **`T_dry_run`**.
+ 
+ ## Strumentazione 0.10.26
+ 
+-Una riga log per boot (emessa a lifespan ready):
++Una riga log per boot (emessa a lifespan startup completo = subito prima di `yield`):
+ 
+ ```text
+-[timing] {"event":"api_boot","version":"...","epoch_start":N,"epoch_ready":N,"needs_backup":bool|null,"needs_apply":bool|null,"timers":{...}}
++[timing] {"event":"api_boot","version":"...","epoch_start":N.NNN,"epoch_ready":N.NNN,"epoch_bootstrap_end":N.NNN,"needs_backup":bool|null,"needs_apply":bool|null,"t_total_level_check":"identity","timers":{...}}
+ ```
+ 
+-Ogni timer ha `{"s": float|null, "parent": "T_..."|null}`.  
+-`T_uvicorn_to_ready`: lifespan startup completo (non poll HTTP). Differenza attesa vs vecchio poll health: sub-secondo; niente quantizzazione a 1 s.
++Precisione:
++- epoch host / ready: float, **3 decimali** nel payload (`time.time()`; sul container live `date +%s%N` è supportato ma l’entrypoint usa python per float diretto)
++- timer trust: già a 3 decimali (`perf_counter`)
++
++`T_uvicorn_to_ready`: misurato in-process (non poll HTTP).
+ 
+-Assert «T_total −35 s» **ritirato** (vedi passo F post-GO). Metro F1–F4 verrà certificato dopo qualificazione rumore (passi D–F).
++Assert «T_total −35 s» **ritirato**. Metro F1–F4 dopo qualificazione rumore post-GO.
+diff --git a/observatory/docs/obs-timing-034d-live.md b/observatory/docs/obs-timing-034d-live.md
+new file mode 100644
+index 0000000..c270da8
+--- /dev/null
++++ b/observatory/docs/obs-timing-034d-live.md
+@@ -0,0 +1,133 @@
++# OBS-TIMING-034d — live D0 (pre-code)
++
++**Data:** 2026-07-25 ~12:11 CEST  
++**GATE D0:** **PASS** (`/api/health` 200, version `0.10.25`)
++
++---
++
++## D0.1 — `docker compose ps`
++
++```text
++NAME                      IMAGE                       COMMAND                  SERVICE     CREATED        STATUS                    PORTS
++observatory-api-1         observatory-api             "/entrypoint.sh"         api         2 hours ago    Up 11 minutes (healthy)   0.0.0.0:18000->8000/tcp
++observatory-collector-1   observatory-collector       "python -m collector…"   collector   41 hours ago   Up 41 hours               
++observatory-proxy-1       caddy:2.8-alpine            "caddy run --config …"   proxy       3 days ago     Up 3 days                 443/tcp, 2019/tcp, 443/udp, 0.0.0.0:8080->80/tcp
++observatory-web-1         observatory-web             "/docker-entrypoint.…"   web         3 hours ago    Up 3 hours                80/tcp
++observatory-zeek-1        observatory-zeek-ja4:prod   "/bin/sh /opt/observ…"   zeek        42 hours ago   Up 42 hours               
++```
++
++---
++
++## D0.2 — health
++
++```text
++--- via Mac proxy :8080 ---
++{"ok":true,"service":"observatory-api","version":"0.10.25"}
++HTTP 200
++
++--- via NAS 127.0.0.1:8080 (proxy) ---
++{"ok":true,"service":"observatory-api","version":"0.10.25"}
++HTTP 200
++
++--- via NAS api diretto :18000 ---
++{"ok":true,"service":"observatory-api","version":"0.10.25"}
++HTTP 200
++```
++
++---
++
++## D0.3 — bootstrap del restart C1.4 (righe, non riassunto)
++
++Ultime 80 righe grezze erano solo traffico ingest (api già up). Bootstrap del boot `epoch=1784973635` (post stop+start C1.4):
++
++```text
++[timing] entrypoint_start epoch=1784973635 nesting=T_total_host contains T_import+T_bootstrap+T_uvicorn
++[timing] T_import=0s (disgiunto: pre-bootstrap only; nested_in T_total=yes)
++[bootstrap] step 1 schema: 0.2s
++[bootstrap] step 2 snmp_cleanup: 0.0s
++[bootstrap] utente admin già presente
++[bootstrap] step 3 admin_user: 0.0s
++[bootstrap] step 4 purge_placeholders: 0.0s
++[bootstrap] skip import legacy
++[bootstrap] step 5 legacy_import: 0.0s
++[bootstrap] backup saltato (nessuna modifica infrastruttura)
++[bootstrap] infrastruttura già riconciliata; conflitti=0
++[bootstrap] step 6 infrastructure: 0.1s
++[bootstrap] override ruolo SPAN già presenti
++[bootstrap] step 7 span_overrides: 0.0s
++[timing] T_trust start nesting=T_trust contains (T_dry_run[T_prefetch_obs+T_prefetch_fdb+T_plan_loop]+T_backup+T_apply); T_backup nested_in T_trust=yes
++[timing] T_dry_run=5.3s (nested_in T_trust=yes) T_prefetch_obs=5.2s T_prefetch_fdb=0.0s T_plan_loop=0.1s T_dry_residuo=0.0s mode=prefetch queries=200
++[bootstrap] trust dry_run: 5.3s mode=prefetch queries=200
++[bootstrap] trust backup: 302.3s
++[timing] T_backup=302.3s (nested_in T_trust=yes, after T_dry_run, needs_backup=True)
++[bootstrap] trust apply: 3.8s
++[timing] T_apply=3.8s (nested_in T_trust=yes, after T_backup)
++[bootstrap] trust v0.4: confermati=80 noti=35 quarantena=26 proposte_archiviate=0 structural=53 timestamp_refresh=7 backup=/data/backups/observatory-20260725-120044-164566.db
++[timing] T_trust=311.5s = T_dry_run 5.3 + T_backup 302.3 + T_apply 3.8 + T_residuo 0.1s
++[timing] HYPOTHESIS T_trust≈T_backup+T_prefetch_obs+residuo → 302.3+5.2+4.0=311.5 (residuo_legacy includes fdb+plan+apply+wrap; T_residuo_trust_wrap=0.1s)
++[bootstrap] step 8 trust: 311.5s
++[bootstrap] backup saltato (nessuna modifica monitor)
++[bootstrap] monitor già riconciliati
++[bootstrap] step 9 monitors: 0.8s
++[bootstrap] Cassiopea NIC 2 ritirati: archiviati=1 già=1
++[bootstrap] step 10 nic2_retire: 0.1s
++[bootstrap] chassis auto=15 changes=0 rule=2
++[bootstrap] step 11 chassis: 2.3s
++[timing] T_bootstrap_wall=327s (nested_in T_total=yes; contains T_trust)
++[timing] entrypoint_exec_uvicorn elapsed_so_far=327s
++INFO:     Application startup complete.
++INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
++```
++
++**Lettura path (dai log):** `needs_backup=True` (riga T_backup); apply eseguito (`structural=53`); backup **non** saltato; durata trust **311.5 s** (di cui backup **302.3 s**).
++
++---
++
++## D0.4 — copia `observatory-*.db` di questo bootstrap
++
++```text
++-rw-r--r-- 1 root root 2786009088 Jul 25 12:01 data/backups/observatory-20260725-120044-164566.db
++```
++
++Nome coincide col path nel log trust. Size **2786009088** B (~2.60 GiB). Non cancellata.
++
++Altre due presenti (keep-3):
++
++```text
++observatory-20260725-101810-501030.db  2747191296
++observatory-20260725-093650-416110.db  2733641728
++```
++
++---
++
++## D0.5 — `/tmp/obs_boot_timing.json`
++
++```text
++-rw-r--r-- 1 root root 23 Jul 25 12:00 /tmp/obs_boot_timing.json
++CONTENTS:
++MARKER_034c_1784973625
++```
++
++Il marker C1.4 **è ancora presente** (non sovrascritto dal bootstrap live: la strumentazione intermedia su 0.10.25 non scriveva il fragment JSON 034b/c). Non cancellato a mano — evidenza S2; il `rm -f` pre-bootstrap di 034c/d lo rimuoverà al prossimo boot deployato.
++
++---
++
++## Verifica `date +%s%N` (D3.1, container live)
++
++```text
++date +%s%N → 1784974328480027463   (supportato)
++date +%s   → 1784974328
++python time.time() → 1784974328.509522
++```
++
++Entrypoint 034d usa `python -c "… time.time() …"` per float diretto (2–3 spawn/boot).
++
++---
++
++## D4.2 — dichiarazione esecuzione test
++
++- **Dove:** locale Mac, `/usr/bin/python3` → **Python 3.9.6** (non container api py3.12)
++- **Comando:** `PYTHONPATH=api python3 -m pytest tests/test_boot_timing.py -v`
++- **Collection:** 4 test in `tests/test_boot_timing.py` (file intero)
++- **Esito:** **4 passed** in 0.06s
++- **Non eseguita:** suite completa del repo (solo questo file). Non dichiarare «suite verde».
+diff --git a/observatory/tests/test_boot_timing.py b/observatory/tests/test_boot_timing.py
+index 4b5eea8..c4efe6f 100644
+--- a/observatory/tests/test_boot_timing.py
++++ b/observatory/tests/test_boot_timing.py
+@@ -1,4 +1,4 @@
+-"""OBS-TIMING-034c: fragment merge integrity (correct / stale / missing)."""
++"""OBS-TIMING-034c/d: fragment merge + measured T_uvicorn_to_ready."""
+ 
+ from __future__ import annotations
+ 
+@@ -8,13 +8,22 @@ from pathlib import Path
+ from app.services.boot_timing import build_api_boot_payload
+ 
+ 
+-def _env(epoch: int = 1000) -> dict[str, str]:
+-    return {
++def _env(
++    epoch: float = 1000.0,
++    *,
++    bootstrap_end: float | None = 1010.0,
++    t_import: str = "0",
++    t_bootstrap: str = "10",
++) -> dict[str, str]:
++    env = {
+         "OBS_BOOT_EPOCH_START": str(epoch),
+-        "OBS_BOOT_T_IMPORT": "0",
+-        "OBS_BOOT_T_BOOTSTRAP_WALL": "10",
++        "OBS_BOOT_T_IMPORT": t_import,
++        "OBS_BOOT_T_BOOTSTRAP_WALL": t_bootstrap,
+         "OBS_BOOT_VERSION": "0.10.26",
+     }
++    if bootstrap_end is not None:
++        env["OBS_BOOT_EPOCH_BOOTSTRAP_END"] = str(bootstrap_end)
++    return env
+ 
+ 
+ def test_fragment_correct_merges_trust_timers(tmp_path: Path):
+@@ -22,7 +31,7 @@ def test_fragment_correct_merges_trust_timers(tmp_path: Path):
+     frag.write_text(
+         json.dumps(
+             {
+-                "epoch_start": 1000,
++                "epoch_start": 1000.0,
+                 "needs_backup": False,
+                 "needs_apply": False,
+                 "T_trust": 12.5,
+@@ -38,16 +47,29 @@ def test_fragment_correct_merges_trust_timers(tmp_path: Path):
+         )
+     )
+     payload = build_api_boot_payload(
+-        epoch_ready=1025, env=_env(1000), fragment_path=frag
++        epoch_ready=1025.0, env=_env(1000.0, bootstrap_end=1010.0), fragment_path=frag
+     )
+     assert payload.get("bootstrap_timing_stale") is None
+     assert payload.get("bootstrap_timing_missing") is None
+     assert payload["needs_apply"] is False
+     assert payload["timers"]["T_prefetch_obs"]["s"] == 11.5
+     assert payload["timers"]["T_prefetch_obs"]["parent"] == "T_dry_run"
+-    assert payload["timers"]["T_uvicorn_to_ready"]["s"] == 15.0  # 25 - 0 - 10
++    # Measured: 1025 − 1010 = 15 (not inferred from t_total − walls)
++    assert payload["timers"]["T_uvicorn_to_ready"]["s"] == 15.0
+     assert "T_uvicorn_to_health" not in payload["timers"]
+-    assert payload["epoch_ready"] == 1025
++    assert payload["epoch_ready"] == 1025.0
++    assert payload["t_total_level_check"] == "identity"
++
++
++def test_uvicorn_to_ready_null_when_bootstrap_end_absent(tmp_path: Path):
++    missing = tmp_path / "does-not-exist.json"
++    env = _env(1000.0, bootstrap_end=None)
++    assert "OBS_BOOT_EPOCH_BOOTSTRAP_END" not in env
++    payload = build_api_boot_payload(
++        epoch_ready=1100.0, env=env, fragment_path=missing
++    )
++    assert payload["timers"]["T_uvicorn_to_ready"]["s"] is None
++    assert payload["timers"]["T_total"]["s"] == 100.0
+ 
+ 
+ def test_fragment_stale_trust_timers_are_null(tmp_path: Path):
+@@ -55,7 +77,7 @@ def test_fragment_stale_trust_timers_are_null(tmp_path: Path):
+     frag.write_text(
+         json.dumps(
+             {
+-                "epoch_start": 999,  # previous boot
++                "epoch_start": 999.0,  # previous boot
+                 "needs_apply": True,
+                 "T_prefetch_obs": 48.3,
+                 "T_trust": 49.0,
+@@ -63,11 +85,11 @@ def test_fragment_stale_trust_timers_are_null(tmp_path: Path):
+         )
+     )
+     payload = build_api_boot_payload(
+-        epoch_ready=1100, env=_env(1000), fragment_path=frag
++        epoch_ready=1100.0, env=_env(1000.0), fragment_path=frag
+     )
+     assert payload["bootstrap_timing_stale"] is True
+-    assert payload["fragment_epoch_start"] == 999
+-    assert payload["host_epoch_start"] == 1000
++    assert payload["fragment_epoch_start"] == 999.0
++    assert payload["host_epoch_start"] == 1000.0
+     assert payload["needs_apply"] is None
+     assert payload["timers"]["T_prefetch_obs"]["s"] is None
+     assert payload["timers"]["T_trust"]["s"] is None
+@@ -78,7 +100,7 @@ def test_fragment_stale_trust_timers_are_null(tmp_path: Path):
+ def test_fragment_missing_trust_timers_are_null(tmp_path: Path):
+     missing = tmp_path / "does-not-exist.json"
+     payload = build_api_boot_payload(
+-        epoch_ready=1100, env=_env(1000), fragment_path=missing
++        epoch_ready=1100.0, env=_env(1000.0), fragment_path=missing
+     )
+     assert payload["bootstrap_timing_missing"] is True
+     assert payload["timers"]["T_prefetch_obs"]["s"] is None
