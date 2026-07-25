@@ -1,0 +1,468 @@
+diff --git a/observatory/VERSION b/observatory/VERSION
+index dbca4f3..61012ac 100644
+--- a/observatory/VERSION
++++ b/observatory/VERSION
+@@ -1 +1 @@
+-0.10.25
++0.10.26
+diff --git a/observatory/api/app/bootstrap.py b/observatory/api/app/bootstrap.py
+index 722bc13..9d6eb40 100644
+--- a/observatory/api/app/bootstrap.py
++++ b/observatory/api/app/bootstrap.py
+@@ -6,6 +6,8 @@ during this process — trust dry_run→apply may reuse a single scan plan safel
+ 
+ from __future__ import annotations
+ 
++import json
++import os
+ import time
+ from pathlib import Path
+ 
+@@ -27,6 +29,9 @@ from app.services.trust import (
+     trust_needs_backup,
+ )
+ 
++# Fragment letto da entrypoint.sh per la riga [timing] JSON unica (OBS-TIMING-034b).
++_BOOT_TIMING_FILE = Path(os.environ.get("OBS_BOOT_TIMING_FILE", "/tmp/obs_boot_timing.json"))
++
+ 
+ def _step_start() -> float:
+     return time.perf_counter()
+@@ -159,11 +164,21 @@ def main() -> None:
+ 
+         # Single-pass trust: dry_run builds the plan; apply reuses it (no second scan).
+         # Safe because bootstrap is single-threaded pre-uvicorn (no concurrent writers).
++        #
++        # TIMING (OBS-TIMING-034b): fragment JSON → entrypoint emette UNA riga [timing].
++        # Nesting: T_trust ⊂ T_bootstrap_wall ⊂ T_total;
++        #   T_dry_run/T_backup/T_apply ⊂ T_trust;
++        #   T_prefetch_obs/T_prefetch_fdb/T_plan_loop ⊂ T_dry_run.
++        # T_backup è CONDIZIONATO a needs_apply (e a needs_backup per la copy SQLite).
+         t0 = _step_start()
+         t_sub = time.perf_counter()
+         trust_preview = reconcile_trust_history(db, dry_run=True)
+         dry_s = time.perf_counter() - t_sub
+         scan = trust_preview.get("scan_stats") or {}
++        t_prefetch_obs = float(scan.get("t_prefetch_obs_s") or 0.0)
++        t_prefetch_fdb = float(scan.get("t_prefetch_fdb_s") or 0.0)
++        t_plan_loop = float(scan.get("t_plan_loop_s") or 0.0)
++        t_dry_residuo = dry_s - (t_prefetch_obs + t_prefetch_fdb + t_plan_loop)
+         print(
+             f"[bootstrap] trust dry_run: {dry_s:.1f}s "
+             f"mode={scan.get('mode', '?')} queries={scan.get('queries', '?')}"
+@@ -174,16 +189,20 @@ def main() -> None:
+         # BOOTSTRAP_BACKUP=always still forces backup via has_changes=False path.
+         needs_backup = trust_needs_backup(trust_preview)
+         needs_apply = trust_needs_apply(trust_preview)
++        backup_s = 0.0
++        apply_s = 0.0
+         if needs_apply:
+             t_sub = time.perf_counter()
+             backup = _bootstrap_backup(
+                 db, settings, has_changes=needs_backup, reason="trust"
+             )
+-            print(f"[bootstrap] trust backup: {time.perf_counter() - t_sub:.1f}s")
++            backup_s = time.perf_counter() - t_sub
++            print(f"[bootstrap] trust backup: {backup_s:.1f}s")
+             t_sub = time.perf_counter()
+             trust_applied = reconcile_trust_history(db, dry_run=False, plan=trust_plan)
+             db.commit()
+-            print(f"[bootstrap] trust apply: {time.perf_counter() - t_sub:.1f}s")
++            apply_s = time.perf_counter() - t_sub
++            print(f"[bootstrap] trust apply: {apply_s:.1f}s")
+             ts_n = trust_applied.get("timestamp_refreshes", 0)
+             print(
+                 f"[bootstrap] trust v0.4: confermati={trust_applied['confirmed_present']} "
+@@ -196,8 +215,32 @@ def main() -> None:
+         else:
+             t_sub = time.perf_counter()
+             _bootstrap_backup(db, settings, has_changes=False, reason="trust")
+-            print(f"[bootstrap] trust backup: {time.perf_counter() - t_sub:.1f}s")
++            backup_s = time.perf_counter() - t_sub
++            print(f"[bootstrap] trust backup: {backup_s:.1f}s")
+             print("[bootstrap] trust apply: 0.0s")
++        t_trust = time.perf_counter() - t0
++        t_residuo = t_trust - (dry_s + backup_s + apply_s)
++        # Fragment for entrypoint one-line [timing] JSON (logging only).
++        try:
++            _BOOT_TIMING_FILE.write_text(
++                json.dumps(
++                    {
++                        "needs_backup": bool(needs_backup),
++                        "needs_apply": bool(needs_apply),
++                        "T_trust": round(t_trust, 3),
++                        "T_dry_run": round(dry_s, 3),
++                        "T_prefetch_obs": round(t_prefetch_obs, 3),
++                        "T_prefetch_fdb": round(t_prefetch_fdb, 3),
++                        "T_plan_loop": round(t_plan_loop, 3),
++                        "T_dry_residuo": round(t_dry_residuo, 3),
++                        "T_backup": round(backup_s, 3),
++                        "T_apply": round(apply_s, 3),
++                        "T_residuo_trust": round(t_residuo, 3),
++                    }
++                )
++            )
++        except OSError as exc:
++            print(f"[bootstrap] timing fragment write failed: {exc}", flush=True)
+         _step_end(8, "trust", t0)
+ 
+         t0 = _step_start()
+diff --git a/observatory/api/app/services/trust.py b/observatory/api/app/services/trust.py
+index 1ed2bfa..3d5bc18 100644
+--- a/observatory/api/app/services/trust.py
++++ b/observatory/api/app/services/trust.py
+@@ -412,13 +412,22 @@ def _build_trust_plan(
+     pure in-memory loop. ``use_prefetch=False`` keeps the legacy ~2N Observation
+     / FDB queries for equivalence tests only.
+     """
++    import time as _time
++
+     with _count_db_queries(db) as qstats:
+         portal_by_mac: dict[str, tuple[datetime, datetime]] | None = None
+         fdb_by_asset: dict[int, datetime] | None = None
++        t_prefetch_obs = 0.0
++        t_prefetch_fdb = 0.0
+         if use_prefetch:
++            t0 = _time.perf_counter()
+             portal_by_mac = _prefetch_portal_first_last_by_mac(db)
++            t_prefetch_obs = _time.perf_counter() - t0
++            t0 = _time.perf_counter()
+             fdb_by_asset = _prefetch_fdb_last_by_asset(db)
++            t_prefetch_fdb = _time.perf_counter() - t0
+ 
++        t_plan0 = _time.perf_counter()
+         report = _empty_trust_report()
+         actions: list[dict] = []
+         for asset in db.scalars(select(Asset)).all():
+@@ -524,9 +533,14 @@ def _build_trust_plan(
+                 }
+             )
+ 
++        t_plan = _time.perf_counter() - t_plan0
+         scan_stats = {
+             "mode": "prefetch" if use_prefetch else "nplus1",
+             "queries": qstats["queries"],
++            # Timing only (OBS-TIMING-034b). Parents: *_obs/fdb/loop ⊂ T_dry_run ⊂ T_trust.
++            "t_prefetch_obs_s": round(t_prefetch_obs, 3),
++            "t_prefetch_fdb_s": round(t_prefetch_fdb, 3),
++            "t_plan_loop_s": round(t_plan, 3),
+         }
+     return {
+         "report": report,
+diff --git a/observatory/api/entrypoint.sh b/observatory/api/entrypoint.sh
+index 4f2e99c..1a66bc8 100755
+--- a/observatory/api/entrypoint.sh
++++ b/observatory/api/entrypoint.sh
+@@ -1,5 +1,102 @@
+ #!/bin/sh
++# TIMING MAP (OBS-TIMING-034b) — una riga [timing] JSON a fine boot (health 200).
++#   T_total parent=null          = epoch_start → epoch_health
++#     T_import parent=T_total
++#     T_bootstrap_wall parent=T_total  (contiene T_trust da bootstrap)
++#     T_uvicorn_to_health parent=T_total
+ set -e
++BOOT_TIMING_FILE="${OBS_BOOT_TIMING_FILE:-/tmp/obs_boot_timing.json}"
++VERSION=$(cat /VERSION 2>/dev/null || echo unknown)
++EPOCH_START=$(date +%s)
++
+ mkdir -p /data/db /data/backups
++T_IMPORT_END=$(date +%s)
++T_IMPORT=$((T_IMPORT_END - EPOCH_START))
++
+ python -m app.bootstrap
+-exec uvicorn app.main:app --host 0.0.0.0 --port 8000
++T_BOOT_END=$(date +%s)
++T_BOOTSTRAP_WALL=$((T_BOOT_END - T_IMPORT_END))
++
++# Uvicorn in background: serve epoch_health sullo stesso stream di log.
++# Trap: PID 1 è questa shell — inoltra SIGTERM/INT a uvicorn (docker stop).
++uvicorn app.main:app --host 0.0.0.0 --port 8000 &
++UV_PID=$!
++trap 'kill -TERM "$UV_PID" 2>/dev/null; wait "$UV_PID"; exit $?' TERM INT
++
++EPOCH_HEALTH=""
++i=0
++while [ "$i" -lt 600 ]; do
++  if python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2)" \
++    >/dev/null 2>&1; then
++    EPOCH_HEALTH=$(date +%s)
++    break
++  fi
++  # Se uvicorn è morto durante il wait, esci subito
++  if ! kill -0 "$UV_PID" 2>/dev/null; then
++    wait "$UV_PID" || true
++    break
++  fi
++  i=$((i + 1))
++  sleep 1
++done
++
++T_TOTAL=""
++T_UVICORN=""
++if [ -n "$EPOCH_HEALTH" ]; then
++  T_TOTAL=$((EPOCH_HEALTH - EPOCH_START))
++  T_UVICORN=$((EPOCH_HEALTH - T_BOOT_END))
++fi
++
++# Merge bootstrap fragment + host timers → una riga machine-parsable.
++export BOOT_TIMING_FILE VERSION EPOCH_START EPOCH_HEALTH
++export T_IMPORT T_BOOTSTRAP_WALL T_TOTAL T_UVICORN
++python - <<'PY'
++import json, os
++from pathlib import Path
++
++path = Path(os.environ["BOOT_TIMING_FILE"])
++frag = {}
++if path.is_file():
++    try:
++        frag = json.loads(path.read_text())
++    except Exception as exc:  # noqa: BLE001
++        frag = {"bootstrap_timing_error": str(exc)}
++
++def timer(s, parent):
++    if s is None or s == "":
++        return {"s": None, "parent": parent}
++    return {"s": float(s), "parent": parent}
++
++t_total = os.environ.get("T_TOTAL") or None
++t_import = os.environ.get("T_IMPORT") or "0"
++t_boot = os.environ.get("T_BOOTSTRAP_WALL") or "0"
++t_uvi = os.environ.get("T_UVICORN") or None
++epoch_health = os.environ.get("EPOCH_HEALTH") or None
++
++payload = {
++    "event": "api_boot",
++    "version": os.environ.get("VERSION") or "unknown",
++    "epoch_start": int(os.environ["EPOCH_START"]),
++    "epoch_health": int(epoch_health) if epoch_health else None,
++    "needs_backup": frag.get("needs_backup"),
++    "needs_apply": frag.get("needs_apply"),
++    "timers": {
++        "T_total": timer(t_total, None),
++        "T_import": timer(t_import, "T_total"),
++        "T_bootstrap_wall": timer(t_boot, "T_total"),
++        "T_uvicorn_to_health": timer(t_uvi, "T_total"),
++        "T_trust": timer(frag.get("T_trust"), "T_bootstrap_wall"),
++        "T_dry_run": timer(frag.get("T_dry_run"), "T_trust"),
++        "T_prefetch_obs": timer(frag.get("T_prefetch_obs"), "T_dry_run"),
++        "T_prefetch_fdb": timer(frag.get("T_prefetch_fdb"), "T_dry_run"),
++        "T_plan_loop": timer(frag.get("T_plan_loop"), "T_dry_run"),
++        "T_dry_residuo": timer(frag.get("T_dry_residuo"), "T_dry_run"),
++        "T_backup": timer(frag.get("T_backup"), "T_trust"),
++        "T_apply": timer(frag.get("T_apply"), "T_trust"),
++        "T_residuo_trust": timer(frag.get("T_residuo_trust"), "T_trust"),
++    },
++}
++print("[timing] " + json.dumps(payload, separators=(",", ":")), flush=True)
++PY
++
++wait "$UV_PID"
+diff --git a/observatory/docs/obs-3b-iii-baseline-034.md b/observatory/docs/obs-3b-iii-baseline-034.md
+new file mode 100644
+index 0000000..9876839
+--- /dev/null
++++ b/observatory/docs/obs-3b-iii-baseline-034.md
+@@ -0,0 +1,160 @@
++# OBS-DB-SLIM 3b-iii — PASSO 0 baseline riconciliata (GATE)
++
++**Data misura:** 2026-07-25  
++**Host:** Cassiopea `0.10.25` (health verificato)  
++**Strumentazione:** timer nidificati in `entrypoint.sh` + `bootstrap.py` + `trust.py`  
++(`T_prefetch_obs` = sola lettura Observation portal; codice di misura syncato su api, VERSION invariata)
++
++---
++
++## Nidificazione dichiarata (struttura reale)
++
++```
++T_total (host: container StartedAt → primo /api/health 200)
++  ├── T_import          DISGIUNTO (pre-bootstrap; ~0 s)
++  └── T_bootstrap_wall  NIDIFICATO in T_total
++        └── T_trust     NIDIFICATO in T_bootstrap (step 8)
++              ├── T_dry_run     NIDIFICATO in T_trust
++              │     ├── T_prefetch_obs   NIDIFICATO in dry_run  ← Observation
++              │     ├── T_prefetch_fdb   NIDIFICATO in dry_run
++              │     └── T_plan_loop      NIDIFICATO in dry_run
++              ├── T_backup      NIDIFICATO in T_trust, DOPO dry_run
++              └── T_apply       NIDIFICATO in T_trust, DOPO backup
++        T_residuo_trust = T_trust − (T_dry_run + T_backup + T_apply)
++```
++
++**T_backup è NIDIFICATO dentro T_trust** (non disgiunto).
++
++---
++
++## Previsione da falsificare (dichiarata PRIMA, testo piano)
++
++> ipotesi = il backup è NIDIFICATO dentro T_trust, e  
++> T_trust ≈ T_backup + T_prefetch + T_residuo con T_residuo ≈ 1.8 s.
++
++### Verdetto ipotesi
++
++| Parte | Esito |
++|-------|--------|
++| Backup NIDIFICATO in T_trust | **CONFERMATA** (log espliciti + somma componenti) |
++| T_trust ≈ T_backup + T_prefetch_obs + residuo | **CONFERMATA come identità aritmetica** se residuo = tutto ciò che non è backup né prefetch_obs |
++| T_residuo ≈ 1.8 s nel senso del report precedente | **FALSIFICATA come etichetta** |
++
++**Struttura reale del “buco” 1.8 s del report precedente:**  
++quel report scriveva `trust 234.9 = prefetch 35.1 + backup 198` (somma 233.1) e ometteva **T_apply**.  
++Con la strumentazione: `T_residuo_trust` (wrap) ≈ **0.0 s**; i ~1.5–1.8 s sono **T_apply**, componente separata nidificata in T_trust, non “residuo misterioso”.
++
++Forma corretta:
++
++`T_trust = T_dry_run + T_backup + T_apply + T_residuo_trust`  
++con `T_dry_run ≈ T_prefetch_obs + T_prefetch_fdb + T_plan_loop` e `T_residuo_trust ≈ 0`.
++
++---
++
++## Misure (solo numeri osservati)
++
++### RUN1 — path strutturale (needs_backup=True, needs_apply=True)
++
++Primo avvio dopo rebuild strumentazione.
++
++| Timer | Valore (s) | Note |
++|-------|------------|------|
++| T_total | **291** | entrypoint epoch 1784967475 → health epoch 1784967766 |
++| T_import | **0** | misurato |
++| T_bootstrap_wall | **286** | misurato |
++| T_trust | **276.3** | misurato |
++| T_dry_run | **11.1** | nested in T_trust |
++| T_prefetch_obs | **10.9** | nested in dry_run |
++| T_prefetch_fdb | **0.0** | nested in dry_run |
++| T_plan_loop | **0.1** | nested in dry_run |
++| T_dry_residuo | **0.0** | calcolato: 11.1−(10.9+0.0+0.1) |
++| T_backup | **263.7** | nested in T_trust |
++| T_apply | **1.5** | nested in T_trust |
++| T_residuo_trust | **0.0** | calcolato: 276.3−(11.1+263.7+1.5) |
++
++Somma check livello trust: 11.1+263.7+1.5+0.0 = **276.3** (Δ 0.0 s) → **PASS ±2 s**.
++
++Health: `{"ok":true,"version":"0.10.25"}`.
++
++### RUN2 — path steady (needs_apply=False → backup skip)
++
++Cold `compose stop` + `start`, nessuna modifica funzionale.
++
++| Timer | Valore (s) |
++|-------|------------|
++| T_total | **60** |
++| T_bootstrap_wall | **55** |
++| T_trust | **49.0** |
++| T_dry_run | **48.9** |
++| T_prefetch_obs | **48.3** |
++| T_prefetch_fdb | **0.4** |
++| T_plan_loop | **0.3** |
++| T_dry_residuo | **0.0** |
++| T_backup | **0.0** (skip) |
++| T_apply | **0.0** (skip) |
++| T_residuo_trust | **0.0** |
++
++Somma: 48.9+0+0+0 = 49.0 → **PASS ±2 s**.
++
++### RUN3 — stesso path di RUN2 (terza misura per rumore)
++
++Cold stop/start, nessuna modifica funzionale.
++
++| Timer | Valore (s) |
++|-------|------------|
++| T_total | **29** |
++| T_bootstrap_wall | **23** |
++| T_trust | **17.1** |
++| T_dry_run | **17.0** |
++| T_prefetch_obs | **16.7** |
++| T_prefetch_fdb | **0.1** |
++| T_plan_loop | **0.3** |
++| T_dry_residuo | **0.0** |
++| T_backup | **0.0** (skip) |
++| T_apply | **0.0** (skip) |
++| T_residuo_trust | **0.0** |
++
++Somma: 17.0+0+0+0 = 17.1 → **PASS ±2 s**.
++
++---
++
++## Coerenza run-to-run (GATE 0c)
++
++### Path confrontabile: RUN2 vs RUN3 (entrambi backup=0)
++
++| Metrica | RUN2 | RUN3 | Δ run-to-run |
++|---------|------|------|--------------|
++| T_prefetch_obs | 48.3 | 16.7 | **31.6 s** |
++| T_trust | 49.0 | 17.1 | **31.9 s** |
++| T_total | 60 | 29 | **31 s** |
++
++Δ atteso post-fix (rimozione prefetch) citato dal piano: **≈ −35 s**.  
++Dispersione misurata sullo stesso path: **≈ 32 s** → **non** “nettamente inferiore” al segnale.
++
++### RUN1 non confrontabile con RUN2/3
++
++RUN1 ha eseguito backup strutturale (**263.7 s**). Dopo l’apply, RUN2/3 hanno `needs_apply=False` → T_backup=0.  
++Media RUN1+RUN2 sarebbe un **miscuglio di due path diversi** → non usata come metro.
++
++---
++
++## GATE 0
++
++| Criterio | Esito |
++|----------|--------|
++| (a) somma componenti = totale livello ±2 s, nidificazione dichiarata | **PASS** (tutte e 3 le run) |
++| (b) T_residuo calcolato e spiegato | **PASS** (sempre 0.0 s wrap; il vecchio “1.8” era T_apply) |
++| (c) due run coerenti; rumore ≪ 35 s | **FAIL** (Δ prefetch 31.6 s su path steady) |
++
++### GATE 0 = **FAIL**
++
++**STOP.** Nessuna modifica funzionale (passi 1–7 non avviati).  
++Nessun metro ufficiale “media di due run” per gli assert del passo 9: la baseline riconciliata **non è certificabile** finché il rumore prefetch non è sotto controllo o l’assert −35 s non viene riformulato (es. assert su `T_prefetch_obs=0` + budget su mediana/IQR di N run).
++
++---
++
++## Nota operativa
++
++- Live resta `0.10.25` con **solo** strumentazione timer (nessun bump VERSION).  
++- Per riprodurre: greppare `docker logs` per `[timing]`.  
++- Non iniziare 4b. Non DROP tabella `observations`.
+diff --git a/observatory/docs/obs-timing-034b.md b/observatory/docs/obs-timing-034b.md
+new file mode 100644
+index 0000000..b362fd1
+--- /dev/null
++++ b/observatory/docs/obs-timing-034b.md
+@@ -0,0 +1,37 @@
++# OBS-TIMING-034b — note di merito (pre-deploy)
++
++**VERSION target:** 0.10.26 (solo strumentazione timer; zero funzionale)  
++**3b-iii:** CONGELATO fino a invariante 1 (main = tag = produzione)
++
++## Correzione ritirata
++
++La formulazione «bootstrap ~275 s di cui backup ~198 s» è **ritirata**.
++
++Descriveva un boot sul **path apply** (`needs_apply=True` → backup SQLite possibile), non il caso generale. In produzione, dopo un apply riuscito, i restart successivi tipicamente hanno `needs_apply=False` e **T_backup = 0**.
++
++Il backup del trust bootstrap è **condizionato**:
++- a `needs_apply` (ramo apply del bootstrap)
++- e, dentro quel ramo, a `needs_backup` / `BOOTSTRAP_BACKUP` per l’effettiva copy SQLite
++
++Confrontare o mediare T_total / T_trust tra run con `needs_apply` diversi è vietato (è l’errore che ha invalidato la baseline 3b-iii GATE 0).
++
++## Numero APERTO (non spiegato)
++
++| Fonte | T_backup (s) | Contesto |
++|-------|--------------|----------|
++| Report precedente (pre-034) | **198** | citato come parte di «trust 234.9» |
++| RUN1 2026-07-25 (obs-3b-iii-baseline-034) | **263.7** | needs_apply=True, needs_backup=True |
++
++Δ = **+65.7 s (+33% circa)**. Causa: **APERTA** — non spiegata in questo cantiere. Non attribuire a prefetch né a cache senza misura dedicata.
++
++## Strumentazione 0.10.26
++
++Una riga log per boot:
++
++```text
++[timing] {"event":"api_boot","version":"...","epoch_start":N,"epoch_health":N,"needs_backup":bool,"needs_apply":bool,"timers":{...}}
++```
++
++Ogni timer ha `{"s": float|null, "parent": "T_..."|null}` (nidificazione nel dato).
++
++Assert «T_total −35 s» **ritirato** (vedi passo F post-GO). Metro F1–F4 verrà certificato dopo qualificazione rumore (passi D–F).
