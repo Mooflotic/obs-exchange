@@ -1,0 +1,1823 @@
+===== W4a WAVE DIFF (tracked changes) =====
+diff --git a/observatory/.env.example b/observatory/.env.example
+index 70bb5b3..3096dcb 100644
+--- a/observatory/.env.example
++++ b/observatory/.env.example
+@@ -155,6 +155,8 @@ SCORING_CALIBRATED=false
+ LEARNING_PERIOD_DAYS=14
+ LEARNING_PERIOD_CYCLES=50
+ DRIFT_SHADOW_MODE=true
++# W2 shadow fact writers (kill switch a caldo; false spegne le sole scritture assertion)
++FACT_SHADOW_WRITERS_ENABLED=true
+ NOTIFICATIONS_ENABLED=false
+ # --- M6/M8 detector e sensori opzionali (singolarmente attivabili) ---
+ DETECTORS_ENABLED=
+diff --git a/observatory/CHANGELOG.md b/observatory/CHANGELOG.md
+index 677f6ee..93a3cf0 100644
+--- a/observatory/CHANGELOG.md
++++ b/observatory/CHANGELOG.md
+@@ -1,8 +1,45 @@
+ # Changelog
+ 
++## 0.10.48 — W4a: soggetto chassis e soppressione proposte a monte
++
++- **W4a:** NameProposal generate/soppresse per soggetto chassis (manual blocca autorità inferiore; dedup `(chassis, valore)`); risolvibilità calcolata; sibling come interfacce.
++- **W4a.0:** `facts/shadow.py` tracciato; DEBT-IFACE-IP-CARDINALITY-ROLE; DEBT-FRITZ-TR064-CREDENTIALS (STOP-5); `subject_ref_interface` rifiuta multi-NIC senza primary.
++- **Non toccato:** adopt/rename 409 (W4b); shadow `asset.name`.
++- Report: [`docs/obs-w4a.md`](docs/obs-w4a.md).
++
++## 0.10.47 — W2: shadow writers fact_assertion
++
++- **W2:** scritture parallele `asset.iface_ip` (soggetto=interfaccia, excl_key=`asset.iface_ip:{iface_id}`); nessun consumatore legge ancora.
++- **S1:** barriera + SAVEPOINT; kill switch `FACT_SHADOW_WRITERS_ENABLED`; circuit breaker (20k righe / 2k/giorno / 50 MiB).
++- **Non collegato:** `asset.name` (chassis → W4a/W4b). Observability: `GET /api/admin/facts/shadow-stats`.
++- Report: [`docs/obs-w2.md`](docs/obs-w2.md).
++
++## 0.10.46 — W-D-fix: discriminante multi-IP sul dedup
++
++- **X.2:** `entity_key` resta MAC-scoped; `compute_dedup_key` ripristina discriminante IP (`fact_discriminant_for`) — DEBT-TOPO-IP-CONTEXTUAL ripristinato.
++- **X.4:** lift Fritz → `known` (non `confirmed_present`); decisione in `on_fritz_active_evidence` (trust).
++- **Debiti:** DEBT-LASTSEEN-DUAL-SEMANTICS. W2 → **0.10.47**.
++- Report: [`docs/obs-wd-fix.md`](docs/obs-wd-fix.md).
++
++## 0.10.45 — W-D: sblocco gate W2 (T-b, T-e, T-f)
++
++- **T-b:** `entity_key_for` MAC-scoped quando MAC noto; IP-only provisional (`identity_provisional`) + DEBT-PROVISIONAL-IDENTITY-MERGE.
++- **T-e/T-f:** demotion IP chiude `last_seen=now` → `resolve_asset_by_ip_at` trova il detentore storico.
++- **D.0.b:** `lift_fritz_quarantine_on_active` (trust) — quarantena non assorbente; inventory resta bloccata.
++- **Debiti:** DEBT-DOUBLE-CURRENT-IP; Cassiopea ri-caratterizzata chassis (W4a/W4b); alembic unificato in DEBT-ALEMBIC-BASELINE-LEGACY-TABLE. W2 writers → **0.10.46** (poi **0.10.47** in W-D-fix).
++- Report: [`docs/obs-wd.md`](docs/obs-wd.md).
++
++## 0.10.44 — F1-bis: DEBT-RECONCILE-CHURN-1 + riqualifica gate F1
++
++- **W-C:** `inventory_may_set_operational_state` non solleva/smasha `trust_quarantine` (`fritz_historical`) — chiude DEBT-RECONCILE-CHURN-1 (classe, non asset 116). Test zero-iface obbligatorio.
++- **W-B.3:** script una-tantum `scripts/normalize_empty_manual_names.py` (asset 98/150 name manual vuoto → assenza; no bump).
++- **Debiti:** DEBT-IP-CURRENT-SCOPE-PER-ASSET (Cassiopea asset 6). W2 slitta a **0.10.45** (poi rinumerato → **0.10.46** in W-D).
++- Report: [`docs/obs-f1bis.md`](docs/obs-f1bis.md).
++
+ ## 0.10.43 — OBS-IDENTITY W1.5-bis gate closure
+ 
+-- **W1.5-bis:** rimossa soglia E3 inventata (`mac_count_threshold` solo se misurata); test limiti E5-physical (D.2); tool RO `obs_identity_linker_dryrun.py`. Nessun writer identity acceso. W2 shadow writers slitta a **0.10.44**. Debiti: DEBT-RECONCILE-CHURN-1 (asset 116), DEBT-E3-AVAILABLE-FALSE.
++- **W1.5-bis:** rimossa soglia E3 inventata (`mac_count_threshold` solo se misurata); test limiti E5-physical (D.2); tool RO `obs_identity_linker_dryrun.py`. Nessun writer identity acceso. W2 shadow writers slitta a **0.10.44** (poi rinumerato → **0.10.45** in F1-bis). Debiti: DEBT-RECONCILE-CHURN-1 (asset 116), DEBT-E3-AVAILABLE-FALSE.
++- **MAC↔IP (fixture):** classifier puro `mac_ip_policy.py` + 9 test contratto; **non** wired a reconcile/trust (DEBT-MAC-IP-POLICY-WIRE → W7).
+ 
+ ## 0.10.42 — W1.5 identity-evidence (deployata)
+ 
+diff --git a/observatory/VERSION b/observatory/VERSION
+index a548662..7684286 100644
+--- a/observatory/VERSION
++++ b/observatory/VERSION
+@@ -1 +1 @@
+-0.10.43
++0.10.48
+diff --git a/observatory/api/app/bootstrap.py b/observatory/api/app/bootstrap.py
+index 2be9ab4..b243296 100644
+--- a/observatory/api/app/bootstrap.py
++++ b/observatory/api/app/bootstrap.py
+@@ -133,12 +133,16 @@ def main() -> None:
+             reconcile_ssdp_name_proposals,
+             reconcile_weak_oui_proposals,
+         )
++        from app.services.name_proposal_chassis import (
++            reconcile_chassis_name_proposal_suppression,
++        )
+         from app.services.topology import reconcile_stale_move_suggestions
+ 
+         ssdp_fix = reconcile_ssdp_name_proposals(db)
+         oui_fix = reconcile_weak_oui_proposals(db)
+         bare_fix = reconcile_bare_oui_collisions(db)
+         move_fix = reconcile_stale_move_suggestions(db)
++        chassis_np = reconcile_chassis_name_proposal_suppression(db)
+         if (
+             ssdp_fix["rewritten"]
+             or ssdp_fix["archived"]
+@@ -146,6 +150,8 @@ def main() -> None:
+             or bare_fix["rewritten"]
+             or bare_fix["archived"]
+             or move_fix["rejected"]
++            or chassis_np["archived_a"]
++            or chassis_np["archived_b"]
+         ):
+             db.commit()
+             print(
+@@ -153,7 +159,9 @@ def main() -> None:
+                 f"rewritten={ssdp_fix['rewritten']} archived={ssdp_fix['archived']}; "
+                 f"oui weak archived={oui_fix['archived']}; "
+                 f"oui bare rewritten={bare_fix['rewritten']} archived={bare_fix['archived']}; "
+-                f"move uplink rejected={move_fix['rejected']}"
++                f"move uplink rejected={move_fix['rejected']}; "
++                f"chassis NP archived_a={chassis_np['archived_a']} "
++                f"archived_b={chassis_np['archived_b']}"
+             )
+         _step_end(4, "purge_placeholders", t0)
+ 
+diff --git a/observatory/api/app/config.py b/observatory/api/app/config.py
+index c796e50..0e00542 100644
+--- a/observatory/api/app/config.py
++++ b/observatory/api/app/config.py
+@@ -99,6 +99,8 @@ class Settings(BaseSettings):
+     learning_period_days: int = 14
+     learning_period_cycles: int = 50
+     drift_shadow_mode: bool = True
++    # W2: parallel fact_assertion writers (no consumers). Hot kill switch — no redeploy.
++    fact_shadow_writers_enabled: bool = True
+     notifications_enabled: bool = False
+     notification_webhook_url: str = ""
+     notification_telegram_bot_token: str = ""
+diff --git a/observatory/api/app/facts/registry.py b/observatory/api/app/facts/registry.py
+index c0faf54..e311df2 100644
+--- a/observatory/api/app/facts/registry.py
++++ b/observatory/api/app/facts/registry.py
+@@ -63,6 +63,30 @@ def subject_ref_asset(entity: Any) -> tuple[str, int]:
+     return ("asset", int(asset.id))
+ 
+ 
++def subject_ref_interface(entity: Any) -> tuple[str, int]:
++    """IP currency subject is the NIC (W2 — never asset-scoped exclusivity).
++
++    Multi-NIC without a marked primary → raise (I2: no plausible guess). S1 barrier
++    isolates the error when called from shadow writers.
++    """
++    if isinstance(entity, Interface):
++        return ("interface", int(entity.id))
++    asset = _entity_asset(entity)
++    if asset is None:
++        raise ValueError("subject_ref_interface requires Asset or Interface")
++    ifaces = list(asset.interfaces or [])
++    if not ifaces:
++        raise ValueError("subject_ref_interface requires at least one Interface")
++    primaries = [i for i in ifaces if i.is_primary]
++    if len(primaries) == 1:
++        return ("interface", int(primaries[0].id))
++    if len(ifaces) == 1:
++        return ("interface", int(ifaces[0].id))
++    raise ValueError(
++        "subject_ref_interface: multiple interfaces and none marked primary — refuse guess"
++    )
++
++
+ def excl_key_fixed(key: str) -> Callable[..., str]:
+     def _fn(_subject: tuple[str, int], _entity: Any, _value: Any) -> str:
+         return key
+@@ -71,14 +95,24 @@ def excl_key_fixed(key: str) -> Callable[..., str]:
+ 
+ 
+ def excl_key_iface_ip(_subject: tuple[str, int], entity: Any, _value: Any) -> str:
+-    """Per-MAC/interface exclusivity (W0 §0.3 — sequential same MAC)."""
++    """Exclusivity = fact_key + interface_id (W2 — GS308EP sequential; Cassiopea parallel).
++
++    Same refuse-to-guess rule as subject_ref_interface when resolving from Asset.
++    """
+     if isinstance(entity, Interface):
+-        return f"ip:{entity.id}"
++        return f"asset.iface_ip:{entity.id}"
+     asset = _entity_asset(entity)
+-    if asset and asset.interfaces:
+-        primary = next((i for i in asset.interfaces if i.is_primary), asset.interfaces[0])
+-        return f"ip:{primary.id}"
+-    raise ValueError("excl_key_iface_ip requires Interface or Asset with interfaces")
++    if not asset or not asset.interfaces:
++        raise ValueError("excl_key_iface_ip requires Interface or Asset with interfaces")
++    ifaces = list(asset.interfaces)
++    primaries = [i for i in ifaces if i.is_primary]
++    if len(primaries) == 1:
++        return f"asset.iface_ip:{primaries[0].id}"
++    if len(ifaces) == 1:
++        return f"asset.iface_ip:{ifaces[0].id}"
++    raise ValueError(
++        "excl_key_iface_ip: multiple interfaces and none marked primary — refuse guess"
++    )
+ 
+ 
+ def excl_key_port_fdb(_subject: tuple[str, int], _entity: Any, value: Any) -> str:
+@@ -129,13 +163,17 @@ FACT_REGISTRY: dict[str, FactSpec] = {
+     ),
+     "asset.iface_ip": FactSpec(
+         fact_key="asset.iface_ip",
+-        subject_scope="asset",
+-        subject_ref=subject_ref_asset,
++        # W2/W4a: cardinality=single means the ELECTED primary IP only.
++        # Absence in fact_assertions does NOT mean the IP does not exist
++        # (Fritz multi-role IPs — see DEBT-IFACE-IP-CARDINALITY-ROLE).
++        subject_scope="interface",
++        subject_ref=subject_ref_interface,
+         cardinality="single",
+         excl_key=excl_key_iface_ip,
+         sources=frozenset({"mgmt", "dhcp", "fritz", "nmap", "manual"}),
+         ttl_window=timedelta(hours=2),
+-        consumers=("elect_interface_primary", "topology", "scans", "monitoring"),
++        # W2: shadow writers only — no live consumers yet (W5/W7 migrate readers).
++        consumers=(),
+     ),
+     "asset.mgmt_ip": FactSpec(
+         fact_key="asset.mgmt_ip",
+diff --git a/observatory/api/app/facts/shadow.py b/observatory/api/app/facts/shadow.py
+new file mode 100644
+index 0000000..e18591a
+--- /dev/null
++++ b/observatory/api/app/facts/shadow.py
+@@ -0,0 +1,281 @@
++"""W2 shadow writers — parallel fact_assertion writes; no consumers read yet.
++
++S1: never degrade the observed ingest path. Kill switch + circuit breaker
++stop writes without touching Asset / reconcile fields.
++
++Writes use a SAVEPOINT on the ingest session so (1) freshly flushed interfaces
++are visible and (2) assertion rollback never rolls back the observation.
++"""
++
++from __future__ import annotations
++
++import logging
++import threading
++from collections import defaultdict
++from datetime import date, datetime
++from pathlib import Path
++from typing import Any
++
++from sqlalchemy import func, select, text
++from sqlalchemy.orm import Session
++
++from app.config import get_settings
++from app.facts.resolver import apply_observation
++from app.models import FactAssertion, Interface, utcnow
++
++log = logging.getLogger("observatory.facts.shadow")
++
++# Circuit breaker ceilings (W2.3.3) — do not raise to pass an assert.
++MAX_FACT_ROWS = 20_000
++MAX_GROWTH_PER_DAY = 2_000
++MAX_TABLE_BYTES = 50 * 1024 * 1024
++
++FACT_IFACE_IP = "asset.iface_ip"
++
++_lock = threading.Lock()
++_counters: dict[tuple[str, str], dict[str, int]] = defaultdict(
++    lambda: {
++        "refresh": 0,
++        "supersession": 0,
++        "weak_evidence": 0,
++        "conflict_review": 0,
++        "created": 0,
++        "cooldown": 0,
++        "errors": 0,
++        "skipped_breaker": 0,
++        "skipped_disabled": 0,
++    }
++)
++_breaker_open = False
++_breaker_reason = ""
++_breaker_opened_at: datetime | None = None
++_day_anchor: date | None = None
++_day_start_rows = 0
++_error_logged = False
++
++# Source aliases from ingest kinds → registry-allowed labels.
++_SOURCE_MAP: dict[str, str] = {
++    "fritz": "fritz",
++    "dhcp": "dhcp",
++    "nmap": "nmap",
++    "mgmt": "mgmt",
++    "manual": "manual",
++    "scan": "nmap",
++    "arp": "nmap",
++    "icmp": "nmap",
++    "mdns": "nmap",
++    "ssdp": "nmap",
++    "portal": "fritz",
++}
++
++
++def _norm_source(source: str) -> str:
++    key = str(source or "").strip().lower()
++    return _SOURCE_MAP.get(key, "nmap")
++
++
++def _bump(fact_key: str, source: str, action: str) -> None:
++    with _lock:
++        bucket = _counters[(fact_key, source)]
++        if action == "superseded":
++            bucket["supersession"] += 1
++        elif action in bucket:
++            bucket[action] += 1
++        else:
++            bucket.setdefault(action, 0)
++            bucket[action] += 1
++
++
++def reset_shadow_stats_for_tests() -> None:
++    """Test helper — clears in-memory counters / breaker."""
++    global _breaker_open, _breaker_reason, _breaker_opened_at
++    global _day_anchor, _day_start_rows, _error_logged
++    with _lock:
++        _counters.clear()
++        _breaker_open = False
++        _breaker_reason = ""
++        _breaker_opened_at = None
++        _day_anchor = None
++        _day_start_rows = 0
++        _error_logged = False
++
++
++def force_breaker_open_for_tests(reason: str = "test") -> None:
++    global _breaker_open, _breaker_reason, _breaker_opened_at
++    with _lock:
++        _breaker_open = True
++        _breaker_reason = reason
++        _breaker_opened_at = utcnow()
++
++
++def _table_bytes(db: Session) -> int:
++    try:
++        row = db.execute(
++            text(
++                "SELECT IFNULL(SUM(pgsize), 0) FROM dbstat WHERE name IN "
++                "('fact_assertions', 'uq_fact_assertions_current_slot', "
++                "'ix_fact_assertions_subject_state', 'ix_fact_assertions_fact_state')"
++            )
++        ).scalar()
++        if row is not None:
++            return int(row)
++    except Exception:  # noqa: BLE001 — dbstat optional
++        pass
++    settings = get_settings()
++    path = Path(settings.sqlite_path)
++    try:
++        return int(path.stat().st_size) if path.exists() else 0
++    except OSError:
++        return 0
++
++
++def _row_count(db: Session) -> int:
++    return int(db.scalar(select(func.count()).select_from(FactAssertion)) or 0)
++
++
++def _top_transition_groups(db: Session, limit: int = 20) -> list[dict[str, Any]]:
++    rows = db.execute(
++        text(
++            """
++            SELECT fact_key, subject_id, COUNT(*) AS n
++            FROM fact_assertions
++            GROUP BY fact_key, subject_id
++            ORDER BY n DESC
++            LIMIT :lim
++            """
++        ),
++        {"lim": limit},
++    ).mappings().all()
++    return [dict(r) for r in rows]
++
++
++def evaluate_circuit_breaker(db: Session) -> tuple[bool, str]:
++    """Return (open, reason). Opens latch once; stays open until process restart."""
++    global _breaker_open, _breaker_reason, _breaker_opened_at
++    global _day_anchor, _day_start_rows
++
++    if _breaker_open:
++        return True, _breaker_reason
++
++    today = utcnow().date()
++    rows = _row_count(db)
++    if _day_anchor != today:
++        _day_anchor = today
++        _day_start_rows = rows
++    growth = rows - _day_start_rows
++    size = _table_bytes(db)
++
++    reason = ""
++    if rows >= MAX_FACT_ROWS:
++        reason = f"rows>={MAX_FACT_ROWS} (have {rows})"
++    elif growth >= MAX_GROWTH_PER_DAY:
++        reason = f"growth>={MAX_GROWTH_PER_DAY}/day (have {growth})"
++    elif size >= MAX_TABLE_BYTES:
++        reason = f"table_bytes>={MAX_TABLE_BYTES} (have {size})"
++
++    if reason:
++        with _lock:
++            _breaker_open = True
++            _breaker_reason = reason
++            _breaker_opened_at = utcnow()
++        log.error(
++            "fact_shadow_circuit_breaker_open reason=%s top_groups=%s",
++            reason,
++            _top_transition_groups(db),
++        )
++        return True, reason
++    return False, ""
++
++
++def shadow_stats() -> dict[str, Any]:
++    with _lock:
++        by_key_source = {
++            f"{fk}|{src}": dict(vals) for (fk, src), vals in _counters.items()
++        }
++        return {
++            "enabled": bool(get_settings().fact_shadow_writers_enabled),
++            "breaker_open": _breaker_open,
++            "breaker_reason": _breaker_reason,
++            "breaker_opened_at": (
++                _breaker_opened_at.isoformat() if _breaker_opened_at else None
++            ),
++            "ceilings": {
++                "max_rows": MAX_FACT_ROWS,
++                "max_growth_per_day": MAX_GROWTH_PER_DAY,
++                "max_table_bytes": MAX_TABLE_BYTES,
++            },
++            "counters": by_key_source,
++        }
++
++
++def safe_shadow_iface_ip(
++    db: Session,
++    iface: Interface,
++    *,
++    ip: str,
++    source: str,
++    observed_at: datetime | None = None,
++    confidence: float | None = None,
++) -> None:
++    """Apply asset.iface_ip inside a SAVEPOINT; never raise to caller (S1)."""
++    global _error_logged
++
++    settings = get_settings()
++    src = _norm_source(source)
++    if not settings.fact_shadow_writers_enabled:
++        _bump(FACT_IFACE_IP, src, "skipped_disabled")
++        return
++
++    ip_n = (ip or "").strip()
++    if not ip_n or iface is None or not getattr(iface, "id", None):
++        return
++
++    try:
++        open_, _reason = evaluate_circuit_breaker(db)
++        if open_:
++            _bump(FACT_IFACE_IP, src, "skipped_breaker")
++            return
++
++        with db.begin_nested():
++            result = apply_observation(
++                db,
++                fact_key=FACT_IFACE_IP,
++                entity=iface,
++                value=ip_n,
++                source=src,
++                observed_at=observed_at,
++                confidence=confidence,
++            )
++
++        action = result.action
++        if action == "superseded":
++            _bump(FACT_IFACE_IP, src, "supersession")
++        elif action == "refresh":
++            _bump(FACT_IFACE_IP, src, "refresh")
++        elif action == "weak_evidence":
++            _bump(FACT_IFACE_IP, src, "weak_evidence")
++        elif action == "conflict_review":
++            _bump(FACT_IFACE_IP, src, "conflict_review")
++        elif action == "created":
++            _bump(FACT_IFACE_IP, src, "created")
++        elif action == "cooldown":
++            _bump(FACT_IFACE_IP, src, "cooldown")
++
++        evaluate_circuit_breaker(db)
++    except Exception as exc:  # noqa: BLE001 — S1 barrier
++        _bump(FACT_IFACE_IP, src, "errors")
++        if not _error_logged:
++            _error_logged = True
++            log.exception(
++                "fact_shadow_apply_isolated fact_key=%s interface_id=%s err=%s",
++                FACT_IFACE_IP,
++                getattr(iface, "id", None),
++                exc,
++            )
++        else:
++            log.warning(
++                "fact_shadow_apply_isolated fact_key=%s interface_id=%s err=%s",
++                FACT_IFACE_IP,
++                getattr(iface, "id", None),
++                exc,
++            )
+diff --git a/observatory/api/app/routers/admin.py b/observatory/api/app/routers/admin.py
+index 501d4a8..96868e5 100644
+--- a/observatory/api/app/routers/admin.py
++++ b/observatory/api/app/routers/admin.py
+@@ -264,3 +264,24 @@ def cancel_scan(
+     audit(db, user=user, action="scan.cancel", entity="scan_run", entity_id=str(run.id))
+     db.commit()
+     return {"ok": True, "status": run.status}
++
++
++@router.get("/facts/shadow-stats")
++def facts_shadow_stats(
++    db: Session = Depends(get_db),
++    user: User = Depends(require_role("operator")),
++):
++    """W2.4 — read-only observability for shadow fact writers (no UI)."""
++    from sqlalchemy import func
++
++    from app.facts.shadow import evaluate_circuit_breaker, shadow_stats
++    from app.models import FactAssertion
++
++    stats = shadow_stats()
++    rows = int(db.scalar(select(func.count()).select_from(FactAssertion)) or 0)
++    open_, reason = evaluate_circuit_breaker(db)
++    stats["fact_assertions"] = rows
++    stats["breaker_open"] = open_
++    if reason:
++        stats["breaker_reason"] = reason
++    return stats
+diff --git a/observatory/api/app/routers/assets.py b/observatory/api/app/routers/assets.py
+index 4a851d6..4139140 100644
+--- a/observatory/api/app/routers/assets.py
++++ b/observatory/api/app/routers/assets.py
+@@ -131,6 +131,17 @@ def _serialize(
+             and is_synthetic_fritz_name(proposal["value"], mac0)
+         )
+     ]
++    from app.services.name_proposal_chassis import (
++        chassis_canonical_presentation,
++        proposal_actionability,
++    )
++
++    actionable, actionable_reason = proposal_actionability(db, asset)
++    for proposal in proposals:
++        proposal["actionable"] = actionable
++        proposal["actionable_reason"] = actionable_reason or None
++        proposal["resolvable"] = actionable
++    chassis_pres = chassis_canonical_presentation(db, asset)
+     port = db.scalar(
+         select(SwitchPort)
+         .where(SwitchPort.asset_id == asset.id)
+@@ -270,6 +281,9 @@ def _serialize(
+         internet_access=internet_access,
+         proposal_history=proposal_history,
+         chassis_id=asset.chassis_id,
++        chassis_role=chassis_pres.get("chassis_role"),
++        chassis_canonical_name=chassis_pres.get("chassis_canonical_name"),
++        chassis_canonical_asset_id=chassis_pres.get("chassis_canonical_asset_id"),
+         fingerprint_facts=[serialize_fact(f) for f in facts_for_asset(db, asset.id)],
+         name_ambiguity=name_ambiguity_for(db, asset),
+     )
+diff --git a/observatory/api/app/schemas.py b/observatory/api/app/schemas.py
+index 7d42fa6..4385944 100644
+--- a/observatory/api/app/schemas.py
++++ b/observatory/api/app/schemas.py
+@@ -77,6 +77,10 @@ class AssetOut(BaseModel):
+     internet_access: dict[str, Any] = Field(default_factory=dict)
+     proposal_history: list[dict[str, Any]] = []
+     chassis_id: Optional[int] = None
++    # W4a: sibling presentation (interfaces of a named chassis, not anonymous devices)
++    chassis_role: Optional[str] = None  # canonical | interface | null
++    chassis_canonical_name: Optional[str] = None
++    chassis_canonical_asset_id: Optional[int] = None
+     fingerprint_facts: list[dict[str, Any]] = Field(default_factory=list)
+     name_ambiguity: dict[str, Any] = Field(default_factory=dict)
+ 
+diff --git a/observatory/api/app/services/identity.py b/observatory/api/app/services/identity.py
+index 834f44f..e36e46b 100644
+--- a/observatory/api/app/services/identity.py
++++ b/observatory/api/app/services/identity.py
+@@ -407,7 +407,7 @@ def create_name_proposal(
+     value: str,
+     confidence: float = 0.5,
+ ) -> Optional[NameProposal]:
+-    """Insert NameProposal unless the same tuple was already rejected."""
++    """Insert NameProposal unless rejected, chassis-manual blocked, or chassis-deduped."""
+     text = (value or "").strip()
+     if not text:
+         return None
+@@ -415,6 +415,16 @@ def create_name_proposal(
+         db, asset_id=asset_id, source=source, value=text
+     ):
+         return None
++    asset = db.get(Asset, asset_id)
++    if asset is None:
++        return None
++    from app.services.name_proposal_chassis import should_suppress_proposal
++
++    suppress, _reason = should_suppress_proposal(
++        db, asset=asset, source=source, value=text
++    )
++    if suppress:
++        return None
+     prop = NameProposal(
+         asset_id=asset_id,
+         source=source,
+@@ -922,6 +932,12 @@ def elect_interface_primary(
+     for addr in addresses:
+         was_current = addr.is_current
+         addr.is_current = elected is not None and addr.id == elected.id
++        if was_current and not addr.is_current:
++            # Close binding interval at demotion time so resolve_asset_by_ip_at
++            # can answer first_seen <= T <= last_seen for historical holders
++            # (T-e/T-f / DEBT-IP-MIGRATION-NONETYPE).
++            if addr.last_seen is None or addr.last_seen < now:
++                addr.last_seen = now
+         if addr.is_current:
+             if mgmt_ip and addr.ip == mgmt_ip and (addr.role or "") in ("", "secondario"):
+                 addr.role = "mgmt"
+@@ -1018,7 +1034,7 @@ def observe_interface_ip(
+         elif role == "mgmt" and (row.role or "") in ("", "secondario"):
+             row.role = "mgmt"
+ 
+-    return elect_interface_primary(
++    elected = elect_interface_primary(
+         db,
+         asset,
+         iface,
+@@ -1028,6 +1044,19 @@ def observe_interface_ip(
+         mac=mac or next((i.mac for i in asset.interfaces if i.id == iface.id), ""),
+         vendor=vendor,
+     )
++    # W2 shadow: parallel fact_assertion for elected primary IP only.
++    # S1 — safe_shadow_* never raises; SAVEPOINT isolates assertion failures.
++    if elected is not None and elected.ip:
++        from app.facts.shadow import safe_shadow_iface_ip
++
++        safe_shadow_iface_ip(
++            db,
++            iface,
++            ip=elected.ip,
++            source=elected.source or source,
++            observed_at=now,
++        )
++    return elected
+ 
+ 
+ def touch_switch_mgmt_ip(
+@@ -1376,9 +1405,16 @@ def upsert_observation_asset(
+         hint_name, _, conf = classify_oui(mac, vendor)
+         if hint_name:
+             props.setdefault("oui", hint_name)
++    from app.services.name_proposal_chassis import should_suppress_proposal
++
+     for src, val in props.items():
+         if not val or is_placeholder_name(val):
+             continue
++        suppress, _reason = should_suppress_proposal(
++            db, asset=asset, source=src, value=str(val)
++        )
++        if suppress:
++            continue
+         existing = next((p for p in asset.name_proposals if p.source == src), None)
+         if existing:
+             if (existing.status or "") == "rejected":
+diff --git a/observatory/docs/KNOWN_DEBT.md b/observatory/docs/KNOWN_DEBT.md
+index 3fe6739..0639df2 100644
+--- a/observatory/docs/KNOWN_DEBT.md
++++ b/observatory/docs/KNOWN_DEBT.md
+@@ -4,18 +4,93 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+ 
+ ## DEBT-RECONCILE-CHURN-1
+ 
+-- **Priorità:** media (bootstrap regime) — aperto in W1.5-bis 2026-07-25
+-- **Cosa:** asset **116** ha `trust_level=fritz_historical` ma `meta.operational_state=active`. Ogni boot1 con `needs_apply=true` / `structural=1` / `T_backup≈80s`; apply trust corregge; `inventory.reconcile_asset_presence` ripristina `active`.
+-- **Attribuzione:** churn preesistente (backup pre-0.10.42), **non** indotto da `identity_evidence`.
+-- **Vietato:** tollerarlo silenziosamente come “regime ok”; sostituire la misura del boot1 con un boot successivo senza dichiararlo.
+-- **Fix quando:** ownership `operational_state` per `fritz_historical` — inventory non deve smashare la quarantena trust senza evidenza reliable; oppure heal one-shot + guard.
++- **Priorità:** media (bootstrap regime) — **CHIUSO in F1-bis / 0.10.44**; **confermato D.6** sul boot1 di **0.10.45** (`structural=0`)
++- **Cosa:** asset **116** aveva `trust_level=fritz_historical` ma `meta.operational_state=active`. Boot1 `needs_apply=true` / `structural=1` / `T_backup≈80s` perché `inventory_may_set_operational_state` permetteva `fritz_historical`→`active` se `reliable=True` (anche con 0 interfacce via reachability).
++- **Fix:** inventory non solleva né smasha `trust_quarantine` (`fritz_historical` op_state o trust_level) — gerarchia invariata `archived > trust_quarantine > trust_protected > inventory_presence`. Test `test_quarantine_zero_interfaces_inventory_cannot_set_active`.
++- **Vietato (storico):** tollerarlo come “regime ok”; caso speciale su `asset_id=116`.
++
++## DEBT-IP-CURRENT-SCOPE-PER-ASSET → ri-caratterizzato come IDENTITÀ CHASSIS (W-D)
++
++- **Priorità:** W4a/W4b (consolidamento chassis) — riaperto/riscritto F1-bis→W-D 2026-07-26
++- **Fatto:** Cassiopea è modellata come **due asset record** — asset **5** «Cassiopea — NIC 1» tiene `192.168.1.3` CURRENT (id 9); asset **6** tiene `192.168.3.24` CURRENT (id 855). L’IP di management non è perso: è sull’altro record. Il ping fallito su `.3.24` dal container api è atteso (lato SPAN), non un sintomo.
++- **Test di non-regressione (da chiudere in W4a/W4b):** dopo consolidamento, Cassiopea = **UN** apparato con **DUE** interfacce; entrambi gli IP correnti ciascuno sulla propria interfaccia; un solo nome canonico.
++- **Vietato ora:** patch dati che forzi due current sullo stesso asset_id / stessa iface.
++- **Doc:** [`docs/obs-f1bis.md`](obs-f1bis.md) · [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-DOUBLE-CURRENT-IP
++
++- **Priorità:** pre-condizione **W3** — aperto W-D 2026-07-26
++- **Cosa:** stesso IP con >1 riga `is_current=1` (stesso asset o asset diversi). Al backfill W3 collideranno con `uq_fact_assertions_current_slot`.
++- **Casi enumerati (live, invariati da X.2):**
++  - `192.168.1.2` — id **3** (asset 2, mgmt) + id **153** (asset 2, fritz)
++  - `192.168.2.108` — id **15** (asset 11) + id **853** (asset 138)
++- **Nota:** W3 richiede una **regola di risoluzione dichiarata PRIMA** del backfill. **NON** collassare ora. Cardinalità non cambiata da X.2 (dedup ≠ `is_current`).
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md) · [`docs/obs-wd-fix.md`](obs-wd-fix.md)
++
++## DEBT-PROVISIONAL-IDENTITY-MERGE
++
++- **Priorità:** post W-D (quando MAC sconosciuto → poi scoperto) — aperto W-D 2026-07-26
++- **Cosa:** `entity_key` IP-only è marcato `payload.identity_provisional=true`, ma non esiste ancora un percorso di **fusione** quando il MAC viene scoperto in seguito (evitare duplicato).
++- **X.2:** invariato — discriminante IP sul dedup non introduce merge. Cardinalità debito invariata.
++- **Vietato:** inventare il merge in questa ondata.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md) · [`docs/obs-wd-fix.md`](obs-wd-fix.md)
+ 
+ ## DEBT-E3-AVAILABLE-FALSE
+ 
+ - **Priorità:** bloccante per E3 finché SNMP non è misurabile
+ - **Cosa:** E3-topological richiede access_port + mac_count misurato + soglia **esplicita** + simultaneità. Con poll SNMP in timeout, E3 = **available=false** (degrada a E2). Nessuna soglia inventata.
+ - **Vincolo:** non promuovere E3 finché `fdb_poll.ok` / misure porta non tornano.
+-- **Ripresa:** W2+ quando SNMP/LLDP writers misurano.
++- **Ripresa:** W2+ quando SNMP/LLDP writers misurano; requisiti accesso/poll in **DEBT-FDB-LLDP-PASSIVE**.
++
++## DEBT-FDB-LLDP-PASSIVE
++
++- **Priorità:** wave futura post W1.5-bis (writers SNMP / presenza) — **non** interrompe W1.5-bis
++- **Cosa:** implementazione iniziale **passiva/read-only** FDB+LLDP: presenza/posizione L2, **non** identità; FDB ≠ ownership; LLDP/CDP solo corroborante (spoofabile). LGS310C/328C: SNMPv3 authPriv, RO, ACL solo Cassiopea, view Bridge/LLDP/ENTITY, no SET, segreti fuori repo/log, timeout/rate limit; LLDP/CDP non abilitato dove non serve. ObservationRaw: switch_id, port, VLAN/bridge-domain, timestamp, age/last_seen, acquisition_method, failure_state; dedupe per **transizione** non per poll. Alert «nuovo MAC su access» solo dopo classificazione misurata access/trunk/uplink/AP/powerline, inizialmente informativo; **niente** quarantena/shutdown auto. Spoof / MAC move / CAM flood / randomized MAC previsti; assenza alert ≠ sicurezza.
++- **Doc:** [`docs/obs-fdb-lldp-passive.md`](obs-fdb-lldp-passive.md)
++- **Vietato:** usarlo come scorciatoia identity/merge; SET SNMP; enforcement automatico porte; dichiarare “rete sicura” perché non ci sono alert.
++
++## DEBT-ENTITY-KEY-MAC-IP
++
++- **Priorità:** era bloccante W2 — **CHIUSO in W-D / 0.10.45** (2026-07-26)
++- **Fix:** `entity_key_for` → MAC quando MAC noto; IP-only → provisional (`identity_provisional`). Test T-b verde.
++- **Residuo correlato (non collassare):** righe IP duplicate / refresh-as-transition — vedi B.2 / DEBT-DOUBLE-CURRENT-IP.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-IP-MIGRATION-NONETYPE
++
++- **Priorità:** era bloccante W2 — **CHIUSO in W-D / 0.10.45** (2026-07-26)
++- **Causa:** `elect_interface_primary` demoteva senza chiudere `last_seen` → `resolve_asset_by_ip_at` tornava `None` a T intermedio.
++- **Fix:** alla demotion, `last_seen = now` se mancante/precedente. T-e / T-f verdi.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-ALEMBIC-BASELINE-LEGACY-TABLE
++
++- **Priorità:** bassa (igiene CI; Alembic **non** gira in prod) — unificato W-D 2026-07-26
++- **Ex:** DEBT-ALEMBIC-MIGRATION-TESTS + baseline disallineata da tabella `observations` droppata.
++- **Sintomi test:** `ix_observations_seen_at`, `assets.chassis_id`, `assets.printer_first_seen` su fixture/alembic.
++- **Vietato:** inseguirli come fix runtime; schema prod = `create_all`.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-IPP-PRECEDENCE (T-c / T-d)
++
++- **Priorità:** media (autorità naming) — registrato W-D 2026-07-26, **non** corretto in questa ondata
++- **Test:** `test_ipp_precedence_and_human_category_override` (T-c); `test_snmp_enrichment_creates_proposal_without_overwriting_name` (T-d)
++- **Osservato T-c:** `best_guess` → `('HP123','fritz')` invece di `('Stampante Studio','ipp')`
++- **Osservato T-d:** proposal snmp assente / lista vuota vs atteso `[('snmp','HP LaserJet M404dn')]`
++- **Nota:** non risolti come collaterale di D.1. I5 / gerarchia naming — ondata dedicata.
++
++## DEBT-FDB-UPLINK-PORTAL (T-a)
++
++- **Priorità:** media — registrato W-D 2026-07-26 (preesistente), **non** corretto qui
++- **Test:** `test_m2_discovery.py::test_fdb_skips_observe_portal_on_uplink_role`
++- **Osservato:** `portal_last_seen` valorizzato invece di `None` su ruolo uplink.
++
++## DEBT-MAC-IP-POLICY-WIRE
++
++- **Priorità:** prossima wave presence (W7 / post W1.5-bis)
++- **Cosa:** policy dominio MAC↔IP (chassis ≥1 IP corrente; eccezione powerline/510E; `present_l2_unaddressed`; supersession binding) — classifier in `api/app/services/mac_ip_policy.py` + test contratto. **Non ancora** collegata a `reconcile_asset_presence` / trust.
++- **Doc:** [`docs/obs-currency-mac-ip-policy.md`](obs-currency-mac-ip-policy.md)
++- **Vietato:** usarla come scorciatoia di fusione chassis; inventare management IP.
+ 
+ ## DEBT-MIRROR-SOURCES
+ 
+@@ -65,20 +140,48 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+ - **Residuo:** riprendere DVR (#2) / LUMIN / openhabian dal toggle critico se servono; non riattivare Kuma runtime.
+ - **Vietato:** ripristinare Kuma come dipendenza; delete delle righe kuma archiviate.
+ 
+-## DEBT-TOPO-IP-CONTEXTUAL (CHIUSO v0.9.0)
++## DEBT-TOPO-IP-CONTEXTUAL
+ 
+-- **Priorità:** bassa (latente → perimetro ampliato 2026-07-21) — ex BUG 3 declassato
++- **Priorità:** bassa (latente → perimetro ampliato 2026-07-21; discriminante raw ripristinato 0.10.46) — ex BUG 3 declassato
++- **Invariante:** multi-IP sullo stesso MAC **non collassa** nello store raw (fatti distinti).
++- **Stato raw:** **violato in 0.10.45** (`dedup_key` usava solo `entity_key` MAC-scoped → 5 IP → 1 riga). **Ripristinato in 0.10.46:** `entity_key` resta MAC; `compute_dedup_key` aggiunge discriminante IP (`fact_discriminant_for`). Identità ≠ dedup. Vedi [`docs/obs-wd-fix.md`](obs-wd-fix.md).
+ - **Perimetro definitivo:** multi-IP per ruolo (`primario` / `vpn` / `mgmt` / `servizi`). `endpoint.ip_change` **solo sul primario**. Casi noti:
+   - **FRITZ!Box** (asset 1): 5 IP contemporanei sullo stesso MAC — `.1.1` primario, `.1.9` VPN LAN, `.1.4`/`.1.5`/`.1.6` (ruolo TBD servizi/altro); ×223 `ip_change`/24h documentati poi silenziati.
+-  - **GS308EP** (asset 4): `.1.8` mgmt (fatto). `.3.20` = binding Fritz storico sullo stesso MAC, **ownership da confermare** (non inventariale; non SPAN — SPAN=p22/NIC2 `.3.24` / sink `10.255.255.2/30`). Vedi `docs/obs-ux-ip-308-verifica.md`.
++  - **GS308EP** (asset 4): `.1.8` mgmt (fatto). `.3.20` = binding Fritz storico sullo stesso MAC, **ownership da confermare** (non inventariale; non SPAN — SPAN=p22/NIC2 `.3.24` / sink `10.255.255.2/30`). Vedi [`docs/obs-ux-ip-308-verifica.md`](obs-ux-ip-308-verifica.md).
+   - **Cassiopea (ex-bond):** `DEBT-LAG-CASSIOPEA` **CHIUSO** 21/07/2026 (eth0 LAN / eth1 SPAN).
+-- **Nota architetturale:** il dedup raw per-MAC scarta le osservazioni L3 multi-IP (sul Fritz 4/5 IP perse nel raw, `hit_count≈5` ma `l3.ip` resta solo `.1.1`) mentre l’upsert legacy scrive comunque i binding e gli `ip_change`: le due pipeline divergono. Il fix dovrà includere `dedup_key` **MAC+IP** per le osservazioni L3.
+-- **Sintomo latente (BUG 3 originale):** in [`_resolve_ap_asset`](../api/app/services/topology.py) il fallback per-IP usa `is_current` invece di `resolve_asset_by_ip_at`. Oggi non gira (0 client Wi‑Fi IP-only su 41).
+-- **Fix quando servirà:** (1) ruoli IP + `ip_change` solo primario; (2) dedup L3 MAC+IP; (3) nel solo ramo (b) di `_resolve_ap_asset`, `resolve_asset_by_ip_at` + `observed_at`; tie→None→fall-through. NON toccare `is_current` alla cieca su multi-NIC storiche.
++- **Nota architetturale:** il dedup raw per-MAC scartava le osservazioni L3 multi-IP (sul Fritz 4/5 IP perse nel raw, `hit_count≈5` ma `l3.ip` resta solo `.1.1`) mentre l’upsert legacy scrive comunque i binding e gli `ip_change`: le due pipeline divergevano. Fix 0.10.46: `dedup_key` MAC+IP per L3.
++- **Sintomo latente (BUG 3 originale / consumatore di correttezza):** in [`_resolve_ap_asset`](../api/app/services/topology.py) il fallback per-IP usa `is_current` invece di `resolve_asset_by_ip_at`. Oggi non gira (0 client Wi‑Fi IP-only su 41). **Classe di difetto OBS-CURRENCY:** è un **consumatore di correntezza** da migrare esplicitamente in **W5/W7** (lista consumatori fact_assertions / resolve-at-T).
++- **Fix quando servirà:** (1) ruoli IP + `ip_change` solo primario; (2) dedup L3 MAC+IP *(fatto 0.10.46)*; (3) nel solo ramo (b) di `_resolve_ap_asset`, `resolve_asset_by_ip_at` + `observed_at`; tie→None→fall-through. NON toccare `is_current` alla cieca su multi-NIC storiche.
+ - **Riattivazione:** attribuzione topologia sbagliata su IP DHCP migrato, oppure ripresa del rumore `ip_change` multi-ruolo dopo unmute.
+-- **Stato FASE B (codice, 2026-07-21):** elezione + `role` + dedup `mac|ip` + `ip_change` solo primario — in tree, pre-deploy. Bonifica storica duplicate `(interface_id, ip)` resta fuori scope. UI secondari = FASE C.
++- **Stato FASE B (codice):** elezione + `role` + dedup `mac|ip` + `ip_change` solo primario — in tree. Bonifica storica duplicate `(interface_id, ip)` resta fuori scope. UI secondari = FASE C.
+ - **Bonifica storica:** eventuali righe duplicate `(interface_id, ip)` pre-FASE-B restano; niente UniqueConstraint finché non c’è purge dedicato (fuori scope).
+ 
++## DEBT-IFACE-IP-CARDINALITY-ROLE
++
++- **Priorità:** pre-condizione **W3** — aperto W4a 2026-07-26
++- **Cosa:** `asset.iface_ip` ha `cardinality=single` per interfaccia e il writer shadow registra **solo l’IP eletto** (`elect_interface_primary`). Sul Fritz (asset 1) esistono cinque IP simultanei (`.1.1` primario, `.1.9` VPN, `.1.4`/`.1.5`/`.1.6` servizi) — i non-eletti **non** compaiono nel layer assertion.
++- **I2:** assenza di un IP in `fact_assertions` **non** significa che l’IP non esista.
++- **Prima di W3:** `excl_key` deve acquisire il **ruolo** (`fact_key + interface_id + role`), cardinalità `scoped`. NON inventare i ruoli mancanti ora (K3).
++- **Vietato in W4a:** implementare il ruolo nella excl_key.
++- **Doc:** [`docs/obs-w4a.md`](obs-w4a.md) · legato a DEBT-TOPO-IP-CONTEXTUAL
++
++## DEBT-LASTSEEN-DUAL-SEMANTICS
++
++- **Priorità:** pre-condizione **W3** — aperto W-D-fix 2026-07-26
++- **Cosa:** `elect_interface_primary` scrive `last_seen = now` alla demotion (chiusura amministrativa di intervallo) nello stesso campo «ultima osservazione».
++- **Nota W3:** prima del backfill dichiarare per ogni campo quale semantica porta; le righe con `last_seen` amministrativo daranno `valid_to`, non un’osservazione.
++- **Vietato ora:** correggere / biforcare il campo in questa ondata.
++- **Doc:** [`docs/obs-wd-fix.md`](obs-wd-fix.md)
++
++## DEBT-FRITZ-TR064-CREDENTIALS
++
++- **Priorità:** operativa (STOP-5) — aperto W4a 2026-07-26
++- **Sintomo:** collector log `[fritz] hostlist path fallito: HTTP Error 401: Unauthorized` + `mesh SOAP … credentials_invalid` — **persistente** nel buffer log (da almeno `2026-07-25T15:02:42Z` a `2026-07-25T23:58:49Z`, ogni ciclo).
++- **Causa misurata:** in `.env` su Cassiopea `FRITZ_HOST` è presente; `FRITZ_USERNAME` / `FRITZ_PASSWORD` **ASSENTI** (`collector/adapters/fritz.py` `_mesh_error` → `credentials_invalid` su HTTP 401/403).
++- **Degrada con Fritz muto:** hostlist/`discovery.fritz.active`, hostname Fritz, assoc mesh (0), refresh IP da Fritz. Restano: nmap/ssdp/printer, diagnostica WLAN AP (spesso 200), SNMP switch.
++- **Azione:** solo Michele può ripristinare le credenziali TR-064 — non stimare, non monitorare in serie.
++
++
+ ## DEBT-A2-CASCADE-AP
+ 
+ - **Priorità:** bassa (latente) — ex nota di confine BUG 1 / A2
+diff --git a/observatory/tests/test_facts_resolver.py b/observatory/tests/test_facts_resolver.py
+index 1ea304c..740af22 100644
+--- a/observatory/tests/test_facts_resolver.py
++++ b/observatory/tests/test_facts_resolver.py
+@@ -174,10 +174,10 @@ def test_unique_index_violation_impossible(db):
+     )
+     db.commit()
+     dup = FactAssertion(
+-        subject_type="asset",
+-        subject_id=asset.id,
++        subject_type="interface",
++        subject_id=iface.id,
+         fact_key="asset.iface_ip",
+-        excl_key=f"ip:{iface.id}",
++        excl_key=f"asset.iface_ip:{iface.id}",
+         value_norm="192.168.1.2",
+         value_json={},
+         source="nmap",
+@@ -253,7 +253,9 @@ def test_anti_flap_no_oscillation(db):
+     )
+     db.commit()
+     assert r3.action in {"cooldown", "weak_evidence"}
+-    cur = current(db, "asset", asset.id, "asset.iface_ip", excl_key=f"ip:{iface.id}")
++    cur = current(
++        db, "interface", iface.id, "asset.iface_ip", excl_key=f"asset.iface_ip:{iface.id}"
++    )
+     assert cur.value_norm == "192.168.1.101"
+ 
+ 
+@@ -291,7 +293,9 @@ def test_history_never_deleted(db):
+             observed_at=_ts(i * 60),
+         )
+     db.commit()
+-    rows = history(db, "asset", asset.id, "asset.iface_ip", excl_key=f"ip:{iface.id}")
++    rows = history(
++        db, "interface", iface.id, "asset.iface_ip", excl_key=f"asset.iface_ip:{iface.id}"
++    )
+     assert len(rows) == 3
+     assert db.scalar(select(func.count()).select_from(FactAssertion)) == 3
+ 
+@@ -316,8 +320,20 @@ def test_multi_excl_key_no_collide(db):
+         observed_at=_ts(),
+     )
+     db.commit()
+-    c1 = current(db, "asset", asset1.id, "asset.iface_ip", excl_key=f"ip:{iface1.id}")
+-    c2 = current(db, "asset", asset2.id, "asset.iface_ip", excl_key=f"ip:{iface2.id}")
++    c1 = current(
++        db,
++        "interface",
++        iface1.id,
++        "asset.iface_ip",
++        excl_key=f"asset.iface_ip:{iface1.id}",
++    )
++    c2 = current(
++        db,
++        "interface",
++        iface2.id,
++        "asset.iface_ip",
++        excl_key=f"asset.iface_ip:{iface2.id}",
++    )
+     assert c1 and c1.value_norm == "192.168.1.3" and c1.state == "current"
+     assert c2 and c2.value_norm == "192.168.3.24" and c2.state == "current"
+ 
+@@ -360,7 +376,9 @@ def test_gs308ep_sequential_ip_supersession(db):
+     ).one()
+     assert old.state == "superseded"
+     assert new.state == "current"
+-    hist = history(db, "asset", asset.id, "asset.iface_ip", excl_key=f"ip:{iface.id}")
++    hist = history(
++        db, "interface", iface.id, "asset.iface_ip", excl_key=f"asset.iface_ip:{iface.id}"
++    )
+     assert len(hist) == 2
+     assert {h.state for h in hist} == {"superseded", "current"}
+ 
+diff --git a/observatory/web/package.json b/observatory/web/package.json
+index 1de1bf7..f5765f3 100644
+--- a/observatory/web/package.json
++++ b/observatory/web/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "lan-observatory-web",
+   "private": true,
+-  "version": "0.10.43",
++  "version": "0.10.48",
+   "type": "module",
+   "scripts": {
+     "dev": "vite",
+diff --git a/observatory/web/src/triageRules.js b/observatory/web/src/triageRules.js
+index aff7410..acc444c 100644
+--- a/observatory/web/src/triageRules.js
++++ b/observatory/web/src/triageRules.js
+@@ -248,10 +248,21 @@ export function buildTriageRows(assets, chassisPayload = {}) {
+ 
+   for (const asset of list) {
+     if ((asset?.status || "") === "ignorato") continue;
++    // W4a.2.6: unnamed chassis members are interfaces of the named apparato — not
++    // separate anonymous devices with their own high-priority rename cards.
++    if (
++      asset?.chassis_role === "interface" &&
++      asset?.chassis_canonical_name &&
++      !String(asset?.name || "").trim()
++    ) {
++      continue;
++    }
+     const top = topPendingProposal(asset);
+     if (!top) continue;
+ 
+-    const currentName = String(asset?.name || "").trim();
++    const currentName = String(
++      asset?.name || asset?.chassis_canonical_name || "",
++    ).trim();
+     const proposedName = String(top.value || "").trim();
+     if (!proposedName) continue;
+     if (currentName && currentName === proposedName) continue;
+@@ -265,12 +276,18 @@ export function buildTriageRows(assets, chassisPayload = {}) {
+     const moreSpecific = scoreProposed > scoreCurrent;
+     const isNoise = isNoiseProposal(currentName, proposedName);
+     const isAi = String(top.source || "").toLowerCase() === "ai";
++    // W4a.2.5: computed resolvability (API). Default true only if field absent.
++    const actionable = top.actionable !== false && top.resolvable !== false;
+ 
+     let verdict;
+     let recommendedAction;
+     let massEligible = false;
+ 
+-    if (chassisMember) {
++    if (!actionable) {
++      // I2: declare non-resolvable; never high-priority adopt
++      verdict = "unresolvable";
++      recommendedAction = "verifica";
++    } else if (chassisMember) {
+       // D5: riga in verifica; D5-bis: rumore chassis entra in massa via noiseProposalIds
+       verdict = "chassis";
+       recommendedAction = "verifica";
+@@ -317,6 +334,8 @@ export function buildTriageRows(assets, chassisPayload = {}) {
+       collisions,
+       chassis_member: chassisMember,
+       is_noise: isNoise,
++      actionable,
++      actionable_reason: top.actionable_reason || null,
+       // mass_eligible: solo rumore di griglia (non chassis). La massa usa noiseProposalIds.
+       mass_eligible: massEligible,
+       manual_name: manual,
+
+===== APPENDIX: full api/app/facts/shadow.py =====
+--- a/observatory/api/app/facts/shadow.py
++++ b/observatory/api/app/facts/shadow.py
+@@ FULL FILE @@
+"""W2 shadow writers — parallel fact_assertion writes; no consumers read yet.
+
+S1: never degrade the observed ingest path. Kill switch + circuit breaker
+stop writes without touching Asset / reconcile fields.
+
+Writes use a SAVEPOINT on the ingest session so (1) freshly flushed interfaces
+are visible and (2) assertion rollback never rolls back the observation.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+from collections import defaultdict
+from datetime import date, datetime
+from pathlib import Path
+from typing import Any
+
+from sqlalchemy import func, select, text
+from sqlalchemy.orm import Session
+
+from app.config import get_settings
+from app.facts.resolver import apply_observation
+from app.models import FactAssertion, Interface, utcnow
+
+log = logging.getLogger("observatory.facts.shadow")
+
+# Circuit breaker ceilings (W2.3.3) — do not raise to pass an assert.
+MAX_FACT_ROWS = 20_000
+MAX_GROWTH_PER_DAY = 2_000
+MAX_TABLE_BYTES = 50 * 1024 * 1024
+
+FACT_IFACE_IP = "asset.iface_ip"
+
+_lock = threading.Lock()
+_counters: dict[tuple[str, str], dict[str, int]] = defaultdict(
+    lambda: {
+        "refresh": 0,
+        "supersession": 0,
+        "weak_evidence": 0,
+        "conflict_review": 0,
+        "created": 0,
+        "cooldown": 0,
+        "errors": 0,
+        "skipped_breaker": 0,
+        "skipped_disabled": 0,
+    }
+)
+_breaker_open = False
+_breaker_reason = ""
+_breaker_opened_at: datetime | None = None
+_day_anchor: date | None = None
+_day_start_rows = 0
+_error_logged = False
+
+# Source aliases from ingest kinds → registry-allowed labels.
+_SOURCE_MAP: dict[str, str] = {
+    "fritz": "fritz",
+    "dhcp": "dhcp",
+    "nmap": "nmap",
+    "mgmt": "mgmt",
+    "manual": "manual",
+    "scan": "nmap",
+    "arp": "nmap",
+    "icmp": "nmap",
+    "mdns": "nmap",
+    "ssdp": "nmap",
+    "portal": "fritz",
+}
+
+
+def _norm_source(source: str) -> str:
+    key = str(source or "").strip().lower()
+    return _SOURCE_MAP.get(key, "nmap")
+
+
+def _bump(fact_key: str, source: str, action: str) -> None:
+    with _lock:
+        bucket = _counters[(fact_key, source)]
+        if action == "superseded":
+            bucket["supersession"] += 1
+        elif action in bucket:
+            bucket[action] += 1
+        else:
+            bucket.setdefault(action, 0)
+            bucket[action] += 1
+
+
+def reset_shadow_stats_for_tests() -> None:
+    """Test helper — clears in-memory counters / breaker."""
+    global _breaker_open, _breaker_reason, _breaker_opened_at
+    global _day_anchor, _day_start_rows, _error_logged
+    with _lock:
+        _counters.clear()
+        _breaker_open = False
+        _breaker_reason = ""
+        _breaker_opened_at = None
+        _day_anchor = None
+        _day_start_rows = 0
+        _error_logged = False
+
+
+def force_breaker_open_for_tests(reason: str = "test") -> None:
+    global _breaker_open, _breaker_reason, _breaker_opened_at
+    with _lock:
+        _breaker_open = True
+        _breaker_reason = reason
+        _breaker_opened_at = utcnow()
+
+
+def _table_bytes(db: Session) -> int:
+    try:
+        row = db.execute(
+            text(
+                "SELECT IFNULL(SUM(pgsize), 0) FROM dbstat WHERE name IN "
+                "('fact_assertions', 'uq_fact_assertions_current_slot', "
+                "'ix_fact_assertions_subject_state', 'ix_fact_assertions_fact_state')"
+            )
+        ).scalar()
+        if row is not None:
+            return int(row)
+    except Exception:  # noqa: BLE001 — dbstat optional
+        pass
+    settings = get_settings()
+    path = Path(settings.sqlite_path)
+    try:
+        return int(path.stat().st_size) if path.exists() else 0
+    except OSError:
+        return 0
+
+
+def _row_count(db: Session) -> int:
+    return int(db.scalar(select(func.count()).select_from(FactAssertion)) or 0)
+
+
+def _top_transition_groups(db: Session, limit: int = 20) -> list[dict[str, Any]]:
+    rows = db.execute(
+        text(
+            """
+            SELECT fact_key, subject_id, COUNT(*) AS n
+            FROM fact_assertions
+            GROUP BY fact_key, subject_id
+            ORDER BY n DESC
+            LIMIT :lim
+            """
+        ),
+        {"lim": limit},
+    ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def evaluate_circuit_breaker(db: Session) -> tuple[bool, str]:
+    """Return (open, reason). Opens latch once; stays open until process restart."""
+    global _breaker_open, _breaker_reason, _breaker_opened_at
+    global _day_anchor, _day_start_rows
+
+    if _breaker_open:
+        return True, _breaker_reason
+
+    today = utcnow().date()
+    rows = _row_count(db)
+    if _day_anchor != today:
+        _day_anchor = today
+        _day_start_rows = rows
+    growth = rows - _day_start_rows
+    size = _table_bytes(db)
+
+    reason = ""
+    if rows >= MAX_FACT_ROWS:
+        reason = f"rows>={MAX_FACT_ROWS} (have {rows})"
+    elif growth >= MAX_GROWTH_PER_DAY:
+        reason = f"growth>={MAX_GROWTH_PER_DAY}/day (have {growth})"
+    elif size >= MAX_TABLE_BYTES:
+        reason = f"table_bytes>={MAX_TABLE_BYTES} (have {size})"
+
+    if reason:
+        with _lock:
+            _breaker_open = True
+            _breaker_reason = reason
+            _breaker_opened_at = utcnow()
+        log.error(
+            "fact_shadow_circuit_breaker_open reason=%s top_groups=%s",
+            reason,
+            _top_transition_groups(db),
+        )
+        return True, reason
+    return False, ""
+
+
+def shadow_stats() -> dict[str, Any]:
+    with _lock:
+        by_key_source = {
+            f"{fk}|{src}": dict(vals) for (fk, src), vals in _counters.items()
+        }
+        return {
+            "enabled": bool(get_settings().fact_shadow_writers_enabled),
+            "breaker_open": _breaker_open,
+            "breaker_reason": _breaker_reason,
+            "breaker_opened_at": (
+                _breaker_opened_at.isoformat() if _breaker_opened_at else None
+            ),
+            "ceilings": {
+                "max_rows": MAX_FACT_ROWS,
+                "max_growth_per_day": MAX_GROWTH_PER_DAY,
+                "max_table_bytes": MAX_TABLE_BYTES,
+            },
+            "counters": by_key_source,
+        }
+
+
+def safe_shadow_iface_ip(
+    db: Session,
+    iface: Interface,
+    *,
+    ip: str,
+    source: str,
+    observed_at: datetime | None = None,
+    confidence: float | None = None,
+) -> None:
+    """Apply asset.iface_ip inside a SAVEPOINT; never raise to caller (S1)."""
+    global _error_logged
+
+    settings = get_settings()
+    src = _norm_source(source)
+    if not settings.fact_shadow_writers_enabled:
+        _bump(FACT_IFACE_IP, src, "skipped_disabled")
+        return
+
+    ip_n = (ip or "").strip()
+    if not ip_n or iface is None or not getattr(iface, "id", None):
+        return
+
+    try:
+        open_, _reason = evaluate_circuit_breaker(db)
+        if open_:
+            _bump(FACT_IFACE_IP, src, "skipped_breaker")
+            return
+
+        with db.begin_nested():
+            result = apply_observation(
+                db,
+                fact_key=FACT_IFACE_IP,
+                entity=iface,
+                value=ip_n,
+                source=src,
+                observed_at=observed_at,
+                confidence=confidence,
+            )
+
+        action = result.action
+        if action == "superseded":
+            _bump(FACT_IFACE_IP, src, "supersession")
+        elif action == "refresh":
+            _bump(FACT_IFACE_IP, src, "refresh")
+        elif action == "weak_evidence":
+            _bump(FACT_IFACE_IP, src, "weak_evidence")
+        elif action == "conflict_review":
+            _bump(FACT_IFACE_IP, src, "conflict_review")
+        elif action == "created":
+            _bump(FACT_IFACE_IP, src, "created")
+        elif action == "cooldown":
+            _bump(FACT_IFACE_IP, src, "cooldown")
+
+        evaluate_circuit_breaker(db)
+    except Exception as exc:  # noqa: BLE001 — S1 barrier
+        _bump(FACT_IFACE_IP, src, "errors")
+        if not _error_logged:
+            _error_logged = True
+            log.exception(
+                "fact_shadow_apply_isolated fact_key=%s interface_id=%s err=%s",
+                FACT_IFACE_IP,
+                getattr(iface, "id", None),
+                exc,
+            )
+        else:
+            log.warning(
+                "fact_shadow_apply_isolated fact_key=%s interface_id=%s err=%s",
+                FACT_IFACE_IP,
+                getattr(iface, "id", None),
+                exc,
+            )
+
+===== APPENDIX: full api/app/facts/resolver.py =====
+--- a/observatory/api/app/facts/resolver.py
++++ b/observatory/api/app/facts/resolver.py
+@@ FULL FILE @@
+"""Single resolver for fact currency — R-A..R-H live here only."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Any
+
+from sqlalchemy import and_, select
+from sqlalchemy.orm import Session
+
+from app.facts.registry import (
+    authority_for,
+    default_confidence,
+    get_fact_spec,
+    semantic_contradiction,
+)
+from app.models import Asset, FactAssertion, Interface, utcnow
+
+READMISSION_COOLDOWN = timedelta(hours=4)
+
+# R-C observability (W2 will expose per fact_key/source).
+weak_evidence_count = 0
+conflict_review_count = 0
+
+
+@dataclass
+class ApplyResult:
+    action: str
+    assertion: FactAssertion | None = None
+    incumbent: FactAssertion | None = None
+    conflict: dict[str, Any] | None = None
+
+
+def _norm_value(value: Any) -> str:
+    return " ".join(str(value or "").strip().split())
+
+
+def subject_of(fact_key: str, entity: Any) -> tuple[str, int]:
+    spec = get_fact_spec(fact_key)
+    return spec.subject_ref(entity)
+
+
+def _base_query(
+    subject_type: str,
+    subject_id: int,
+    fact_key: str | None = None,
+    *,
+    state: str | None = None,
+    excl_key: str | None = None,
+):
+    clauses = [
+        FactAssertion.subject_type == subject_type,
+        FactAssertion.subject_id == subject_id,
+    ]
+    if fact_key is not None:
+        clauses.append(FactAssertion.fact_key == fact_key)
+    if state is not None:
+        clauses.append(FactAssertion.state == state)
+    if excl_key is not None:
+        clauses.append(FactAssertion.excl_key == excl_key)
+    return select(FactAssertion).where(and_(*clauses))
+
+
+def _incumbent_current(
+    db: Session,
+    subject_type: str,
+    subject_id: int,
+    fact_key: str,
+    excl_key: str,
+) -> FactAssertion | None:
+    return db.scalars(
+        _base_query(subject_type, subject_id, fact_key, state="current", excl_key=excl_key)
+        .order_by(FactAssertion.id.desc())
+        .limit(1)
+    ).first()
+
+
+def _related_subjects(entity: Any) -> list[tuple[str, int]]:
+    asset: Asset | None
+    if isinstance(entity, Asset):
+        asset = entity
+    elif isinstance(entity, Interface):
+        asset = entity.asset
+    else:
+        return []
+    subjects = [("asset", int(asset.id))]
+    if asset.chassis_id:
+        subjects.append(("chassis", int(asset.chassis_id)))
+    return subjects
+
+
+def _cross_fact_incumbents(
+    db: Session,
+    entity: Any,
+    applying_fact_key: str,
+) -> list[FactAssertion]:
+    """Current rows on related subjects for R-H (name vs os, etc.)."""
+    seen: set[tuple[str, int, str, str]] = set()
+    rows: list[FactAssertion] = []
+    for subject_type, subject_id in _related_subjects(entity):
+        for row in db.scalars(
+            _base_query(subject_type, subject_id, state="current").order_by(
+                FactAssertion.id.desc()
+            )
+        ).all():
+            if row.fact_key == applying_fact_key:
+                continue
+            key = (row.subject_type, row.subject_id, row.fact_key, row.excl_key)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(row)
+    return rows
+
+
+def current(
+    db: Session,
+    subject_type: str,
+    subject_id: int,
+    fact_key: str,
+    *,
+    excl_key: str | None = None,
+    apply_ttl: bool = False,
+) -> FactAssertion | None:
+    """R-G: absent → None (caller must declare I2)."""
+    spec = get_fact_spec(fact_key)
+    if excl_key is not None:
+        row = _incumbent_current(db, subject_type, subject_id, fact_key, excl_key)
+        if row and apply_ttl:
+            _maybe_stale(db, row, spec)
+        return row
+
+    rows = list(
+        db.scalars(
+            _base_query(subject_type, subject_id, fact_key, state="current").order_by(
+                FactAssertion.id.desc()
+            )
+        ).all()
+    )
+    if not rows:
+        return None
+    if spec.cardinality == "single" and len(rows) > 1:
+        # single cardinality: prefer highest authority then newest
+        rows.sort(key=lambda r: (r.authority, r.id), reverse=True)
+    row = rows[0]
+    if apply_ttl:
+        _maybe_stale(db, row, spec)
+    return row
+
+
+def current_map(
+    db: Session,
+    subject_type: str,
+    subject_ids: list[int],
+    fact_keys: list[str],
+) -> dict[tuple[int, str], FactAssertion | None]:
+    if not subject_ids or not fact_keys:
+        return {}
+    rows = db.scalars(
+        select(FactAssertion).where(
+            FactAssertion.subject_type == subject_type,
+            FactAssertion.subject_id.in_(subject_ids),
+            FactAssertion.fact_key.in_(fact_keys),
+            FactAssertion.state == "current",
+        )
+    ).all()
+    grouped: dict[tuple[int, str], list[FactAssertion]] = {}
+    for row in rows:
+        grouped.setdefault((row.subject_id, row.fact_key), []).append(row)
+    out: dict[tuple[int, str], FactAssertion | None] = {}
+    for sid in subject_ids:
+        for fk in fact_keys:
+            bucket = grouped.get((sid, fk))
+            if not bucket:
+                out[(sid, fk)] = None
+                continue
+            spec = get_fact_spec(fk)
+            if spec.cardinality == "single" and len(bucket) > 1:
+                bucket.sort(key=lambda r: (r.authority, r.id), reverse=True)
+            out[(sid, fk)] = bucket[0]
+    return out
+
+
+def history(
+    db: Session,
+    subject_type: str,
+    subject_id: int,
+    fact_key: str,
+    *,
+    excl_key: str | None = None,
+) -> list[FactAssertion]:
+    q = _base_query(subject_type, subject_id, fact_key, excl_key=excl_key).order_by(
+        FactAssertion.valid_from.asc(),
+        FactAssertion.id.asc(),
+    )
+    return list(db.scalars(q).all())
+
+
+def _maybe_stale(db: Session, row: FactAssertion, spec) -> None:
+    """R-E: mark stale when ttl_window exceeded for this fact/source."""
+    if spec.ttl_window is None:
+        return
+    ttl = spec.ttl_window
+    if row.last_seen_at and utcnow() - row.last_seen_at > ttl:
+        row.state = "stale"
+        row.valid_to = utcnow()
+        db.flush()
+
+
+def _new_assertion(
+    *,
+    subject_type: str,
+    subject_id: int,
+    fact_key: str,
+    excl_key: str,
+    value_norm: str,
+    value_json: dict | None,
+    source: str,
+    authority: int,
+    confidence: float,
+    observed_at: datetime,
+    state: str,
+    reason: str = "",
+    valid_from_truncated: bool = False,
+) -> FactAssertion:
+    now = observed_at or utcnow()
+    return FactAssertion(
+        subject_type=subject_type,
+        subject_id=subject_id,
+        fact_key=fact_key,
+        excl_key=excl_key,
+        value_norm=value_norm,
+        value_json=value_json or {},
+        source=source,
+        authority=authority,
+        confidence=confidence,
+        observed_at=now,
+        last_seen_at=now,
+        valid_from=now,
+        valid_to=None,
+        state=state,
+        reason=reason,
+        valid_from_truncated=valid_from_truncated,
+        created_at=utcnow(),
+    )
+
+
+def _check_rh_conflict(
+    db: Session,
+    entity: Any,
+    fact_key: str,
+    value_norm: str,
+    authority: int,
+    *,
+    human_confirm: bool,
+) -> ApplyResult | None:
+    global conflict_review_count
+    if human_confirm:
+        return None
+    for other in _cross_fact_incumbents(db, entity, fact_key):
+        if not semantic_contradiction(
+            incumbent_fact_key=other.fact_key,
+            incumbent_value=other.value_norm,
+            new_fact_key=fact_key,
+            new_value=value_norm,
+        ):
+            continue
+        if authority < other.authority or other.source == "manual":
+            conflict_review_count += 1
+            return ApplyResult(
+                action="conflict_review",
+                incumbent=other,
+                conflict={
+                    "incumbent_fact_key": other.fact_key,
+                    "incumbent_value": other.value_norm,
+                    "incumbent_source": other.source,
+                    "incumbent_authority": other.authority,
+                    "new_fact_key": fact_key,
+                    "new_value": value_norm,
+                },
+            )
+    return None
+
+
+def _within_readmission_cooldown(
+    db: Session,
+    subject_type: str,
+    subject_id: int,
+    fact_key: str,
+    excl_key: str,
+    value_norm: str,
+    observed_at: datetime,
+    new_authority: int,
+) -> FactAssertion | None:
+    """R-F: block weak re-admission shortly after stronger supersession."""
+    recent = db.scalars(
+        select(FactAssertion)
+        .where(
+            FactAssertion.subject_type == subject_type,
+            FactAssertion.subject_id == subject_id,
+            FactAssertion.fact_key == fact_key,
+            FactAssertion.excl_key == excl_key,
+            FactAssertion.value_norm == value_norm,
+            FactAssertion.state == "superseded",
+        )
+        .order_by(FactAssertion.valid_to.desc(), FactAssertion.id.desc())
+        .limit(1)
+    ).first()
+    if not recent or not recent.valid_to:
+        return None
+    superseder = None
+    if recent.superseded_by_id:
+        superseder = db.get(FactAssertion, recent.superseded_by_id)
+    if superseder and superseder.authority >= new_authority:
+        if observed_at - recent.valid_to < READMISSION_COOLDOWN:
+            return superseder
+    return None
+
+
+def apply_observation(
+    db: Session,
+    *,
+    fact_key: str,
+    entity: Asset | Interface | Any,
+    value: Any,
+    source: str,
+    observed_at: datetime | None = None,
+    confidence: float | None = None,
+    value_json: dict | None = None,
+    human_confirm: bool = False,
+) -> ApplyResult:
+    """Atomic, idempotent fact transition (R-A..R-H)."""
+    global weak_evidence_count
+
+    spec = get_fact_spec(fact_key)
+    src = str(source or "").lower()
+    if src not in spec.sources and src != "manual":
+        raise ValueError(f"source {source!r} not allowed for {fact_key}")
+
+    subject_type, subject_id = subject_of(fact_key, entity)
+    excl_key = spec.excl_key(subject_type, entity, value)
+    value_norm = _norm_value(value)
+    authority = authority_for(src)
+    conf = confidence if confidence is not None else default_confidence(src)
+    when = observed_at or utcnow()
+
+    incumbent = _incumbent_current(db, subject_type, subject_id, fact_key, excl_key)
+
+    rh = _check_rh_conflict(
+        db, entity, fact_key, value_norm, authority, human_confirm=human_confirm
+    )
+    if rh is not None:
+        return rh
+
+    if incumbent is None:
+        row = _new_assertion(
+            subject_type=subject_type,
+            subject_id=subject_id,
+            fact_key=fact_key,
+            excl_key=excl_key,
+            value_norm=value_norm,
+            value_json=value_json,
+            source=src,
+            authority=authority,
+            confidence=conf,
+            observed_at=when,
+            state="current",
+        )
+        db.add(row)
+        db.flush()
+        return ApplyResult(action="created", assertion=row)
+
+    # R-A refresh
+    if incumbent.value_norm == value_norm and incumbent.source == src:
+        incumbent.last_seen_at = when
+        incumbent.observed_at = when
+        if confidence is not None:
+            incumbent.confidence = conf
+        db.flush()
+        return ApplyResult(action="refresh", assertion=incumbent, incumbent=incumbent)
+
+    # R-H same-slot contradiction against manual name claims
+    if (
+        incumbent.fact_key == fact_key
+        and semantic_contradiction(
+            incumbent_fact_key=incumbent.fact_key,
+            incumbent_value=incumbent.value_norm,
+            new_fact_key=fact_key,
+            new_value=value_norm,
+        )
+        and authority < incumbent.authority
+        and not human_confirm
+    ):
+        conflict_review_count += 1
+        return ApplyResult(
+            action="conflict_review",
+            incumbent=incumbent,
+            conflict={
+                "incumbent_value": incumbent.value_norm,
+                "incumbent_source": incumbent.source,
+                "new_value": value_norm,
+                "new_source": src,
+            },
+        )
+
+    # R-D manual pinned
+    if incumbent.source == "manual" and src != "manual" and not human_confirm:
+        weak = _new_assertion(
+            subject_type=subject_type,
+            subject_id=subject_id,
+            fact_key=fact_key,
+            excl_key=excl_key,
+            value_norm=value_norm,
+            value_json=value_json,
+            source=src,
+            authority=authority,
+            confidence=conf,
+            observed_at=when,
+            state="historical",
+            reason="weak_evidence",
+        )
+        db.add(weak)
+        weak_evidence_count += 1
+        db.flush()
+        return ApplyResult(action="weak_evidence", assertion=weak, incumbent=incumbent)
+
+    # R-F readmission cooldown (anti-flap)
+    cooled = _within_readmission_cooldown(
+        db, subject_type, subject_id, fact_key, excl_key, value_norm, when, authority
+    )
+    if cooled is not None and authority < cooled.authority:
+        weak = _new_assertion(
+            subject_type=subject_type,
+            subject_id=subject_id,
+            fact_key=fact_key,
+            excl_key=excl_key,
+            value_norm=value_norm,
+            value_json=value_json,
+            source=src,
+            authority=authority,
+            confidence=conf,
+            observed_at=when,
+            state="historical",
+            reason="cooldown",
+        )
+        db.add(weak)
+        db.flush()
+        return ApplyResult(action="cooldown", assertion=weak, incumbent=cooled)
+
+    # R-C weak evidence
+    if authority < incumbent.authority and not human_confirm:
+        weak = _new_assertion(
+            subject_type=subject_type,
+            subject_id=subject_id,
+            fact_key=fact_key,
+            excl_key=excl_key,
+            value_norm=value_norm,
+            value_json=value_json,
+            source=src,
+            authority=authority,
+            confidence=conf,
+            observed_at=when,
+            state="historical",
+            reason="weak_evidence",
+        )
+        db.add(weak)
+        weak_evidence_count += 1
+        db.flush()
+        return ApplyResult(action="weak_evidence", assertion=weak, incumbent=incumbent)
+
+    # R-B supersession — demote incumbent before inserting new current (partial unique index).
+    incumbent.valid_to = when
+    incumbent.state = "superseded"
+    db.flush()
+
+    new_row = _new_assertion(
+        subject_type=subject_type,
+        subject_id=subject_id,
+        fact_key=fact_key,
+        excl_key=excl_key,
+        value_norm=value_norm,
+        value_json=value_json,
+        source=src,
+        authority=authority,
+        confidence=conf,
+        observed_at=when,
+        state="current",
+    )
+    db.add(new_row)
+    db.flush()
+
+    incumbent.superseded_by_id = new_row.id
+    db.flush()
+    return ApplyResult(action="superseded", assertion=new_row, incumbent=incumbent)
+
+
+def canonical_name_for_entity(db: Session, entity: Asset | Interface) -> str | None:
+    """Chassis-level canonical name for a NIC member (W1 read helper)."""
+    subject_type, subject_id = subject_of("asset.name", entity)
+    row = current(db, subject_type, subject_id, "asset.name")
+    return row.value_norm if row else None
+
+
+def expire_stale_facts(db: Session, *, now: datetime | None = None) -> int:
+    """R-E batch: mark expired currents as stale (ttl_window None → skip)."""
+    when = now or utcnow()
+    changed = 0
+    rows = db.scalars(select(FactAssertion).where(FactAssertion.state == "current")).all()
+    for row in rows:
+        spec = get_fact_spec(row.fact_key)
+        if spec.ttl_window is None:
+            continue
+        if row.last_seen_at and when - row.last_seen_at > spec.ttl_window:
+            row.state = "stale"
+            row.valid_to = when
+            changed += 1
+    if changed:
+        db.flush()
+    return changed
+
+===== APPENDIX: FactAssertion model (models.py excerpt) =====
+class FactAssertion(Base):
+    """Authoritative fact store with supersession history (OBS-CURRENCY W1)."""
+
+    __tablename__ = "fact_assertions"
+    __table_args__ = (
+        Index(
+            "uq_fact_assertions_current_slot",
+            "subject_type",
+            "subject_id",
+            "excl_key",
+            unique=True,
+            sqlite_where=text("state='current'"),
+        ),
+        Index("ix_fact_assertions_subject_state", "subject_type", "subject_id", "state"),
+        Index("ix_fact_assertions_fact_state", "fact_key", "state"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    subject_type: Mapped[str] = mapped_column(String(16), index=True)
+    subject_id: Mapped[int] = mapped_column(Integer, index=True)
+    fact_key: Mapped[str] = mapped_column(String(64), index=True)
+    excl_key: Mapped[str] = mapped_column(String(128), default="")
+    value_norm: Mapped[str] = mapped_column(String(512), default="")
+    value_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    source: Mapped[str] = mapped_column(String(32), default="")
+    authority: Mapped[int] = mapped_column(Integer, default=0)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    observed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    valid_from: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    valid_to: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    state: Mapped[str] = mapped_column(
+        String(16), default="current"
+    )  # current|stale|superseded|historical
+    superseded_by_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("fact_assertions.id", ondelete="SET NULL"), nullable=True
+    )
+    reason: Mapped[str] = mapped_column(String(64), default="")
+    valid_from_truncated: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
