@@ -50,6 +50,17 @@ dedotto dal solo IP di chassis (test `test_w762_present_l2_unaddressed_declared_
   **0 hit correnti ⇒ 0 cambi di `operational_state`**. Inerte oggi; esercitato dai test
   unitari (`test_w7_consumers`, K4).
 
+> **Precisazione W7C-FIX (2026-07-27, aggiunta post-review, non riscrive la storia).** La misura
+> «0 hit» qui sopra, come originariamente ottenuta da `scripts/w7c_measure.py`, passava
+> `fdb_fresh=False` **cablato**: poiché `present_l2_unaddressed`/`l2_only_allowed` richiedono
+> `mac_fdb_fresh=True`, quel conteggio tornava **0 per costruzione** e **non dimostrava**
+> l'inerzia. Rimisurato con la freschezza FDB **reale** (stessa finestra/logica di
+> `reconcile_asset_presence`): **ancora 0 hit**, ma ora **misurato** — perché **nessuna** porta ha
+> `last_fdb_at` nella finestra 24h (la più recente ~57 h fa). Inoltre l'inerzia su `reliable` vale
+> **strutturalmente** anche a FDB fresco: ogni hit del wire richiede `mac_fdb_fresh=True`, e la
+> stessa porta fresca produce già `physical_reasons=["FDB recente"]` → `reliable=True` senza il
+> wire. Dettaglio in `obs-w7close.md` §W7C-FIX.1.
+
 ## W7.3 — T-a (DEBT-FDB-UPLINK-PORTAL)
 
 **Diagnosi.** `apply_fdb_observation` (`api/app/services/topology.py`, righe ~1252) faceva
