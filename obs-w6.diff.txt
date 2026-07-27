@@ -1,0 +1,451 @@
+diff -ruN w6_before/CHANGELOG.md w6_after/CHANGELOG.md
+--- a/CHANGELOG.md	2026-07-27 21:33:38
++++ b/CHANGELOG.md	2026-07-27 21:32:20
+@@ -1,5 +1,14 @@
+ # Changelog
+ 
++## 0.10.56 — W6: fingerprinting, inferenze AI, generazione proposte alla correntezza
++
++- **W6.1 correntezza dei consumatori (`suggest.best_guess`, `ai_naming._hostnames`, `fingerprint_facts` backfill hostname):** `best_guess` non filtrava lo stato delle `NameProposal` e sorfava proposte **rejected/superseded/archived** — in prod **51 asset** ricevevano come «best guess» un nome che l'utente aveva rifiutato o che era stato soppiantato. Ora i tre percorsi consumano SOLO proposte `pending`; le altre restano a DB (storia leggibile, `escludere ≠ cancellare`). Fatti `fact_assertions` in stato `superseded/historical` non erano consumati (i percorsi leggono `resolver.current` o `observations_raw`, mai gli stati non correnti) → per quel lato il fix è preventivo (misurato: 0).
++- **W6.2 DEBT-IPP-PRECEDENCE (T-c/T-d), gerarchia unica I5:** `best_guess` decideva la precedenza con un **secondo prospetto di pesi** (`SOURCE_WEIGHT`) non coincidente con I5. Rimosso: ora ordina per `authority_for` (registro I5) primario, `confidence` a parità. `ipp`/`snmp` hanno un rank **dichiarato esplicito** in `AUTHORITY_RANK` (ipp=88, snmp=87: identità auto-dichiarata dal device via management, sotto l'AI curata e sopra dhcp/fritz). Root-cause di T-c/T-d: `create_name_proposal` faceva `db.add` senza sincronizzare la relazione `asset.name_proposals` → le proposte create non erano visibili in-sessione; ora `append` alla relazione. T-c → `('Stampante Studio','ipp')`, T-d → proposta `snmp` presente. Test non indeboliti.
++- **W6.3 soppressione alla generazione (già conforme):** `should_suppress_proposal` sopprime per **provenienza + soggetto** (chassis-manual blocca sorgenti più deboli; dedup per valore), mai per specificità del nome (I6, K6). Gate `rg 'scoreSpecificity|specificity' api/` **vuoto**.
++- **W6.2/6.4 R-D:** un'inferenza AI resta marcata (`source=ai`, `status=pending`) e NON sovrascrive un valore `manual`; `ai` non entra come sorgente hostname fattuale nel payload LLM.
++- **W6.4 gate G6 (writer fermi, `now` ricalcolato):** `best_guess` PRE vs DEPLOYED, per id. Baseline pre-deploy `diff=0` (inline-old fedele). Post-deploy: **54 differenze, tutte (a)** — 51 `status_exclusion` (correntezza) + 3 `i5_reorder` (id 109/120/134: `ai` pending ora batte `oui`/`fritz` per I5). Zero (b), zero (c). Fingerprint/AI generation NON esercitati in prod (K4): filtro preventivo + AI = API a pagamento; copertura nei test unitari.
++- **W6.6 test (nodi nominati):** Python nominati verdi (incl. `test_w6_consumers` W6.6.1-6.4, T-c/T-d ora verdi) + 39 JS. Gate I6 vuoto.
++
+ ## 0.10.55 — W5-bis: chiusure prima di W6
+ 
+ - **W5b.1 mapping livello→stato TOTALE (`trust.py` `_apply_level_meta`):** per ogni livello attivo (`known`/`confirmed_present`) `operational_state="active"` viene scritto SEMPRE. Prima, se `inventory_hidden_auto` era falso, `operational_state` restava invariato e `_build_trust_plan` (che confronta `operational_state`) marcava `structural` in perpetuo — stessa forma del difetto 109 dietro una condizione. L'auto-hide viene revocato; un nascondimento MANUALE resta rispettato ed esplicitamente escluso (non è `structural`: il piano confronta `operational_state`, non i flag di hide). Mapping reso totale, gate NON reso cieco (F-7: unico writer del campo).
+diff -ruN w6_before/VERSION w6_after/VERSION
+--- a/VERSION	2026-07-27 21:33:17
++++ b/VERSION	2026-07-27 21:32:20
+@@ -1 +1 @@
+-0.10.55
++0.10.56
+diff -ruN w6_before/api/app/facts/registry.py w6_after/api/app/facts/registry.py
+--- a/api/app/facts/registry.py	2026-07-27 21:32:35
++++ b/api/app/facts/registry.py	2026-07-27 21:32:20
+@@ -10,9 +10,16 @@
+ 
+ # I5 — single hierarchy: manual > ai > dhcp(0.95) > fritz(0.90) > oui(0.70)
+ # Discovery family (scan/arp/icmp) shares nmap tier — declared, not translated.
++# W6.2 (DEBT-IPP-PRECEDENCE): ipp/snmp sono identità AUTO-DICHIARATA dal device via
++# protocolli di management (IPP printer-name; SNMP make-and-model/sysName). Autorità
++# DICHIARATA esplicita — non tradotta, non approssimata — appena sotto l'AI curata e
++# sopra i nomi assegnati dalla rete (dhcp/fritz): ipp=88, snmp=87. Unica gerarchia:
++# best_guess ora ordina per authority_for (nessun secondo prospetto di pesi).
+ AUTHORITY_RANK: dict[str, int] = {
+     "manual": 100,
+     "ai": 90,
++    "ipp": 88,
++    "snmp": 87,
+     "dhcp": 85,
+     "fritz": 80,
+     "mgmt": 80,
+@@ -34,6 +41,8 @@
+ AUTHORITY_CONFIDENCE: dict[str, float] = {
+     "manual": 1.0,
+     "ai": 0.96,
++    "ipp": 0.96,
++    "snmp": 0.94,
+     "dhcp": 0.95,
+     "fritz": 0.90,
+     "oui": 0.70,
+diff -ruN w6_before/api/app/services/ai_naming.py w6_after/api/app/services/ai_naming.py
+--- a/api/app/services/ai_naming.py	2026-07-27 21:33:03
++++ b/api/app/services/ai_naming.py	2026-07-27 21:32:20
+@@ -233,6 +233,10 @@
+ def _hostnames(asset: Asset) -> dict[str, str]:
+     out = {}
+     for p in asset.name_proposals or []:
++        # W6.1 — solo proposte attive alimentano il profilo AI: rejected/superseded/
++        # archived restano a DB ma non entrano nel payload LLM.
++        if (p.status or "pending") != "pending":
++            continue
+         src = (p.source or "").lower()
+         if src in {"fritz", "mdns", "ssdp", "dns", "ipp", "snmp", "http"} and p.value:
+             out[src] = p.value.strip()
+diff -ruN w6_before/api/app/services/fingerprint_facts.py w6_after/api/app/services/fingerprint_facts.py
+--- a/api/app/services/fingerprint_facts.py	2026-07-27 21:33:08
++++ b/api/app/services/fingerprint_facts.py	2026-07-27 21:32:20
+@@ -1286,6 +1286,10 @@
+                     touched.add(asset.id)
+                     break
+         for prop in asset.name_proposals or []:
++            # W6.1 — un fatto/proposta non-attiva (rejected/superseded/archived) non
++            # entra nel fingerprinting; la storia resta a DB, ma non deriva device_class.
++            if (prop.status or "pending") != "pending":
++                continue
+             if prop.source in {"fritz", "dns", "dhcp", "mdns"} and prop.value:
+                 n = apply_hostname_class_facts(
+                     db,
+diff -ruN w6_before/api/app/services/identity.py w6_after/api/app/services/identity.py
+--- a/api/app/services/identity.py	2026-07-27 21:32:59
++++ b/api/app/services/identity.py	2026-07-27 21:32:20
+@@ -431,7 +431,9 @@
+         value=text[:255],
+         confidence=confidence,
+     )
+-    db.add(prop)
++    # W6.2: appendi alla relazione (non solo db.add) così il grafo in-sessione è
++    # coerente subito — best_guess / consumatori vedono la proposta senza expire.
++    asset.name_proposals.append(prop)
+     return prop
+ 
+ 
+diff -ruN w6_before/api/app/services/suggest.py w6_after/api/app/services/suggest.py
+--- a/api/app/services/suggest.py	2026-07-27 21:32:53
++++ b/api/app/services/suggest.py	2026-07-27 21:32:20
+@@ -17,20 +17,9 @@
+ )
+ from app.services.inventory import is_synthetic_fritz_name
+ 
+-SOURCE_WEIGHT = {
+-    "dhcp": 0.95,  # parlante: conf alta; rumore non arriva come proposal
+-    "fritz": 0.9,  # sintetici PC-MAC esclusi in best_guess
+-    "ipp": 1.0,
+-    "snmp": 0.96,
+-    "dns": 0.8,
+-    "mdns": 0.75,
+-    "http": 0.7,
+-    "ssdp": 0.55,
+-    "oui": 0.7,
+-    "nmap": 0.65,
+-    "ai": 0.5,
+-    "internet": 0.45,
+-}
++# W6.1 — solo proposte ATTIVE alimentano inferenza/presentazione: superseded /
++# archived / rejected restano a DB (storia leggibile) ma NON vengono consumate.
++_ACTIVE_PROPOSAL_STATUS = "pending"
+ 
+ # Vocabolario fonti unico (allineato al pannello inventario).
+ SOURCE_LABEL_IT = {
+@@ -86,25 +75,36 @@
+ 
+ 
+ def best_guess(asset: Asset) -> tuple[str, str, float]:
+-    """Return (value, source, confidence) for display/adoption."""
+-    ranked: list[tuple[float, str, str]] = []
++    """Return (value, source, confidence) for display/adoption.
++
++    W6.2 (DEBT-IPP-PRECEDENCE): precedenza dall'UNICA gerarchia I5 (authority_for),
++    non da un secondo prospetto di pesi. Ordine primario = autorità della sorgente
++    (manual > ai > ipp > snmp > dhcp > fritz > … > oui); a parità, confidence.
++    W6.1: solo proposte in stato attivo (pending); rejected/superseded/archived
++    restano a DB ma non alimentano l'inferenza.
++    """
++    from app.facts.registry import authority_for
++
++    mac = asset.interfaces[0].mac if asset.interfaces else ""
++    ranked: list[tuple[int, float, str, str]] = []
+     for p in asset.name_proposals:
+-        mac = asset.interfaces[0].mac if asset.interfaces else ""
++        if (p.status or _ACTIVE_PROPOSAL_STATUS) != _ACTIVE_PROPOSAL_STATUS:
++            continue
++        if not p.value:
++            continue
+         if p.source == "fritz" and is_synthetic_fritz_name(p.value, mac):
+             continue
+-        w = SOURCE_WEIGHT.get(p.source, 0.4) * float(p.confidence or 0.5)
+-        if p.value:
+-            ranked.append((w, p.value, p.source))
+-    if asset.vendor and not any(r[2] == "oui" for r in ranked):
+-        name, cat, conf = classify_oui(
+-            asset.interfaces[0].mac if asset.interfaces else "", asset.vendor
++        ranked.append(
++            (authority_for(p.source), float(p.confidence or 0.5), p.value, p.source)
+         )
++    if asset.vendor and not any(r[3] == "oui" for r in ranked):
++        name, cat, conf = classify_oui(mac, asset.vendor)
+         if name:
+-            ranked.append((0.7 * conf, name, "oui"))
+-    ranked.sort(key=lambda x: x[0], reverse=True)
++            ranked.append((authority_for("oui"), conf, name, "oui"))
++    ranked.sort(key=lambda x: (x[0], x[1]), reverse=True)
+     if not ranked:
+         return "", "", 0.0
+-    return ranked[0][1], ranked[0][2], ranked[0][0]
++    return ranked[0][2], ranked[0][3], ranked[0][1]
+ 
+ 
+ def ensure_oui_proposals(db: Session, asset: Asset) -> None:
+diff -ruN w6_before/docs/KNOWN_DEBT.md w6_after/docs/KNOWN_DEBT.md
+--- a/docs/KNOWN_DEBT.md	2026-07-27 21:33:47
++++ b/docs/KNOWN_DEBT.md	2026-07-27 21:32:20
+@@ -71,13 +71,12 @@
+ - **Vietato:** inseguirli come fix runtime; schema prod = `create_all`.
+ - **Doc:** [`docs/obs-wd.md`](obs-wd.md)
+ 
+-## DEBT-IPP-PRECEDENCE (T-c / T-d)
++## DEBT-IPP-PRECEDENCE (T-c / T-d) — CHIUSO in W6 (0.10.56)
+ 
+-- **Priorità:** media (autorità naming) — registrato W-D 2026-07-26, **non** corretto in questa ondata
+-- **Test:** `test_ipp_precedence_and_human_category_override` (T-c); `test_snmp_enrichment_creates_proposal_without_overwriting_name` (T-d)
+-- **Osservato T-c:** `best_guess` → `('HP123','fritz')` invece di `('Stampante Studio','ipp')`
+-- **Osservato T-d:** proposal snmp assente / lista vuota vs atteso `[('snmp','HP LaserJet M404dn')]`
+-- **Nota:** non risolti come collaterale di D.1. I5 / gerarchia naming — ondata dedicata.
++- **Priorità:** media (autorità naming) — registrato W-D 2026-07-26, **chiuso** W6 2026-07-27
++- **Test:** `test_ipp_precedence_and_human_category_override` (T-c); `test_snmp_enrichment_creates_proposal_without_overwriting_name` (T-d) — entrambi VERDI
++- **Root-cause:** `create_name_proposal` faceva `db.add` senza sincronizzare la relazione `asset.name_proposals` (proposte create invisibili in-sessione) + `best_guess` usava un secondo prospetto di pesi (`SOURCE_WEIGHT`) non coincidente con I5.
++- **Fix (W6.2):** `create_name_proposal` → `append` alla relazione; `best_guess` ordina per `authority_for` (I5) primario + confidence; `ipp=88`/`snmp=87` dichiarati in `AUTHORITY_RANK`. Nessuna seconda gerarchia. Test non indeboliti.
+ 
+ ## DEBT-FDB-UPLINK-PORTAL (T-a)
+ 
+diff -ruN w6_before/scripts/w6_gate.py w6_after/scripts/w6_gate.py
+--- a/scripts/w6_gate.py	2026-07-27 21:32:20
++++ b/scripts/w6_gate.py	2026-07-27 21:32:20
+@@ -0,0 +1,93 @@
++"""W6 gate G6 — equivalence of the naming-inference path (best_guess) PRE vs POST.
++
++Read-only. Reimplements the PRE-W6 best_guess INLINE (second-hierarchy SOURCE_WEIGHT,
++all statuses) and compares it, per asset, against the DEPLOYED best_guess imported from
++app.services.suggest.
++
++- On 0.10.55 (pre): deployed == old-inline → diff must be 0 (validates the inline is
++  faithful to current behavior; the baseline is taken at writer-fermi).
++- On 0.10.56 (post): deployed == new (I5 + pending-only) → diff enumerates every change,
++  decomposed by cause (status-exclusion vs I5-reorder) for classification.
++
++Fingerprint and AI generation paths are NOT exercised here (K4): the code change is a
++currency FILTER (preventive; stored FingerprintFacts are unchanged by a code change) and
++AI generation consumes a paid API — both are covered by unit tests (test_w6_consumers).
++"""
++
++from __future__ import annotations
++
++import sys
++
++sys.path.insert(0, "/app")
++
++from sqlalchemy import create_engine, select
++from sqlalchemy.orm import sessionmaker
++
++from app.config import get_settings
++from app.models import Asset, NameProposal
++from app.services.identity import classify_oui
++from app.services.inventory import is_synthetic_fritz_name
++from app.services.suggest import best_guess  # deployed
++
++# Faithful copy of the PRE-W6 second hierarchy (do NOT edit — it is the baseline).
++OLD_SOURCE_WEIGHT = {
++    "dhcp": 0.95, "fritz": 0.9, "ipp": 1.0, "snmp": 0.96, "dns": 0.8,
++    "mdns": 0.75, "http": 0.7, "ssdp": 0.55, "oui": 0.7, "nmap": 0.65,
++    "ai": 0.5, "internet": 0.45,
++}
++
++
++def old_best_guess(asset: Asset) -> tuple[str, str]:
++    ranked: list[tuple[float, str, str]] = []
++    mac = asset.interfaces[0].mac if asset.interfaces else ""
++    for p in asset.name_proposals:
++        if p.source == "fritz" and is_synthetic_fritz_name(p.value, mac):
++            continue
++        w = OLD_SOURCE_WEIGHT.get(p.source, 0.4) * float(p.confidence or 0.5)
++        if p.value:
++            ranked.append((w, p.value, p.source))
++    if asset.vendor and not any(r[2] == "oui" for r in ranked):
++        name, _cat, conf = classify_oui(mac, asset.vendor)
++        if name:
++            ranked.append((0.7 * conf, name, "oui"))
++    ranked.sort(key=lambda x: x[0], reverse=True)
++    return (ranked[0][1], ranked[0][2]) if ranked else ("", "")
++
++
++def main() -> int:
++    settings = get_settings()
++    db = sessionmaker(bind=create_engine(f"sqlite:///{settings.sqlite_path}"))()
++    try:
++        diffs = []
++        for a in db.scalars(select(Asset)).all():
++            old = old_best_guess(a)
++            new = tuple(best_guess(a)[:2])
++            if old == new:
++                continue
++            top = next(
++                (p for p in a.name_proposals if p.value == old[0] and p.source == old[1]),
++                None,
++            )
++            old_status = (top.status if top is not None else "n/a")
++            cause = "status_exclusion" if (top is not None and (top.status or "pending") != "pending") else "i5_reorder"
++            diffs.append((a.id, old, new, old_status, cause))
++        diffs.sort()
++        by_cause = {}
++        for _id, _o, _n, _s, c in diffs:
++            by_cause[c] = by_cause.get(c, 0) + 1
++        print(f"G6 best_guess diffs old->deployed: {len(diffs)} by_cause={by_cause}")
++        for i, o, n, s, c in diffs:
++            print(f"  id={i} old={o} new={n} old_status={s} cause={c}")
++        # Regime name-proposal counters for the record.
++        npt = db.scalar(select(NameProposal.id).select_from(NameProposal))
++        total = db.query(NameProposal).count()
++        pending = db.query(NameProposal).filter(NameProposal.status == "pending").count()
++        print(f"name_proposals total={total} pending={pending}")
++        return 0
++    finally:
++        db.rollback()
++        db.close()
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff -ruN w6_before/tests/test_dhcp_names.py w6_after/tests/test_dhcp_names.py
+--- a/tests/test_dhcp_names.py	2026-07-27 21:33:15
++++ b/tests/test_dhcp_names.py	2026-07-27 21:32:20
+@@ -20,7 +20,8 @@
+     should_propose_dhcp_hostname,
+     upsert_dhcp_name_proposal,
+ )
+-from app.services.suggest import SOURCE_WEIGHT, best_guess
++from app.facts.registry import authority_for
++from app.services.suggest import best_guess
+ 
+ 
+ @pytest.fixture()
+@@ -115,7 +116,8 @@
+     value, source, _ = best_guess(asset)
+     assert source == "dhcp"
+     assert value == "AmazonAQM-008G"
+-    assert SOURCE_WEIGHT["dhcp"] > SOURCE_WEIGHT["oui"]
++    # I5 unica gerarchia (W6.2): dhcp precede oui nel registro autorità.
++    assert authority_for("dhcp") > authority_for("oui")
+ 
+ 
+ def test_should_propose():
+diff -ruN w6_before/tests/test_w6_consumers.py w6_after/tests/test_w6_consumers.py
+--- a/tests/test_w6_consumers.py	2026-07-27 21:32:20
++++ b/tests/test_w6_consumers.py	2026-07-27 21:32:20
+@@ -0,0 +1,122 @@
++"""W6 — fingerprint / AI / name-proposal consumers respect currency (stale/superseded
++excluded) and I2/R-D. Behavioral: no assertions on source strings.
++"""
++
++from __future__ import annotations
++
++import sys
++import uuid
++from pathlib import Path
++
++import pytest
++from sqlalchemy import create_engine, select
++from sqlalchemy.orm import sessionmaker
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
++
++from app.db import Base
++from app.models import Asset, NameProposal
++from app.services.ai_naming import _hostnames, _upsert_ai_proposal
++from app.services.fingerprint_facts import (
++    backfill_fingerprint_facts,
++    best_classify_payload,
++    fingerprint_summary,
++)
++from app.services.suggest import best_guess
++
++
++@pytest.fixture()
++def db(tmp_path):
++    engine = create_engine(f"sqlite:///{tmp_path / 'w6.db'}")
++    Base.metadata.create_all(engine)
++    session = sessionmaker(bind=engine)()
++    yield session
++    session.close()
++
++
++def _asset(db, **kw):
++    a = Asset(uid=str(uuid.uuid4()), name=kw.pop("name", ""), category=kw.pop("category", "unknown"), meta=kw.pop("meta", {}))
++    for k, v in kw.items():
++        setattr(a, k, v)
++    db.add(a)
++    db.flush()
++    return a
++
++
++def test_w661_superseded_proposal_not_fingerprinted_but_history_readable(db):
++    """W6.6.1 — a superseded proposal does not derive device_class; row stays at DB."""
++    a = _asset(db, name="")
++    a.name_proposals.append(
++        NameProposal(asset_id=a.id, source="fritz", value="philips-hue-bridge",
++                     confidence=0.9, status="superseded")
++    )
++    db.flush()
++    stats = backfill_fingerprint_facts(db)
++    assert stats["hostname"] == 0  # superseded hostname did not enter fingerprinting
++    # History remains readable (not deleted).
++    rows = db.scalars(select(NameProposal).where(NameProposal.asset_id == a.id)).all()
++    assert [(r.status, r.value) for r in rows] == [("superseded", "philips-hue-bridge")]
++
++
++def test_w662_superseded_proposal_not_consumed_by_best_guess(db):
++    """W6.6.2 — a superseded proposal is not surfaced as the best guess."""
++    a = _asset(db, name="")
++    a.name_proposals.append(
++        NameProposal(asset_id=a.id, source="dhcp", value="Rejected-Name",
++                     confidence=0.95, status="superseded")
++    )
++    a.name_proposals.append(
++        NameProposal(asset_id=a.id, source="mdns", value="Active-Name",
++                     confidence=0.8, status="pending")
++    )
++    db.flush()
++    value, _source, _conf = best_guess(a)
++    assert value == "Active-Name"  # superseded higher-authority proposal ignored
++
++
++def test_w662_rejected_proposal_not_consumed(db):
++    """W6.1 — a rejected proposal never wins best_guess (user said no)."""
++    a = _asset(db, name="")
++    a.name_proposals.append(
++        NameProposal(asset_id=a.id, source="fritz", value="Nope",
++                     confidence=0.9, status="rejected")
++    )
++    db.flush()
++    assert best_guess(a)[0] == ""  # nothing active → absence declared (I2)
++
++
++def test_w663_ai_inference_marked_and_does_not_supersede_manual(db):
++    """W6.6.3 / R-D — an AI proposal is marked source=ai and never rewrites a manual name."""
++    a = _asset(db, name="NAS Michele", meta={"manual_overrides": ["name"]})
++    prop = _upsert_ai_proposal(db, a.id, value="Guessed Box", confidence=0.85, evidence="oui")
++    db.flush()
++    assert a.name == "NAS Michele"  # manual value untouched
++    assert prop.source == "ai" and prop.status == "pending"  # marked as inference
++    # AI proposal excluded from AI payload hostnames map is not required, but it must
++    # NOT masquerade as a factual hostname source.
++    assert "ai" not in _hostnames(a)
++
++
++def test_w664_fingerprint_on_absent_facts_declares_absence(db):
++    """W6.6.4 / I2 — no facts → payload is None / empty, never a fabricated value."""
++    a = _asset(db, name="")
++    db.flush()
++    assert best_classify_payload(db, a.id) is None
++    assert fingerprint_summary(db, a.id) == {}
++
++
++def test_w661_hostnames_payload_excludes_non_pending(db):
++    """W6.1 — AI payload hostnames map ignores non-pending proposals."""
++    a = _asset(db, name="")
++    a.name_proposals.append(
++        NameProposal(asset_id=a.id, source="fritz", value="Old-Host",
++                     confidence=0.9, status="archived")
++    )
++    a.name_proposals.append(
++        NameProposal(asset_id=a.id, source="mdns", value="Live-Host",
++                     confidence=0.8, status="pending")
++    )
++    db.flush()
++    hn = _hostnames(a)
++    assert hn.get("mdns") == "Live-Host"
++    assert "fritz" not in hn
+diff -ruN w6_before/web/package.json w6_after/web/package.json
+--- a/web/package.json	2026-07-27 21:33:20
++++ b/web/package.json	2026-07-27 21:32:20
+@@ -1,7 +1,7 @@
+ {
+   "name": "lan-observatory-web",
+   "private": true,
+-  "version": "0.10.55",
++  "version": "0.10.56",
+   "type": "module",
+   "scripts": {
+     "dev": "vite",
