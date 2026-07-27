@@ -224,20 +224,314 @@ diff -ruN w7_before/tests/test_w7_consumers.py w7_after/tests/test_w7_consumers.
 diff -ruN w7_before/scripts/w7_macip_blast.py w7_after/scripts/w7_macip_blast.py
 --- /dev/null
 +++ b/scripts/w7_macip_blast.py
-@@ (nuovo) — misura read-only blast-radius policy PIENA (regole #3/#5); enumera per id i
-+           disaccordi vs operational_state (52/151). Read-only, rollback.
+@@ -0,0 +1,111 @@
++"""W7.2.3 read-only blast-radius of wiring mac_ip_policy into presence.
++
++Read-only (rollback). For every asset it builds MacIpPresenceInputs from MEASURED
++data and runs classify_mac_ip_presence, then compares the policy-implied presence
++(present*/l2_only_allowed => present; stale/superseded => not-current) against the
++CURRENT operational_state. Enumerates disagreements per id (blast radius). Nothing
++is inferred or invented; unknown mgmt_ip stays None.
++"""
++
++from __future__ import annotations
++
++import os
++import sys
++from datetime import datetime, timedelta
++
++sys.path.insert(0, "/app")
++
++from sqlalchemy import create_engine, select
++from sqlalchemy.orm import sessionmaker
++
++from app.config import get_settings
++from app.models import Asset, SwitchPort
++from app.services.inventory import current_ip
++from app.services.mac_ip_policy import MacIpPresenceInputs, classify_mac_ip_presence, is_l2_only_exception
++
++PRESENT_DECISIONS = {"present", "present_l2_unaddressed", "l2_only_allowed"}
++
++
++def _text(a: Asset) -> str:
++    return " ".join(
++        str(x or "") for x in (a.name, a.category, getattr(a, "vendor", ""), getattr(a, "model", ""))
++    ).lower()
++
++
++def _exception_class(a: Asset) -> str | None:
++    t = _text(a)
++    if "powerline" in t or "510e" in t or "fritz-powerline" in t or "fritz powerline" in t:
++        return "powerline"
++    return None
++
++
++def main() -> int:
++    settings = get_settings()
++    hours = max(1, int(os.environ.get("ASSET_STALE_AFTER_HOURS", "24")))
++    db = sessionmaker(bind=create_engine(f"sqlite:///{settings.sqlite_path}"))()
++    try:
++        now = datetime.utcnow()
++        cutoff = now - timedelta(hours=hours)
++        assets = db.scalars(select(Asset)).all()
++        by_id = {a.id: a for a in assets}
++
++        # chassis rollup: any member with a current IP
++        chassis_has_ip: dict[int, bool] = {}
++        for a in assets:
++            if a.chassis_id:
++                chassis_has_ip[a.chassis_id] = chassis_has_ip.get(a.chassis_id, False) or bool(current_ip(a))
++
++        def fdb_fresh(a: Asset) -> bool:
++            for p in db.scalars(select(SwitchPort).where(SwitchPort.asset_id == a.id)).all():
++                if p.last_fdb_at and p.last_fdb_at >= cutoff:
++                    return True
++            for kind, ts in dict(a.presence_sources or {}).items():
++                if "fdb" in str(kind).lower():
++                    try:
++                        t = ts if isinstance(ts, datetime) else datetime.fromisoformat(str(ts).replace("Z", ""))
++                    except ValueError:
++                        t = None
++                    if t and t >= cutoff:
++                        return True
++            return False
++
++        decisions: dict[str, int] = {}
++        disagreements = []
++        for a in assets:
++            has_ip = bool(current_ip(a))
++            ever_ip = any(addr.ip for i in a.interfaces for addr in i.addresses)
++            ch_ip = chassis_has_ip.get(a.chassis_id, has_ip) if a.chassis_id else has_ip
++            inp = MacIpPresenceInputs(
++                mac_fdb_fresh=fdb_fresh(a),
++                mac_has_history_only=(ever_ip and not has_ip),
++                mac_has_current_ip=has_ip,
++                chassis_has_current_ip=ch_ip,
++                chassis_mgmt_ip=None,
++                l2_only_exception_class=_exception_class(a),
++                superseded_by_newer_binding=False,
++            )
++            d = classify_mac_ip_presence(inp)
++            decisions[d] = decisions.get(d, 0) + 1
++            policy_present = d in PRESENT_DECISIONS
++            op = (a.meta or {}).get("operational_state") or "active"
++            cur_present = op == "active"
++            if policy_present != cur_present:
++                disagreements.append((a.id, d, op, has_ip, ch_ip, inp.mac_fdb_fresh, a.chassis_id))
++
++        print("POLICY_DECISIONS:", dict(sorted(decisions.items())))
++        print(f"DISAGREEMENTS vs operational_state: {len(disagreements)}")
++        for a_id, d, op, has_ip, ch_ip, fdb, cid in sorted(disagreements):
++            a = by_id[a_id]
++            print(
++                f"  id={a_id} policy={d} op_state={op} has_ip={has_ip} chassis_ip={ch_ip} "
++                f"fdb_fresh={fdb} chassis={cid} name={(a.name or '')!r} cat={(a.category or '')!r}"
++            )
++        return 0
++    finally:
++        db.rollback()
++        db.close()
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
 diff -ruN w7_before/scripts/w7_wire_predict.py w7_after/scripts/w7_wire_predict.py
 --- /dev/null
 +++ b/scripts/w7_wire_predict.py
-@@ (nuovo) — misura read-only del wire RISTRETTO (present_l2_unaddressed/l2_only_allowed):
-+           replica reliable/stale old vs new, enumera cambi operational_state per id.
-+           Prod: 0 hit ⇒ 0 cambi. Read-only, rollback.
+@@ -0,0 +1,135 @@
++"""W7.2/W7.5 read-only prediction of the NARROW mac_ip_policy wire effect.
++
++Replicates reconcile_asset_presence's reliable/stale decision for OLD (deployed) vs NEW
++(with policy_present ∈ {present_l2_unaddressed, l2_only_allowed}) and enumerates, per id,
++the assets whose operational_state would change. Read-only (rollback). The wire is
++additive: it can only turn reliable False→True (prevent/lift auto-hide), never force stale.
++"""
++
++from __future__ import annotations
++
++import os
++import sys
++from datetime import datetime, timedelta
++
++sys.path.insert(0, "/app")
++
++from sqlalchemy import create_engine, select
++from sqlalchemy.orm import sessionmaker
++
++from app.config import get_settings
++from app.models import Asset, Switch, SwitchPort
++from app.services.inventory import current_ip, inventory_may_set_operational_state
++from app.services.mac_ip_policy import MacIpPresenceInputs, classify_mac_ip_presence
++from app.services.trust import is_portal_evidence
++
++
++def _recent(value, cutoff):
++    if isinstance(value, datetime):
++        return value >= cutoff
++    try:
++        return datetime.fromisoformat(str(value or "").replace("Z", "")) >= cutoff
++    except (ValueError, TypeError):
++        return False
++
++
++def _exc(a):
++    t = " ".join(str(x or "") for x in (a.name, a.category, a.vendor)).lower()
++    return "powerline" if ("powerline" in t or "510e" in t) else None
++
++
++def main() -> int:
++    settings = get_settings()
++    hours = max(1, int(os.environ.get("ASSET_STALE_AFTER_HOURS", "24")))
++    db = sessionmaker(bind=create_engine(f"sqlite:///{settings.sqlite_path}"))()
++    try:
++        now = datetime.utcnow()
++        cutoff = now - timedelta(hours=hours)
++        assets = db.scalars(select(Asset)).all()
++        chassis_ip = {}
++        for a in assets:
++            if a.chassis_id:
++                chassis_ip[a.chassis_id] = chassis_ip.get(a.chassis_id, False) or bool(current_ip(a))
++
++        changes = []
++        policy_hits = []
++        for a in assets:
++            meta = dict(a.meta or {})
++            if meta.get("operational_state") == "archived" and meta.get("canonical_asset_id"):
++                continue
++            reachability = dict(meta.get("reachability") or {})
++            fritz = dict(dict(meta.get("discovery") or {}).get("fritz") or {})
++            port = db.scalar(select(SwitchPort).where(SwitchPort.asset_id == a.id))
++            physical = bool(port and port.last_fdb_at and port.last_fdb_at >= cutoff)
++            infra = dict(meta.get("infrastructure_identity") or {})
++            sw = db.get(Switch, infra.get("switch_id")) if infra.get("switch_id") else None
++            if sw:
++                poll = dict((sw.meta or {}).get("snmp_poll") or {})
++                if poll.get("ok") and _recent(poll.get("at"), cutoff):
++                    physical = True
++            recent_portal = any(
++                is_portal_evidence(str(k)) and _recent(ts, cutoff)
++                for k, ts in dict(a.presence_sources or {}).items()
++            )
++            reliable_old = (
++                reachability.get("status") == "reachable" or physical or recent_portal
++            )
++
++            has_ip = bool(current_ip(a))
++            ever_ip = any(addr.ip for i in a.interfaces for addr in i.addresses)
++            ch_ip = chassis_ip.get(a.chassis_id, has_ip) if a.chassis_id else has_ip
++            fdb_fresh = bool(port and port.last_fdb_at and port.last_fdb_at >= cutoff)
++            decision = classify_mac_ip_presence(
++                MacIpPresenceInputs(
++                    mac_fdb_fresh=fdb_fresh,
++                    mac_has_history_only=(ever_ip and not has_ip),
++                    mac_has_current_ip=has_ip,
++                    chassis_has_current_ip=ch_ip,
++                    chassis_mgmt_ip=None,
++                    l2_only_exception_class=_exc(a),
++                    superseded_by_newer_binding=False,
++                )
++            )
++            policy_present = decision in {"present_l2_unaddressed", "l2_only_allowed"}
++            if not policy_present:
++                continue
++            policy_hits.append((a.id, decision))
++            reliable_new = reliable_old or policy_present
++            if reliable_new == reliable_old:
++                continue  # no reliability change → no state change
++
++            previous = meta.get("operational_state") or "active"
++            trust_level = (a.trust_level or "").strip()
++            no_ip = not has_ip
++            negative = reachability.get("status") == "no_reply" or (no_ip and fritz.get("active") is False)
++            old_ts = not a.portal_last_seen or a.portal_last_seen < cutoff
++            stale_old = bool(negative and not reliable_old and old_ts)
++            stale_new = bool(negative and not reliable_new and old_ts)
++            # OLD outcome
++            old_out = previous
++            if stale_old and inventory_may_set_operational_state(trust_level=trust_level, current_state=previous, new_state="stale_unlocated", reliable=reliable_old):
++                old_out = "stale_unlocated"
++            elif (reliable_old or previous == "stale_unlocated") and inventory_may_set_operational_state(trust_level=trust_level, current_state=previous, new_state="active", reliable=reliable_old):
++                old_out = "active"
++            # NEW outcome
++            new_out = previous
++            if stale_new and inventory_may_set_operational_state(trust_level=trust_level, current_state=previous, new_state="stale_unlocated", reliable=reliable_new):
++                new_out = "stale_unlocated"
++            elif (reliable_new or previous == "stale_unlocated") and inventory_may_set_operational_state(trust_level=trust_level, current_state=previous, new_state="active", reliable=reliable_new):
++                new_out = "active"
++            if old_out != new_out:
++                changes.append((a.id, decision, previous, old_out, new_out, trust_level, a.chassis_id, (a.name or "")))
++
++        print(f"POLICY_HITS (present_l2_unaddressed/l2_only_allowed): {len(policy_hits)} {sorted(policy_hits)}")
++        print(f"OPERATIONAL_STATE_CHANGES (new wire): {len(changes)}")
++        for a_id, d, prev, oo, no, tl, cid, nm in sorted(changes):
++            print(f"  id={a_id} decision={d} prev={prev} old_out={oo} new_out={no} trust={tl} chassis={cid} name={nm!r}")
++        return 0
++    finally:
++        db.rollback()
++        db.close()
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
 diff -ruN w7_before/scripts/w7_g7.py w7_after/scripts/w7_g7.py
 --- /dev/null
 +++ b/scripts/w7_g7.py
-@@ (nuovo) — gate G7: snapshot (operational_state, presence_state, trust_level) per id,
-+           riesegue reconcile_asset_presence in-sessione, enumera cambi, rollback.
-+           Prod 0.10.58: assets=151 changes=0.
+@@ -0,0 +1,56 @@
++"""W7.4 G7 equivalence gate (writers stopped, read-only rollback).
++
++Captures per-asset (operational_state, presence_state, trust_level), re-runs the
++DEPLOYED reconcile_asset_presence in-session, and enumerates every per-id change.
++With the additive wire inert in prod this must be empty (equivalence). Any change is
++classified by the operator as (a) expected fix, (b) new defect, (c) regression.
++Never commits.
++"""
++
++from __future__ import annotations
++
++import sys
++
++sys.path.insert(0, "/app")
++
++from sqlalchemy import create_engine, select
++from sqlalchemy.orm import sessionmaker
++
++from app.config import get_settings
++from app.models import Asset
++from app.services.inventory import reconcile_asset_presence
++
++
++def _snap(a: Asset):
++    return (
++        (a.meta or {}).get("operational_state") or "active",
++        a.presence_state or "",
++        a.trust_level or "",
++    )
++
++
++def main() -> int:
++    settings = get_settings()
++    db = sessionmaker(bind=create_engine(f"sqlite:///{settings.sqlite_path}"))()
++    try:
++        assets = db.scalars(select(Asset)).all()
++        before = {a.id: _snap(a) for a in assets}
++        for a in assets:
++            reconcile_asset_presence(db, a)
++        changes = []
++        for a in assets:
++            after = _snap(a)
++            if after != before[a.id]:
++                changes.append((a.id, before[a.id], after, (a.name or "")))
++        print(f"G7 reconcile equivalence — assets={len(assets)} changes={len(changes)}")
++        for a_id, b, af, nm in sorted(changes):
++            print(f"  id={a_id} before={b} after={af} name={nm!r}")
++        return 0
++    finally:
++        db.rollback()
++        db.close()
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
 diff -ruN w7_before/CHANGELOG.md w7_after/CHANGELOG.md
 --- a/CHANGELOG.md
 +++ b/CHANGELOG.md
@@ -259,5 +553,20 @@ diff -ruN w7_before/CHANGELOG.md w7_after/CHANGELOG.md
 diff -ruN w7_before/docs/KNOWN_DEBT.md w7_after/docs/KNOWN_DEBT.md
 --- a/docs/KNOWN_DEBT.md
 +++ b/docs/KNOWN_DEBT.md
-@@ (DEBT-FDB-UPLINK-PORTAL → CHIUSO in W7 0.10.58; root-cause + fix W7.3)
-@@ (DEBT-MAC-IP-POLICY-WIRE → PARZIALE: wire additivo fatto 1/2; ampio #3/#5 rinviato 2/2)
+@@ (W7 aggiorna due sezioni di debito — contenuto integrale della versione 0.10.58)
++## DEBT-FDB-UPLINK-PORTAL (T-a) — CHIUSO in W7 (0.10.58)
++
++- **Priorità:** media — registrato W-D 2026-07-26 (preesistente), **chiuso** W7 2026-07-27
++- **Test:** `test_m2_discovery.py::test_fdb_skips_observe_portal_on_uplink_role` — VERDE
++- **Osservato:** `portal_last_seen` valorizzato invece di `None` su ruolo uplink.
++- **Root-cause:** `apply_fdb_observation` (`topology.py`) ricalcolava `interface_role` per-porta prima della guardia portale, declassando `uplink→endpoint` su un singolo hit FDB.
++- **Fix (W7.3):** un hit FDB per-porta non declassa più un'interfaccia strutturale (`uplink`/`infra`); i downgrade restano del reclassify globale. Nessun azzeramento retroattivo di `portal_last_seen`. Test non indebolito.
++
++## DEBT-MAC-IP-POLICY-WIRE — PARZIALE (deploy 1/2 in W7 0.10.58; ampio 2/2 rinviato)
++
++- **Priorità:** wave presence — **wire additivo fatto** in W7 (0.10.58); riclassificazione ampia rinviata
++- **Cosa:** policy dominio MAC↔IP (chassis ≥1 IP corrente; eccezione powerline/510E; `present_l2_unaddressed`; supersession binding) — classifier `api/app/services/mac_ip_policy.py` + test contratto.
++- **Fatto (W7.2, deploy 1/2):** `classify_mac_ip_presence` collegato a `reconcile_asset_presence` come **solo segnale di presenza** (`present_l2_unaddressed` + `l2_only_allowed` → `reliable`); mai forza `stale`/`superseded` (F-7 intatto, non secondo autore). Misurato 0 cambi in prod (inerte oggi; test `test_w7_consumers`).
++- **Rinviato (deploy 2/2 — decisione dominio Michele):** regole #3/#5 (`stale`/`superseded` che tolgono presenza a device correnti). Blast-radius alto (52/151, incl. FritzBox router/powerline/Sky). Da confermare quali device attivi declassare prima di attivare.
++- **Doc:** [`docs/obs-currency-mac-ip-policy.md`](obs-currency-mac-ip-policy.md)
++- **Vietato:** usarla come scorciatoia di fusione chassis; inventare management IP.
