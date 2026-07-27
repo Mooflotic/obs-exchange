@@ -1,0 +1,1650 @@
+diff --git a/observatory/CHANGELOG.md b/observatory/CHANGELOG.md
+index 677f6ee..89cead9 100644
+--- a/observatory/CHANGELOG.md
++++ b/observatory/CHANGELOG.md
+@@ -1,8 +1,60 @@
+ # Changelog
+ 
++## 0.10.50 — W4c: rename chassis un-canonico, bonifica una-tantum, boot pulito
++
++- **W4c.1:** `adopt_name_on_chassis` scrive solo `fact_assertions` (subject=chassis); i membri non vengono rinominati né marcati manual; triage sibling su `chassis_role===interface`.
++- **W4c.2:** bonifica `provenance_unreliable` con cutoff `2026-07-27T11:00:00Z`, fuori dal boot; script `scripts/unmark_post_cutoff_provenance.py`.
++- **W4c.3:** `mark_lgs310c_manual` rimosso dal bootstrap (helper one-shot).
++- **W4c.5:** aperto DEBT-PRESENCE-SOURCE-OUTAGE (Fritz muto ≠ device assente).
++
++## 0.10.49 — W4b: provenienza senza traduzione, anti-ballooning, rename chassis
++
++- **W4b.0.a:** shadow writers non traducono più le sorgenti; unknown → rifiuto + `unknown_source`; bonifica `provenance_unreliable` su nmap non ricostruibile.
++- **W4b.0.b:** divergenze ripetute (stesso excl_key/value/source) aggiornano `occurrences` invece di nuove righe.
++- **W4b.1:** LGS310C (asset 3 / chassis 24) marcato manual (provenienza); LGS328C resta `unknown_nonempty`; UI card dichiara l’apparato di appartenenza.
++- **W4b.2:** rename/adopt a soggetto chassis; member → 409 con chassis; conflict-review in Oggi; `asset.name` collegato agli shadow writers.
++- **W4b.3:** aperti DEBT-RH-BEFORE-REFRESH; `_table_bytes` non usa più la size del file DB; DEBT-FRITZ resta aperto (credenziali TR-064 assenti).
++
++## 0.10.48 — W4a: soggetto chassis e soppressione proposte a monte
++
++- **W4a:** NameProposal generate/soppresse per soggetto chassis (manual blocca autorità inferiore; dedup `(chassis, valore)`); risolvibilità calcolata; sibling come interfacce.
++- **W4a.0:** `facts/shadow.py` tracciato; DEBT-IFACE-IP-CARDINALITY-ROLE; DEBT-FRITZ-TR064-CREDENTIALS (STOP-5); `subject_ref_interface` rifiuta multi-NIC senza primary.
++- **Non toccato:** adopt/rename 409 (W4b); shadow `asset.name`.
++- Report: [`docs/obs-w4a.md`](docs/obs-w4a.md).
++
++## 0.10.47 — W2: shadow writers fact_assertion
++
++- **W2:** scritture parallele `asset.iface_ip` (soggetto=interfaccia, excl_key=`asset.iface_ip:{iface_id}`); nessun consumatore legge ancora.
++- **S1:** barriera + SAVEPOINT; kill switch `FACT_SHADOW_WRITERS_ENABLED`; circuit breaker (20k righe / 2k/giorno / 50 MiB).
++- **Non collegato:** `asset.name` (chassis → W4a/W4b). Observability: `GET /api/admin/facts/shadow-stats`.
++- Report: [`docs/obs-w2.md`](docs/obs-w2.md).
++
++## 0.10.46 — W-D-fix: discriminante multi-IP sul dedup
++
++- **X.2:** `entity_key` resta MAC-scoped; `compute_dedup_key` ripristina discriminante IP (`fact_discriminant_for`) — DEBT-TOPO-IP-CONTEXTUAL ripristinato.
++- **X.4:** lift Fritz → `known` (non `confirmed_present`); decisione in `on_fritz_active_evidence` (trust).
++- **Debiti:** DEBT-LASTSEEN-DUAL-SEMANTICS. W2 → **0.10.47**.
++- Report: [`docs/obs-wd-fix.md`](docs/obs-wd-fix.md).
++
++## 0.10.45 — W-D: sblocco gate W2 (T-b, T-e, T-f)
++
++- **T-b:** `entity_key_for` MAC-scoped quando MAC noto; IP-only provisional (`identity_provisional`) + DEBT-PROVISIONAL-IDENTITY-MERGE.
++- **T-e/T-f:** demotion IP chiude `last_seen=now` → `resolve_asset_by_ip_at` trova il detentore storico.
++- **D.0.b:** `lift_fritz_quarantine_on_active` (trust) — quarantena non assorbente; inventory resta bloccata.
++- **Debiti:** DEBT-DOUBLE-CURRENT-IP; Cassiopea ri-caratterizzata chassis (W4a/W4b); alembic unificato in DEBT-ALEMBIC-BASELINE-LEGACY-TABLE. W2 writers → **0.10.46** (poi **0.10.47** in W-D-fix).
++- Report: [`docs/obs-wd.md`](docs/obs-wd.md).
++
++## 0.10.44 — F1-bis: DEBT-RECONCILE-CHURN-1 + riqualifica gate F1
++
++- **W-C:** `inventory_may_set_operational_state` non solleva/smasha `trust_quarantine` (`fritz_historical`) — chiude DEBT-RECONCILE-CHURN-1 (classe, non asset 116). Test zero-iface obbligatorio.
++- **W-B.3:** script una-tantum `scripts/normalize_empty_manual_names.py` (asset 98/150 name manual vuoto → assenza; no bump).
++- **Debiti:** DEBT-IP-CURRENT-SCOPE-PER-ASSET (Cassiopea asset 6). W2 slitta a **0.10.45** (poi rinumerato → **0.10.46** in W-D).
++- Report: [`docs/obs-f1bis.md`](docs/obs-f1bis.md).
++
+ ## 0.10.43 — OBS-IDENTITY W1.5-bis gate closure
+ 
+-- **W1.5-bis:** rimossa soglia E3 inventata (`mac_count_threshold` solo se misurata); test limiti E5-physical (D.2); tool RO `obs_identity_linker_dryrun.py`. Nessun writer identity acceso. W2 shadow writers slitta a **0.10.44**. Debiti: DEBT-RECONCILE-CHURN-1 (asset 116), DEBT-E3-AVAILABLE-FALSE.
++- **W1.5-bis:** rimossa soglia E3 inventata (`mac_count_threshold` solo se misurata); test limiti E5-physical (D.2); tool RO `obs_identity_linker_dryrun.py`. Nessun writer identity acceso. W2 shadow writers slitta a **0.10.44** (poi rinumerato → **0.10.45** in F1-bis). Debiti: DEBT-RECONCILE-CHURN-1 (asset 116), DEBT-E3-AVAILABLE-FALSE.
++- **MAC↔IP (fixture):** classifier puro `mac_ip_policy.py` + 9 test contratto; **non** wired a reconcile/trust (DEBT-MAC-IP-POLICY-WIRE → W7).
+ 
+ ## 0.10.42 — W1.5 identity-evidence (deployata)
+ 
+diff --git a/observatory/VERSION b/observatory/VERSION
+index a548662..02daa1b 100644
+--- a/observatory/VERSION
++++ b/observatory/VERSION
+@@ -1 +1 @@
+-0.10.43
++0.10.50
+diff --git a/observatory/api/app/bootstrap.py b/observatory/api/app/bootstrap.py
+index 2be9ab4..f4cb372 100644
+--- a/observatory/api/app/bootstrap.py
++++ b/observatory/api/app/bootstrap.py
+@@ -133,12 +133,17 @@ def main() -> None:
+             reconcile_ssdp_name_proposals,
+             reconcile_weak_oui_proposals,
+         )
++        from app.services.name_proposal_chassis import (
++            reconcile_chassis_name_proposal_suppression,
++        )
+         from app.services.topology import reconcile_stale_move_suggestions
+ 
+         ssdp_fix = reconcile_ssdp_name_proposals(db)
+         oui_fix = reconcile_weak_oui_proposals(db)
+         bare_fix = reconcile_bare_oui_collisions(db)
+         move_fix = reconcile_stale_move_suggestions(db)
++        # W4c.2/W4c.3: bonify + mark_lgs310c_manual removed from boot (one-shot only).
++        chassis_np = reconcile_chassis_name_proposal_suppression(db)
+         if (
+             ssdp_fix["rewritten"]
+             or ssdp_fix["archived"]
+@@ -146,6 +151,8 @@ def main() -> None:
+             or bare_fix["rewritten"]
+             or bare_fix["archived"]
+             or move_fix["rejected"]
++            or chassis_np["archived_a"]
++            or chassis_np["archived_b"]
+         ):
+             db.commit()
+             print(
+@@ -153,7 +160,9 @@ def main() -> None:
+                 f"rewritten={ssdp_fix['rewritten']} archived={ssdp_fix['archived']}; "
+                 f"oui weak archived={oui_fix['archived']}; "
+                 f"oui bare rewritten={bare_fix['rewritten']} archived={bare_fix['archived']}; "
+-                f"move uplink rejected={move_fix['rejected']}"
++                f"move uplink rejected={move_fix['rejected']}; "
++                f"chassis NP archived_a={chassis_np['archived_a']} "
++                f"archived_b={chassis_np['archived_b']}"
+             )
+         _step_end(4, "purge_placeholders", t0)
+ 
+diff --git a/observatory/api/app/facts/shadow.py b/observatory/api/app/facts/shadow.py
+index e18591a..5a92db1 100644
+--- a/observatory/api/app/facts/shadow.py
++++ b/observatory/api/app/facts/shadow.py
+@@ -1,10 +1,10 @@
+-"""W2 shadow writers — parallel fact_assertion writes; no consumers read yet.
++"""W2/W4b shadow writers — parallel fact_assertion writes.
+ 
+ S1: never degrade the observed ingest path. Kill switch + circuit breaker
+ stop writes without touching Asset / reconcile fields.
+ 
+-Writes use a SAVEPOINT on the ingest session so (1) freshly flushed interfaces
+-are visible and (2) assertion rollback never rolls back the observation.
++W4b.0.a: sources are NEVER translated. Unknown sources are refused, counted,
++and logged once — the S1 barrier keeps ingest alive.
+ """
+ 
+ from __future__ import annotations
+@@ -20,6 +20,7 @@ from sqlalchemy import func, select, text
+ from sqlalchemy.orm import Session
+ 
+ from app.config import get_settings
++from app.facts.registry import get_fact_spec
+ from app.facts.resolver import apply_observation
+ from app.models import FactAssertion, Interface, utcnow
+ 
+@@ -31,6 +32,7 @@ MAX_GROWTH_PER_DAY = 2_000
+ MAX_TABLE_BYTES = 50 * 1024 * 1024
+ 
+ FACT_IFACE_IP = "asset.iface_ip"
++FACT_ASSET_NAME = "asset.name"
+ 
+ _lock = threading.Lock()
+ _counters: dict[tuple[str, str], dict[str, int]] = defaultdict(
+@@ -44,6 +46,7 @@ _counters: dict[tuple[str, str], dict[str, int]] = defaultdict(
+         "errors": 0,
+         "skipped_breaker": 0,
+         "skipped_disabled": 0,
++        "unknown_source": 0,
+     }
+ )
+ _breaker_open = False
+@@ -52,31 +55,13 @@ _breaker_opened_at: datetime | None = None
+ _day_anchor: date | None = None
+ _day_start_rows = 0
+ _error_logged = False
+-
+-# Source aliases from ingest kinds → registry-allowed labels.
+-_SOURCE_MAP: dict[str, str] = {
+-    "fritz": "fritz",
+-    "dhcp": "dhcp",
+-    "nmap": "nmap",
+-    "mgmt": "mgmt",
+-    "manual": "manual",
+-    "scan": "nmap",
+-    "arp": "nmap",
+-    "icmp": "nmap",
+-    "mdns": "nmap",
+-    "ssdp": "nmap",
+-    "portal": "fritz",
+-}
+-
+-
+-def _norm_source(source: str) -> str:
+-    key = str(source or "").strip().lower()
+-    return _SOURCE_MAP.get(key, "nmap")
++_unknown_source_logged = False
++_unknown_source_total = 0
+ 
+ 
+ def _bump(fact_key: str, source: str, action: str) -> None:
+     with _lock:
+-        bucket = _counters[(fact_key, source)]
++        bucket = _counters[(fact_key, source or "?")]
+         if action == "superseded":
+             bucket["supersession"] += 1
+         elif action in bucket:
+@@ -90,6 +75,7 @@ def reset_shadow_stats_for_tests() -> None:
+     """Test helper — clears in-memory counters / breaker."""
+     global _breaker_open, _breaker_reason, _breaker_opened_at
+     global _day_anchor, _day_start_rows, _error_logged
++    global _unknown_source_logged, _unknown_source_total
+     with _lock:
+         _counters.clear()
+         _breaker_open = False
+@@ -98,6 +84,8 @@ def reset_shadow_stats_for_tests() -> None:
+         _day_anchor = None
+         _day_start_rows = 0
+         _error_logged = False
++        _unknown_source_logged = False
++        _unknown_source_total = 0
+ 
+ 
+ def force_breaker_open_for_tests(reason: str = "test") -> None:
+@@ -109,6 +97,10 @@ def force_breaker_open_for_tests(reason: str = "test") -> None:
+ 
+ 
+ def _table_bytes(db: Session) -> int:
++    """Size of fact_assertions + its indexes only. Never the whole DB file.
++
++    W4b.3.2: dbstat absent → 0 (unknown), not sqlite file size (false breaker).
++    """
+     try:
+         row = db.execute(
+             text(
+@@ -121,12 +113,7 @@ def _table_bytes(db: Session) -> int:
+             return int(row)
+     except Exception:  # noqa: BLE001 — dbstat optional
+         pass
+-    settings = get_settings()
+-    path = Path(settings.sqlite_path)
+-    try:
+-        return int(path.stat().st_size) if path.exists() else 0
+-    except OSError:
+-        return 0
++    return 0
+ 
+ 
+ def _row_count(db: Session) -> int:
+@@ -204,44 +191,84 @@ def shadow_stats() -> dict[str, Any]:
+                 "max_growth_per_day": MAX_GROWTH_PER_DAY,
+                 "max_table_bytes": MAX_TABLE_BYTES,
+             },
++            "unknown_source": _unknown_source_total,
+             "counters": by_key_source,
+         }
+ 
+ 
+-def safe_shadow_iface_ip(
++def _source_allowed(fact_key: str, source: str) -> bool:
++    src = str(source or "").strip().lower()
++    if not src:
++        return False
++    if src == "manual":
++        return True
++    try:
++        spec = get_fact_spec(fact_key)
++    except KeyError:
++        return False
++    return src in spec.sources
++
++
++def _refuse_unknown_source(fact_key: str, source: str) -> str | None:
++    """Return normalized source or None if refused (W4b.0.a — no translation)."""
++    global _unknown_source_logged, _unknown_source_total
++    src = str(source or "").strip().lower()
++    if _source_allowed(fact_key, src):
++        return src
++    _bump(fact_key, src or "?", "unknown_source")
++    with _lock:
++        _unknown_source_total += 1
++        first = not _unknown_source_logged
++        if first:
++            _unknown_source_logged = True
++    if first:
++        log.error(
++            "fact_shadow_unknown_source fact_key=%s source=%r — refused, not translated",
++            fact_key,
++            source,
++        )
++    else:
++        log.warning(
++            "fact_shadow_unknown_source fact_key=%s source=%r",
++            fact_key,
++            source,
++        )
++    return None
++
++
++def _apply_shadow(
+     db: Session,
+-    iface: Interface,
+     *,
+-    ip: str,
++    fact_key: str,
++    entity: Any,
++    value: str,
+     source: str,
+-    observed_at: datetime | None = None,
+-    confidence: float | None = None,
++    observed_at: datetime | None,
++    confidence: float | None,
+ ) -> None:
+-    """Apply asset.iface_ip inside a SAVEPOINT; never raise to caller (S1)."""
+     global _error_logged
+ 
+     settings = get_settings()
+-    src = _norm_source(source)
+     if not settings.fact_shadow_writers_enabled:
+-        _bump(FACT_IFACE_IP, src, "skipped_disabled")
++        _bump(fact_key, str(source or "?"), "skipped_disabled")
+         return
+ 
+-    ip_n = (ip or "").strip()
+-    if not ip_n or iface is None or not getattr(iface, "id", None):
++    src = _refuse_unknown_source(fact_key, source)
++    if src is None:
+         return
+ 
+     try:
+         open_, _reason = evaluate_circuit_breaker(db)
+         if open_:
+-            _bump(FACT_IFACE_IP, src, "skipped_breaker")
++            _bump(fact_key, src, "skipped_breaker")
+             return
+ 
+         with db.begin_nested():
+             result = apply_observation(
+                 db,
+-                fact_key=FACT_IFACE_IP,
+-                entity=iface,
+-                value=ip_n,
++                fact_key=fact_key,
++                entity=entity,
++                value=value,
+                 source=src,
+                 observed_at=observed_at,
+                 confidence=confidence,
+@@ -249,33 +276,140 @@ def safe_shadow_iface_ip(
+ 
+         action = result.action
+         if action == "superseded":
+-            _bump(FACT_IFACE_IP, src, "supersession")
++            _bump(fact_key, src, "supersession")
+         elif action == "refresh":
+-            _bump(FACT_IFACE_IP, src, "refresh")
++            _bump(fact_key, src, "refresh")
+         elif action == "weak_evidence":
+-            _bump(FACT_IFACE_IP, src, "weak_evidence")
++            _bump(fact_key, src, "weak_evidence")
+         elif action == "conflict_review":
+-            _bump(FACT_IFACE_IP, src, "conflict_review")
++            _bump(fact_key, src, "conflict_review")
+         elif action == "created":
+-            _bump(FACT_IFACE_IP, src, "created")
++            _bump(fact_key, src, "created")
+         elif action == "cooldown":
+-            _bump(FACT_IFACE_IP, src, "cooldown")
++            _bump(fact_key, src, "cooldown")
+ 
+         evaluate_circuit_breaker(db)
+     except Exception as exc:  # noqa: BLE001 — S1 barrier
+-        _bump(FACT_IFACE_IP, src, "errors")
++        _bump(fact_key, src, "errors")
+         if not _error_logged:
+             _error_logged = True
+             log.exception(
+-                "fact_shadow_apply_isolated fact_key=%s interface_id=%s err=%s",
+-                FACT_IFACE_IP,
+-                getattr(iface, "id", None),
++                "fact_shadow_apply_isolated fact_key=%s err=%s",
++                fact_key,
+                 exc,
+             )
+         else:
+             log.warning(
+-                "fact_shadow_apply_isolated fact_key=%s interface_id=%s err=%s",
+-                FACT_IFACE_IP,
+-                getattr(iface, "id", None),
++                "fact_shadow_apply_isolated fact_key=%s err=%s",
++                fact_key,
+                 exc,
+             )
++
++
++def safe_shadow_iface_ip(
++    db: Session,
++    iface: Interface,
++    *,
++    ip: str,
++    source: str,
++    observed_at: datetime | None = None,
++    confidence: float | None = None,
++) -> None:
++    """Apply asset.iface_ip inside a SAVEPOINT; never raise to caller (S1)."""
++    ip_n = (ip or "").strip()
++    if not ip_n or iface is None or not getattr(iface, "id", None):
++        return
++    _apply_shadow(
++        db,
++        fact_key=FACT_IFACE_IP,
++        entity=iface,
++        value=ip_n,
++        source=source,
++        observed_at=observed_at,
++        confidence=confidence,
++    )
++
++
++def safe_shadow_asset_name(
++    db: Session,
++    entity: Any,
++    *,
++    name: str,
++    source: str,
++    observed_at: datetime | None = None,
++    confidence: float | None = None,
++) -> None:
++    """Apply asset.name (chassis subject) inside SAVEPOINT; never raise (S1)."""
++    text = (name or "").strip()
++    if not text or entity is None:
++        return
++    _apply_shadow(
++        db,
++        fact_key=FACT_ASSET_NAME,
++        entity=entity,
++        value=text,
++        source=source,
++        observed_at=observed_at,
++        confidence=confidence,
++    )
++
++
++# W4c.2.1 — only rows created before the 0.10.49 deploy may be marked unreliable.
++# Deploy 0.10.49 went live 2026-07-27 ~11:03Z (Cassiopea); cutoff = that instant.
++PROVENANCE_BONIFY_CUTOFF = datetime(2026, 7, 27, 11, 0, 0)
++
++
++def bonify_translated_provenance(db: Session) -> dict[str, int]:
++    """W4b.0.a.4 / W4c.2 — one-shot mark for pre-0.10.49 nmap iface_ip rows.
++
++    NOT for the boot path (W4c.2.3). Cutoff: created_at < 2026-07-27T11:00:00Z.
++    Rows created after the fix have authentic provenance and must not be marked.
++    """
++    marked = 0
++    skipped = 0
++    rows = db.scalars(
++        select(FactAssertion).where(FactAssertion.fact_key == FACT_IFACE_IP)
++    ).all()
++    for row in rows:
++        reason = row.reason or ""
++        if "provenance_unreliable" in reason:
++            skipped += 1
++            continue
++        if (row.source or "").lower() != "nmap":
++            skipped += 1
++            continue
++        created = row.created_at
++        if created is not None and created >= PROVENANCE_BONIFY_CUTOFF:
++            skipped += 1
++            continue
++        row.reason = (
++            f"{reason}|provenance_unreliable" if reason else "provenance_unreliable"
++        )
++        marked += 1
++    if marked:
++        db.flush()
++    return {"marked": marked, "skipped": skipped, "total": len(rows)}
++
++
++def unmark_post_cutoff_provenance(db: Session) -> dict[str, Any]:
++    """W4c.2.2 — remove erroneous provenance_unreliable from post-cutoff rows.
++
++    Idempotent. Returns enumerated ids cleared.
++    """
++    cleared: list[int] = []
++    rows = db.scalars(
++        select(FactAssertion).where(FactAssertion.fact_key == FACT_IFACE_IP)
++    ).all()
++    for row in rows:
++        reason = row.reason or ""
++        if "provenance_unreliable" not in reason:
++            continue
++        created = row.created_at
++        if created is None or created < PROVENANCE_BONIFY_CUTOFF:
++            continue
++        parts = [p for p in reason.split("|") if p and p != "provenance_unreliable"]
++        row.reason = "|".join(parts)
++        cleared.append(int(row.id))
++    if cleared:
++        db.flush()
++    return {"cleared": len(cleared), "ids": cleared}
+diff --git a/observatory/api/app/services/chassis_rename.py b/observatory/api/app/services/chassis_rename.py
+new file mode 100644
+index 0000000..0852711
+--- /dev/null
++++ b/observatory/api/app/services/chassis_rename.py
+@@ -0,0 +1,279 @@
++"""W4b/W4c — chassis-level rename/adopt + one-shot LGS310C mark helper.
++
++W4c.1: canonical name lives ONLY in fact_assertions (asset.name, subject=chassis).
++Rename does NOT copy the name onto every member or mark them manual.
++"""
++
++from __future__ import annotations
++
++from typing import Any, Optional
++
++from sqlalchemy import select
++from sqlalchemy.orm import Session, joinedload
++
++from app.facts.resolver import apply_observation, current
++from app.facts.shadow import safe_shadow_asset_name
++from app.models import Asset, AuditLog, Chassis, NameProposal, utcnow
++from app.services.name_proposal_chassis import chassis_members
++
++
++class ChassisRenameError(Exception):
++    def __init__(self, code: str, message: str, *, chassis_id: int | None = None):
++        super().__init__(message)
++        self.code = code
++        self.message = message
++        self.chassis_id = chassis_id
++
++
++def mark_lgs310c_manual(db: Session) -> dict[str, Any]:
++    """W4b.1.4 one-shot — NOT called from bootstrap (W4c.3).
++
++    Idempotent provenance mark for asset 3 / name LGS310C.
++    Writes only meta.field_sources / manual_overrides — not Asset.name value (K1).
++    Reversible: remove 'name' from manual_overrides and field_sources.name.
++    """
++    asset = db.scalars(
++        select(Asset)
++        .options(joinedload(Asset.interfaces))
++        .where(Asset.id == 3)
++    ).first()
++    if asset is None:
++        return {"changed": 0, "reason": "asset_3_missing"}
++    if (asset.name or "").strip() != "LGS310C":
++        return {
++            "changed": 0,
++            "reason": "name_mismatch",
++            "actual": (asset.name or "").strip(),
++        }
++    meta = dict(asset.meta or {})
++    overrides = set(meta.get("manual_overrides") or [])
++    sources = dict(meta.get("field_sources") or {})
++    fs = sources.get("name") or {}
++    src = ""
++    if isinstance(fs, dict):
++        src = str(fs.get("source") or "").lower()
++    elif isinstance(fs, str):
++        src = fs.lower()
++    already = "name" in overrides and src.startswith("manual")
++    if already:
++        return {"changed": 0, "reason": "already_manual", "asset_id": 3}
++    overrides.add("name")
++    now = utcnow()
++    sources["name"] = {
++        "source": "manual",
++        "confidence": 1.0,
++        "last_seen": now.isoformat() + "Z",
++        "marked_by": "w4b.1.4",
++        "reversible": "remove name from manual_overrides + field_sources.name",
++    }
++    meta["manual_overrides"] = sorted(overrides)
++    meta["field_sources"] = sources
++    asset.meta = meta
++    asset.updated_at = now
++    db.flush()
++    iface = next(iter(asset.interfaces or []), None)
++    entity = iface or asset
++    safe_shadow_asset_name(
++        db, entity, name="LGS310C", source="manual", observed_at=now, confidence=1.0
++    )
++    apply_observation(
++        db,
++        fact_key="asset.name",
++        entity=entity,
++        value="LGS310C",
++        source="manual",
++        observed_at=now,
++        confidence=1.0,
++        human_confirm=True,
++    )
++    db.add(
++        AuditLog(
++            user_id=None,
++            action="asset.mark_name_manual",
++            entity="asset",
++            entity_id="3",
++            detail={
++                "name": "LGS310C",
++                "chassis_id": asset.chassis_id,
++                "wave": "w4b.1.4",
++                "reversible": "remove name from manual_overrides + field_sources.name",
++                "value_unchanged": True,
++            },
++            ip="",
++        )
++    )
++    return {"changed": 1, "asset_id": 3, "chassis_id": asset.chassis_id}
++
++
++def list_unknown_nonempty_names(db: Session) -> list[dict[str, Any]]:
++    """Enumeration only; never marks manual."""
++    from app.services.name_proposal_chassis import asset_name_authority
++
++    out = []
++    assets = db.scalars(
++        select(Asset).options(joinedload(Asset.interfaces))
++    ).unique().all()
++    for asset in assets:
++        name = (asset.name or "").strip()
++        if not name:
++            continue
++        auth = asset_name_authority(asset)
++        if auth is not None:
++            continue
++        macs = [i.mac for i in (asset.interfaces or []) if i.mac]
++        out.append(
++            {
++                "asset_id": asset.id,
++                "name": name,
++                "chassis_id": asset.chassis_id,
++                "macs": macs,
++                "origin": "unknown_nonempty",
++            }
++        )
++    return out
++
++
++def ambiguous_manual_names(db: Session, chassis_id: int) -> list[str]:
++    members = chassis_members(db, chassis_id)
++    from app.services.name_proposal_chassis import MANUAL_AUTHORITY, asset_name_authority
++
++    names = sorted(
++        {
++            (m.name or "").strip()
++            for m in members
++            if (m.name or "").strip()
++            and (asset_name_authority(m) or 0) >= MANUAL_AUTHORITY
++        }
++    )
++    return names
++
++
++def adopt_name_on_chassis(
++    db: Session,
++    *,
++    chassis_id: int,
++    value: str,
++    source: str = "manual",
++    proposal_id: int | None = None,
++) -> dict[str, Any]:
++    """W4c.1 — one canonical name via fact_assertions (subject=chassis).
++
++    Does NOT write member.name or mark siblings manual. The member that already
++    carries the chosen manual name is left unchanged; others stay as interfaces.
++    """
++    text = (value or "").strip()
++    if not text:
++        raise ChassisRenameError("empty", "Nome vuoto")
++    chassis = db.get(Chassis, chassis_id)
++    if chassis is None:
++        raise ChassisRenameError("not_found", "Chassis non trovato", chassis_id=chassis_id)
++    members = chassis_members(db, chassis_id)
++    if not members:
++        raise ChassisRenameError("empty_chassis", "Chassis senza membri", chassis_id=chassis_id)
++
++    manuals = ambiguous_manual_names(db, chassis_id)
++    if len(manuals) > 1 and text not in manuals:
++        raise ChassisRenameError(
++            "ambiguous",
++            f"Chassis con nomi manuali multipli: {', '.join(manuals)}",
++            chassis_id=chassis_id,
++        )
++
++    now = utcnow()
++    from app.services.name_proposal_chassis import MANUAL_AUTHORITY, asset_name_authority
++
++    # Idempotent: chassis fact already current with this manual value.
++    incumbent = current(db, "chassis", chassis_id, "asset.name")
++    if (
++        incumbent is not None
++        and incumbent.value_norm == text
++        and (incumbent.source or "").lower() == "manual"
++    ):
++        return {
++            "changed": 0,
++            "chassis_id": chassis_id,
++            "value": text,
++            "holder": "fact_assertion",
++            "members_unchanged": [m.id for m in members],
++        }
++
++    # Archive pending proposals matching the adopted value (all members).
++    for member in members:
++        for prop in list(member.name_proposals or []):
++            if (prop.status or "") != "pending":
++                continue
++            if proposal_id and prop.id == proposal_id:
++                prop.status = "archived"
++                prop.status_reason = "adopted_chassis"
++                prop.updated_at = now
++            elif (prop.value or "").strip() == text or (prop.source or "") == source:
++                prop.status = "archived"
++                prop.status_reason = "superseded_chassis_adopt"
++                prop.updated_at = now
++
++    # Prefer an entity that already belongs to this chassis for subject_ref.
++    # Prefer member that already holds this name (manual or exact), else first.
++    holders = [
++        m
++        for m in members
++        if (m.name or "").strip() == text
++        and (asset_name_authority(m) or 0) >= MANUAL_AUTHORITY
++    ]
++    if not holders:
++        holders = [m for m in members if (m.name or "").strip() == text]
++    primary = holders[0] if holders else members[0]
++    iface = next(iter(primary.interfaces or []), None)
++    entity = iface or primary
++
++    apply_observation(
++        db,
++        fact_key="asset.name",
++        entity=entity,
++        value=text,
++        source="manual",
++        observed_at=now,
++        confidence=1.0,
++        human_confirm=True,
++    )
++    safe_shadow_asset_name(
++        db, entity, name=text, source="manual", observed_at=now, confidence=1.0
++    )
++    db.add(
++        AuditLog(
++            user_id=None,
++            action="chassis.adopt_name",
++            entity="chassis",
++            entity_id=str(chassis_id),
++            detail={
++                "value": text,
++                "holder": "fact_assertion",
++                "members_not_renamed": [m.id for m in members],
++                "wave": "w4c.1",
++            },
++            ip="",
++        )
++    )
++    db.flush()
++    return {
++        "changed": 1,
++        "chassis_id": chassis_id,
++        "value": text,
++        "holder": "fact_assertion",
++        "members_unchanged": [m.id for m in members],
++    }
++
++
++def member_adopt_blocked_detail(db: Session, asset: Asset) -> Optional[dict[str, Any]]:
++    """W4b.2.4 — any chassis member: refuse member adopt; subject is the chassis."""
++    cid = asset.chassis_id
++    if not cid:
++        return None
++    return {
++        "code": "chassis_subject_required",
++        "message": (
++            "Adozione nome bloccata sul membro: il soggetto corretto è il chassis. "
++            f"Usa POST /api/chassis/{cid}/adopt-name."
++        ),
++        "chassis_id": cid,
++        "member_asset_id": asset.id,
++    }
+diff --git a/observatory/docs/KNOWN_DEBT.md b/observatory/docs/KNOWN_DEBT.md
+index 3fe6739..5ea64e7 100644
+--- a/observatory/docs/KNOWN_DEBT.md
++++ b/observatory/docs/KNOWN_DEBT.md
+@@ -4,18 +4,93 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+ 
+ ## DEBT-RECONCILE-CHURN-1
+ 
+-- **Priorità:** media (bootstrap regime) — aperto in W1.5-bis 2026-07-25
+-- **Cosa:** asset **116** ha `trust_level=fritz_historical` ma `meta.operational_state=active`. Ogni boot1 con `needs_apply=true` / `structural=1` / `T_backup≈80s`; apply trust corregge; `inventory.reconcile_asset_presence` ripristina `active`.
+-- **Attribuzione:** churn preesistente (backup pre-0.10.42), **non** indotto da `identity_evidence`.
+-- **Vietato:** tollerarlo silenziosamente come “regime ok”; sostituire la misura del boot1 con un boot successivo senza dichiararlo.
+-- **Fix quando:** ownership `operational_state` per `fritz_historical` — inventory non deve smashare la quarantena trust senza evidenza reliable; oppure heal one-shot + guard.
++- **Priorità:** media (bootstrap regime) — **CHIUSO in F1-bis / 0.10.44**; **confermato D.6** sul boot1 di **0.10.45** (`structural=0`)
++- **Cosa:** asset **116** aveva `trust_level=fritz_historical` ma `meta.operational_state=active`. Boot1 `needs_apply=true` / `structural=1` / `T_backup≈80s` perché `inventory_may_set_operational_state` permetteva `fritz_historical`→`active` se `reliable=True` (anche con 0 interfacce via reachability).
++- **Fix:** inventory non solleva né smasha `trust_quarantine` (`fritz_historical` op_state o trust_level) — gerarchia invariata `archived > trust_quarantine > trust_protected > inventory_presence`. Test `test_quarantine_zero_interfaces_inventory_cannot_set_active`.
++- **Vietato (storico):** tollerarlo come “regime ok”; caso speciale su `asset_id=116`.
++
++## DEBT-IP-CURRENT-SCOPE-PER-ASSET → ri-caratterizzato come IDENTITÀ CHASSIS (W-D)
++
++- **Priorità:** W4a/W4b (consolidamento chassis) — riaperto/riscritto F1-bis→W-D 2026-07-26
++- **Fatto:** Cassiopea è modellata come **due asset record** — asset **5** «Cassiopea — NIC 1» tiene `192.168.1.3` CURRENT (id 9); asset **6** tiene `192.168.3.24` CURRENT (id 855). L’IP di management non è perso: è sull’altro record. Il ping fallito su `.3.24` dal container api è atteso (lato SPAN), non un sintomo.
++- **Test di non-regressione (da chiudere in W4a/W4b):** dopo consolidamento, Cassiopea = **UN** apparato con **DUE** interfacce; entrambi gli IP correnti ciascuno sulla propria interfaccia; un solo nome canonico.
++- **Vietato ora:** patch dati che forzi due current sullo stesso asset_id / stessa iface.
++- **Doc:** [`docs/obs-f1bis.md`](obs-f1bis.md) · [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-DOUBLE-CURRENT-IP
++
++- **Priorità:** pre-condizione **W3** — aperto W-D 2026-07-26
++- **Cosa:** stesso IP con >1 riga `is_current=1` (stesso asset o asset diversi). Al backfill W3 collideranno con `uq_fact_assertions_current_slot`.
++- **Casi enumerati (live, invariati da X.2):**
++  - `192.168.1.2` — id **3** (asset 2, mgmt) + id **153** (asset 2, fritz)
++  - `192.168.2.108` — id **15** (asset 11) + id **853** (asset 138)
++- **Nota:** W3 richiede una **regola di risoluzione dichiarata PRIMA** del backfill. **NON** collassare ora. Cardinalità non cambiata da X.2 (dedup ≠ `is_current`).
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md) · [`docs/obs-wd-fix.md`](obs-wd-fix.md)
++
++## DEBT-PROVISIONAL-IDENTITY-MERGE
++
++- **Priorità:** post W-D (quando MAC sconosciuto → poi scoperto) — aperto W-D 2026-07-26
++- **Cosa:** `entity_key` IP-only è marcato `payload.identity_provisional=true`, ma non esiste ancora un percorso di **fusione** quando il MAC viene scoperto in seguito (evitare duplicato).
++- **X.2:** invariato — discriminante IP sul dedup non introduce merge. Cardinalità debito invariata.
++- **Vietato:** inventare il merge in questa ondata.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md) · [`docs/obs-wd-fix.md`](obs-wd-fix.md)
+ 
+ ## DEBT-E3-AVAILABLE-FALSE
+ 
+ - **Priorità:** bloccante per E3 finché SNMP non è misurabile
+ - **Cosa:** E3-topological richiede access_port + mac_count misurato + soglia **esplicita** + simultaneità. Con poll SNMP in timeout, E3 = **available=false** (degrada a E2). Nessuna soglia inventata.
+ - **Vincolo:** non promuovere E3 finché `fdb_poll.ok` / misure porta non tornano.
+-- **Ripresa:** W2+ quando SNMP/LLDP writers misurano.
++- **Ripresa:** W2+ quando SNMP/LLDP writers misurano; requisiti accesso/poll in **DEBT-FDB-LLDP-PASSIVE**.
++
++## DEBT-FDB-LLDP-PASSIVE
++
++- **Priorità:** wave futura post W1.5-bis (writers SNMP / presenza) — **non** interrompe W1.5-bis
++- **Cosa:** implementazione iniziale **passiva/read-only** FDB+LLDP: presenza/posizione L2, **non** identità; FDB ≠ ownership; LLDP/CDP solo corroborante (spoofabile). LGS310C/328C: SNMPv3 authPriv, RO, ACL solo Cassiopea, view Bridge/LLDP/ENTITY, no SET, segreti fuori repo/log, timeout/rate limit; LLDP/CDP non abilitato dove non serve. ObservationRaw: switch_id, port, VLAN/bridge-domain, timestamp, age/last_seen, acquisition_method, failure_state; dedupe per **transizione** non per poll. Alert «nuovo MAC su access» solo dopo classificazione misurata access/trunk/uplink/AP/powerline, inizialmente informativo; **niente** quarantena/shutdown auto. Spoof / MAC move / CAM flood / randomized MAC previsti; assenza alert ≠ sicurezza.
++- **Doc:** [`docs/obs-fdb-lldp-passive.md`](obs-fdb-lldp-passive.md)
++- **Vietato:** usarlo come scorciatoia identity/merge; SET SNMP; enforcement automatico porte; dichiarare “rete sicura” perché non ci sono alert.
++
++## DEBT-ENTITY-KEY-MAC-IP
++
++- **Priorità:** era bloccante W2 — **CHIUSO in W-D / 0.10.45** (2026-07-26)
++- **Fix:** `entity_key_for` → MAC quando MAC noto; IP-only → provisional (`identity_provisional`). Test T-b verde.
++- **Residuo correlato (non collassare):** righe IP duplicate / refresh-as-transition — vedi B.2 / DEBT-DOUBLE-CURRENT-IP.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-IP-MIGRATION-NONETYPE
++
++- **Priorità:** era bloccante W2 — **CHIUSO in W-D / 0.10.45** (2026-07-26)
++- **Causa:** `elect_interface_primary` demoteva senza chiudere `last_seen` → `resolve_asset_by_ip_at` tornava `None` a T intermedio.
++- **Fix:** alla demotion, `last_seen = now` se mancante/precedente. T-e / T-f verdi.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-ALEMBIC-BASELINE-LEGACY-TABLE
++
++- **Priorità:** bassa (igiene CI; Alembic **non** gira in prod) — unificato W-D 2026-07-26
++- **Ex:** DEBT-ALEMBIC-MIGRATION-TESTS + baseline disallineata da tabella `observations` droppata.
++- **Sintomi test:** `ix_observations_seen_at`, `assets.chassis_id`, `assets.printer_first_seen` su fixture/alembic.
++- **Vietato:** inseguirli come fix runtime; schema prod = `create_all`.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-IPP-PRECEDENCE (T-c / T-d)
++
++- **Priorità:** media (autorità naming) — registrato W-D 2026-07-26, **non** corretto in questa ondata
++- **Test:** `test_ipp_precedence_and_human_category_override` (T-c); `test_snmp_enrichment_creates_proposal_without_overwriting_name` (T-d)
++- **Osservato T-c:** `best_guess` → `('HP123','fritz')` invece di `('Stampante Studio','ipp')`
++- **Osservato T-d:** proposal snmp assente / lista vuota vs atteso `[('snmp','HP LaserJet M404dn')]`
++- **Nota:** non risolti come collaterale di D.1. I5 / gerarchia naming — ondata dedicata.
++
++## DEBT-FDB-UPLINK-PORTAL (T-a)
++
++- **Priorità:** media — registrato W-D 2026-07-26 (preesistente), **non** corretto qui
++- **Test:** `test_m2_discovery.py::test_fdb_skips_observe_portal_on_uplink_role`
++- **Osservato:** `portal_last_seen` valorizzato invece di `None` su ruolo uplink.
++
++## DEBT-MAC-IP-POLICY-WIRE
++
++- **Priorità:** prossima wave presence (W7 / post W1.5-bis)
++- **Cosa:** policy dominio MAC↔IP (chassis ≥1 IP corrente; eccezione powerline/510E; `present_l2_unaddressed`; supersession binding) — classifier in `api/app/services/mac_ip_policy.py` + test contratto. **Non ancora** collegata a `reconcile_asset_presence` / trust.
++- **Doc:** [`docs/obs-currency-mac-ip-policy.md`](obs-currency-mac-ip-policy.md)
++- **Vietato:** usarla come scorciatoia di fusione chassis; inventare management IP.
+ 
+ ## DEBT-MIRROR-SOURCES
+ 
+@@ -65,20 +140,65 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+ - **Residuo:** riprendere DVR (#2) / LUMIN / openhabian dal toggle critico se servono; non riattivare Kuma runtime.
+ - **Vietato:** ripristinare Kuma come dipendenza; delete delle righe kuma archiviate.
+ 
+-## DEBT-TOPO-IP-CONTEXTUAL (CHIUSO v0.9.0)
++## DEBT-TOPO-IP-CONTEXTUAL
+ 
+-- **Priorità:** bassa (latente → perimetro ampliato 2026-07-21) — ex BUG 3 declassato
++- **Priorità:** bassa (latente → perimetro ampliato 2026-07-21; discriminante raw ripristinato 0.10.46) — ex BUG 3 declassato
++- **Invariante:** multi-IP sullo stesso MAC **non collassa** nello store raw (fatti distinti).
++- **Stato raw:** **violato in 0.10.45** (`dedup_key` usava solo `entity_key` MAC-scoped → 5 IP → 1 riga). **Ripristinato in 0.10.46:** `entity_key` resta MAC; `compute_dedup_key` aggiunge discriminante IP (`fact_discriminant_for`). Identità ≠ dedup. Vedi [`docs/obs-wd-fix.md`](obs-wd-fix.md).
+ - **Perimetro definitivo:** multi-IP per ruolo (`primario` / `vpn` / `mgmt` / `servizi`). `endpoint.ip_change` **solo sul primario**. Casi noti:
+   - **FRITZ!Box** (asset 1): 5 IP contemporanei sullo stesso MAC — `.1.1` primario, `.1.9` VPN LAN, `.1.4`/`.1.5`/`.1.6` (ruolo TBD servizi/altro); ×223 `ip_change`/24h documentati poi silenziati.
+-  - **GS308EP** (asset 4): `.1.8` mgmt (fatto). `.3.20` = binding Fritz storico sullo stesso MAC, **ownership da confermare** (non inventariale; non SPAN — SPAN=p22/NIC2 `.3.24` / sink `10.255.255.2/30`). Vedi `docs/obs-ux-ip-308-verifica.md`.
++  - **GS308EP** (asset 4): `.1.8` mgmt (fatto). `.3.20` = binding Fritz storico sullo stesso MAC, **ownership da confermare** (non inventariale; non SPAN — SPAN=p22/NIC2 `.3.24` / sink `10.255.255.2/30`). Vedi [`docs/obs-ux-ip-308-verifica.md`](obs-ux-ip-308-verifica.md).
+   - **Cassiopea (ex-bond):** `DEBT-LAG-CASSIOPEA` **CHIUSO** 21/07/2026 (eth0 LAN / eth1 SPAN).
+-- **Nota architetturale:** il dedup raw per-MAC scarta le osservazioni L3 multi-IP (sul Fritz 4/5 IP perse nel raw, `hit_count≈5` ma `l3.ip` resta solo `.1.1`) mentre l’upsert legacy scrive comunque i binding e gli `ip_change`: le due pipeline divergono. Il fix dovrà includere `dedup_key` **MAC+IP** per le osservazioni L3.
+-- **Sintomo latente (BUG 3 originale):** in [`_resolve_ap_asset`](../api/app/services/topology.py) il fallback per-IP usa `is_current` invece di `resolve_asset_by_ip_at`. Oggi non gira (0 client Wi‑Fi IP-only su 41).
+-- **Fix quando servirà:** (1) ruoli IP + `ip_change` solo primario; (2) dedup L3 MAC+IP; (3) nel solo ramo (b) di `_resolve_ap_asset`, `resolve_asset_by_ip_at` + `observed_at`; tie→None→fall-through. NON toccare `is_current` alla cieca su multi-NIC storiche.
++- **Nota architetturale:** il dedup raw per-MAC scartava le osservazioni L3 multi-IP (sul Fritz 4/5 IP perse nel raw, `hit_count≈5` ma `l3.ip` resta solo `.1.1`) mentre l’upsert legacy scrive comunque i binding e gli `ip_change`: le due pipeline divergevano. Fix 0.10.46: `dedup_key` MAC+IP per L3.
++- **Sintomo latente (BUG 3 originale / consumatore di correttezza):** in [`_resolve_ap_asset`](../api/app/services/topology.py) il fallback per-IP usa `is_current` invece di `resolve_asset_by_ip_at`. Oggi non gira (0 client Wi‑Fi IP-only su 41). **Classe di difetto OBS-CURRENCY:** è un **consumatore di correntezza** da migrare esplicitamente in **W5/W7** (lista consumatori fact_assertions / resolve-at-T).
++- **Fix quando servirà:** (1) ruoli IP + `ip_change` solo primario; (2) dedup L3 MAC+IP *(fatto 0.10.46)*; (3) nel solo ramo (b) di `_resolve_ap_asset`, `resolve_asset_by_ip_at` + `observed_at`; tie→None→fall-through. NON toccare `is_current` alla cieca su multi-NIC storiche.
+ - **Riattivazione:** attribuzione topologia sbagliata su IP DHCP migrato, oppure ripresa del rumore `ip_change` multi-ruolo dopo unmute.
+-- **Stato FASE B (codice, 2026-07-21):** elezione + `role` + dedup `mac|ip` + `ip_change` solo primario — in tree, pre-deploy. Bonifica storica duplicate `(interface_id, ip)` resta fuori scope. UI secondari = FASE C.
++- **Stato FASE B (codice):** elezione + `role` + dedup `mac|ip` + `ip_change` solo primario — in tree. Bonifica storica duplicate `(interface_id, ip)` resta fuori scope. UI secondari = FASE C.
+ - **Bonifica storica:** eventuali righe duplicate `(interface_id, ip)` pre-FASE-B restano; niente UniqueConstraint finché non c’è purge dedicato (fuori scope).
+ 
++## DEBT-IFACE-IP-CARDINALITY-ROLE
++
++- **Priorità:** pre-condizione **W3** — aperto W4a 2026-07-26
++- **Cosa:** `asset.iface_ip` ha `cardinality=single` per interfaccia e il writer shadow registra **solo l’IP eletto** (`elect_interface_primary`). Sul Fritz (asset 1) esistono cinque IP simultanei (`.1.1` primario, `.1.9` VPN, `.1.4`/`.1.5`/`.1.6` servizi) — i non-eletti **non** compaiono nel layer assertion.
++- **I2:** assenza di un IP in `fact_assertions` **non** significa che l’IP non esista.
++- **W4b.3.3:** `current()` senza `excl_key` e con più righe `current` su cardinality `single` sceglie in silenzio per authority — collegato a questo debito; non collassare ora.
++- **Prima di W3:** `excl_key` deve acquisire il **ruolo** (`fact_key + interface_id + role`), cardinalità `scoped`. NON inventare i ruoli mancanti ora (K3).
++- **Vietato in W4a/W4b:** implementare il ruolo nella excl_key; collassare i doppi-current.
++- **Doc:** [`docs/obs-w4a.md`](obs-w4a.md) · legato a DEBT-TOPO-IP-CONTEXTUAL
++
++## DEBT-RH-BEFORE-REFRESH
++
++- **Priorità:** media (correttezza resolver) — aperto W4b 2026-07-27
++- **Cosa:** `_check_rh_conflict` gira **prima** di R-A refresh. Ogni refresh riesegue la scansione cross-fact; un valore già `current` può diventare `conflict_review` per un cambiamento altrove senza che l’osservazione in ingresso sia nuova.
++- **Vietato in W4b:** correggere l’ordine ora.
++- **Doc:** [`docs/obs-w4b.md`](obs-w4b.md)
++
++## DEBT-LASTSEEN-DUAL-SEMANTICS
++
++- **Priorità:** pre-condizione **W3** — aperto W-D-fix 2026-07-26
++- **Cosa:** `elect_interface_primary` scrive `last_seen = now` alla demotion (chiusura amministrativa di intervallo) nello stesso campo «ultima osservazione».
++- **Nota W3:** prima del backfill dichiarare per ogni campo quale semantica porta; le righe con `last_seen` amministrativo daranno `valid_to`, non un’osservazione.
++- **Vietato ora:** correggere / biforcare il campo in questa ondata.
++- **Doc:** [`docs/obs-wd-fix.md`](obs-wd-fix.md)
++
++## DEBT-FRITZ-TR064-CREDENTIALS
++
++- **Priorità:** operativa (STOP-5) — aperto W4a 2026-07-26; **confermato APERTO in W4b.0.c** (2026-07-27); **invariato W4c** (F-4)
++- **Sintomo:** collector log `[fritz] hostlist path fallito: HTTP Error 401: Unauthorized` + `mesh SOAP … credentials_invalid`.
++- **W4b.0.c (read-only, una volta):** Internet ripristinata **non** implica credenziali TR-064. Su Cassiopea `FRITZ_USERNAME` / `FRITZ_PASSWORD` ancora **ASSENTI** in `.env`; 401/`credentials_invalid` ancora presenti nei log. Funzioni Fritz restano dichiarate degradate (I2).
++- **Causa misurata:** `FRITZ_HOST` presente; username/password assenti (`collector/adapters/fritz.py` → `credentials_invalid` su HTTP 401/403).
++- **Degrada con Fritz muto:** hostlist/`discovery.fritz.active`, hostname Fritz, assoc mesh (0), refresh IP da Fritz. Restano: nmap/ssdp/printer, diagnostica WLAN AP (spesso 200), SNMP switch.
++- **Azione:** solo Michele può ripristinare le credenziali TR-064 — non stimare, non monitorare in serie.
++
++## DEBT-PRESENCE-SOURCE-OUTAGE
++
++- **Priorità:** alta (I2/I4 + churn boot) — aperto W4c 2026-07-27; **NON corretto in W4c** (W4c.5.2)
++- **Fatto misurato (W4b boot1):** `structural=4` — asset **136, 140, 145, 148** `meta.operational_state` `active` → `stale_unlocated`. AD finestra 24h sceso 69→62.
++- **Meccanismo:** `classify_asset` / `reconcile_trust_history` in [`api/app/services/trust.py`](../api/app/services/trust.py) (~170–189, ~474–489, ~618–621): senza `portal_last_seen` recente e senza protezione → bucket `stale_unlocated`. Con Fritz TR-064 muto i refresh hostlist non aggiornano la presenza → l’assenza della **sorgente** viene trattata come assenza del **dispositivo**.
++- **Principio:** quando la sorgente che copriva un device è indisponibile, lo stato corretto è «non misurato» / «copertura sorgente non disponibile», non «assente».
++- **Vietato in W4c:** correggere il trust layer. UI (F2) deve dichiarare la qualificazione (W4c.5.3).
++- **Doc:** [`docs/obs-w4c.md`](obs-w4c.md) · legato a DEBT-FRITZ-TR064-CREDENTIALS
++
+ ## DEBT-A2-CASCADE-AP
+ 
+ - **Priorità:** bassa (latente) — ex nota di confine BUG 1 / A2
+diff --git a/observatory/docs/obs-w4c.md b/observatory/docs/obs-w4c.md
+new file mode 100644
+index 0000000..11e24e4
+--- /dev/null
++++ b/observatory/docs/obs-w4c.md
+@@ -0,0 +1,115 @@
++# W4c — Correzioni post-review (0.10.50)
++
++**Esito:** W4c.1/2/3 chiuse · gate binari verdi · **STOP FASE 1 → FASE 2 (F2)**.
++
++**Rollback:** tag `v0.10.49` · kill switch `FACT_SHADOW_WRITERS_ENABLED=false` se solo shadow.
++
++**Rinumerazione:** W4c → **0.10.50** · F2 ondate 0.10.51+ · W5 dopo F2.
++
++Diff: [`docs/obs-w4c.diff.txt`](obs-w4c.diff.txt) — integrale.  
++**Esclusione:** il file diff non include sé stesso.
++
++---
++
++## W4c.1 — Un solo nome canonico (VERDE)
++
++### Scelta detentore (W4c.1.1)
++
++**(b) assertion `asset.name` con `subject=chassis`** — già nel registro e nello store  
++(`api/app/facts/registry.py` FactSpec `asset.name`; scrittura via `apply_observation` in  
++`api/app/services/chassis_rename.py` `adopt_name_on_chassis`).  
++Nessun campo `Chassis.canonical_name` aggiunto: una sola copia.
++
++### Comportamento
++
++- `adopt_name_on_chassis` **non** assegna `member.name` né `manual_overrides` ai sibling.
++- Il membro che già portava il nome scelto resta invariato; gli altri restano interfacce.
++- Presentazione: `chassis_canonical_presentation` legge il fact chassis;  
++  `triageRules.js` salta `chassis_role === "interface"` **senza** richiedere nome vuoto.
++
++### Test
++
++- `test_w4c_1_6_rename_four_members_one_canonical` — **PASS** (sostituisce il vuoto di copertura di `test_w4b_5_5` single-member).
++- `test_w4b_5_3` aggiornato: dichiara invariante nuovo (membri non rinominati; fact = canonico).
++
++---
++
++## W4c.2 — Bonifica cutoff (VERDE)
++
++- Cutoff dichiarato: **`2026-07-27T11:00:00Z`** (`PROVENANCE_BONIFY_CUTOFF` in `api/app/facts/shadow.py`).
++- Fuori dal boot (`bootstrap.py`).
++- Script una-tantum: `scripts/unmark_post_cutoff_provenance.py` (no bump VERSION dedicato).
++
++### Misura pre-deploy
++
++| Voce | n |
++|------|---|
++| `provenance_unreliable` totali | 189 |
++| pre-cutoff | 189 |
++| **post-cutoff (erronei)** | **0** (ids: nessuno) |
++
++Nessuna rimozione necessaria. Test `test_w4c_2_4` PASS.
++
++---
++
++## W4c.3 — mark_lgs310c fuori boot (VERDE)
++
++Rimossa chiamata da bootstrap. Helper resta in `chassis_rename.py` (one-shot).  
++Asset 3: `manual_overrides=['name']` + `field_sources.name.source=manual` · valore `LGS310C` invariato.  
++Reversibilità: rimuovere `name` da overrides + field_sources.
++
++---
++
++## W4c.4 — Sorgenti rifiutate (una lettura)
++
++`GET` shadow-stats (in-process api, una volta):
++
++```
++unknown_source=0
++counters={}
++breaker_open=false
++```
++
++`safe_shadow_iface_ip` riceve `elected.source` da `IpAddress` (fritz/nmap/mgmt/…).  
++**ssdp / mdns / portal non producono IP di interfaccia** per questo writer (usati per nomi/fingerprint).  
++Non aggiunti a `asset.iface_ip.sources`. Nessuna traduzione.
++
++---
++
++## W4c.5 — DEBT-PRESENCE-SOURCE-OUTAGE
++
++Aperto in `KNOWN_DEBT.md`. Trust **non** corretto. UI in F2.
++
++---
++
++## W4c.6 — Previsioni (PRIMA del deploy)
++
++Baseline misurata: NP **409** · FA **253** (251→253 da shadow quiet post-W4b; non collasso) · assets **151** · ip_current **100** · AD **62** · trust dry_run `needs_apply=false` · post-cutoff unreliable **0**.
++
++| Metrica | Atteso |
++|---------|--------|
++| name_proposals | **409** (Δ 0) |
++| fact_assertions | **253** (Δ 0) |
++| provenance_unreliable rimossi | **0** |
++| nomi valore modificato | **0** |
++| assets / ip_current | 151 / 100 |
++| needs_apply / T_backup / structural | false / 0 / 0 |
++| breaker | closed |
++| unknown_source | 0 |
++| AD | **62** (snapshot finestra) |
++| boot1 structural | **0 atteso** (asset 136/140/145/148 già riconciliati; dry_run pre-deploy clean) |
++
++---
++
++## W4c.7 — Test nominati
++
++W4c.1.6/1.7/2.4/3.2 + w4b_chassis + facts_resolver + shadow_w2 + m1 + trust + mac_ip + T-b/e/f + identity + w4a + web oggi: **PASS** (sottoinsieme; non «suite verde»).  
++I6: `rg 'scoreSpecificity|specificity' api/` → **vuoto**.
++
++---
++
++## W4c.8 — Assert post-deploy
++
++`boot1 0.10.50: needs_apply=false T_backup=0 structural=0 · NP=409 (Δ0) · assets=151 ip_cur=100 AD=62 · fact_assertions=253 (Δ0) · breaker=closed · unknown_source=0 · observations=absent · provenance_cleared=0 · adopted_names_changed=0 · W4c.1/2/3=verdi · asset3=manual LGS310C`
++
++Previsioni tutte confermate. GATE W4c **VERDE** → FASE 2.
+diff --git a/observatory/scripts/unmark_post_cutoff_provenance.py b/observatory/scripts/unmark_post_cutoff_provenance.py
+new file mode 100644
+index 0000000..868d3c6
+--- /dev/null
++++ b/observatory/scripts/unmark_post_cutoff_provenance.py
+@@ -0,0 +1,59 @@
++#!/usr/bin/env python3
++"""W4c.2 one-shot: unmark provenance_unreliable on post-cutoff nmap rows.
++
++Not part of bootstrap. Run once against prod DB via api container if needed:
++  docker compose exec -T api python3 /path/to/script
++Or import unmark_post_cutoff_provenance from app.facts.shadow.
++"""
++
++from __future__ import annotations
++
++import sys
++from pathlib import Path
++
++# Allow running from repo root / api context
++API = Path(__file__).resolve().parents[1] / "api"
++if str(API) not in sys.path:
++    sys.path.insert(0, str(API))
++
++
++def main() -> int:
++    from sqlalchemy import create_engine
++    from sqlalchemy.orm import sessionmaker
++
++    from app.config import get_settings
++    from app.facts.shadow import PROVENANCE_BONIFY_CUTOFF, unmark_post_cutoff_provenance
++    from app.models import AuditLog, utcnow
++
++    settings = get_settings()
++    engine = create_engine(f"sqlite:///{settings.sqlite_path}")
++    Session = sessionmaker(bind=engine)
++    db = Session()
++    try:
++        result = unmark_post_cutoff_provenance(db)
++        if result["cleared"]:
++            db.add(
++                AuditLog(
++                    user_id=None,
++                    action="facts.unmark_post_cutoff_provenance",
++                    entity="fact_assertions",
++                    entity_id="",
++                    detail={
++                        "cutoff": PROVENANCE_BONIFY_CUTOFF.isoformat() + "Z",
++                        "cleared": result["cleared"],
++                        "ids": result["ids"],
++                        "wave": "w4c.2.2",
++                    },
++                    ip="",
++                    created_at=utcnow(),
++                )
++            )
++            db.commit()
++        print(result)
++        return 0
++    finally:
++        db.close()
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/observatory/tests/test_w4b_chassis.py b/observatory/tests/test_w4b_chassis.py
+new file mode 100644
+index 0000000..2c5989f
+--- /dev/null
++++ b/observatory/tests/test_w4b_chassis.py
+@@ -0,0 +1,441 @@
++"""OBS-CURRENCY W4b — provenance, anti-ballooning, chassis rename, LGS310C."""
++
++from __future__ import annotations
++
++import sys
++import uuid
++from pathlib import Path
++
++import pytest
++from sqlalchemy import create_engine, func, select
++from sqlalchemy.orm import sessionmaker
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
++
++from app.config import get_settings
++from app.db import Base
++from app.facts import shadow as fact_shadow
++from app.facts.resolver import apply_observation, current
++from app.models import Asset, Chassis, FactAssertion, Interface, NameProposal
++from app.services.chassis_rename import (
++    adopt_name_on_chassis,
++    mark_lgs310c_manual,
++    member_adopt_blocked_detail,
++)
++from app.services.identity import create_name_proposal
++from app.services.name_proposal_chassis import (
++    asset_name_authority,
++    chassis_has_manual_name,
++    reconcile_chassis_name_proposal_suppression,
++)
++
++
++@pytest.fixture()
++def db(tmp_path, monkeypatch):
++    db_path = tmp_path / "w4b.db"
++    monkeypatch.setenv("SQLITE_PATH", str(db_path))
++    monkeypatch.setenv("FACT_SHADOW_WRITERS_ENABLED", "true")
++    get_settings.cache_clear()
++    fact_shadow.reset_shadow_stats_for_tests()
++    engine = create_engine(f"sqlite:///{db_path}")
++    Base.metadata.create_all(engine)
++    Session = sessionmaker(bind=engine)
++    session = Session()
++    yield session
++    session.close()
++    get_settings.cache_clear()
++    fact_shadow.reset_shadow_stats_for_tests()
++
++
++def _asset(db, *, mac, name="", chassis=None, manual=False):
++    asset = Asset(
++        uid=str(uuid.uuid4()),
++        name=name,
++        category="unknown",
++        status="nuovo",
++        chassis_id=chassis.id if chassis else None,
++    )
++    if manual and name:
++        asset.meta = {
++            "manual_overrides": ["name"],
++            "field_sources": {"name": {"source": "manual", "confidence": 1.0}},
++        }
++    db.add(asset)
++    db.flush()
++    iface = Interface(asset_id=asset.id, mac=mac, is_primary=True)
++    db.add(iface)
++    db.commit()
++    db.refresh(asset)
++    db.refresh(iface)
++    return asset, iface
++
++
++def test_w4b_5_1_unknown_source_refused_not_translated(db):
++    asset, iface = _asset(db, mac="AA:BB:CC:DD:EE:01")
++    fact_shadow.safe_shadow_iface_ip(
++        db, iface, ip="192.168.1.10", source="totally-unknown-source"
++    )
++    db.commit()
++    assert db.scalar(select(func.count()).select_from(FactAssertion)) == 0
++    stats = fact_shadow.shadow_stats()
++    assert stats["unknown_source"] >= 1
++
++
++def test_w4b_5_2_fifty_weak_one_divergence_row(db):
++    chassis = Chassis(label="pin")
++    db.add(chassis)
++    db.flush()
++    asset, iface = _asset(
++        db, mac="AA:BB:CC:DD:EE:02", name="Pinned", chassis=chassis, manual=True
++    )
++    apply_observation(
++        db, fact_key="asset.name", entity=iface, value="Pinned", source="manual"
++    )
++    db.commit()
++    for _ in range(50):
++        r = apply_observation(
++            db,
++            fact_key="asset.name",
++            entity=iface,
++            value="Switch Linksys",
++            source="oui",
++            confidence=0.85,
++        )
++        assert r.action == "weak_evidence"
++    db.commit()
++    hist = db.scalars(
++        select(FactAssertion).where(
++            FactAssertion.state == "historical",
++            FactAssertion.value_norm == "Switch Linksys",
++        )
++    ).all()
++    assert len(hist) == 1
++    assert int((hist[0].value_json or {}).get("occurrences") or 0) == 50
++    cur = current(db, "chassis", chassis.id, "asset.name")
++    assert cur.value_norm == "Pinned"
++    assert cur.source == "manual"
++
++
++def test_w4b_5_3_chassis_rename_idempotent(db):
++    """W4c.1.7 — two identical adopts = one transition; members NOT renamed."""
++    chassis = Chassis(label="c")
++    db.add(chassis)
++    db.flush()
++    a, _ = _asset(db, mac="AA:BB:CC:DD:EE:03", chassis=chassis, name="")
++    b, _ = _asset(db, mac="AA:BB:CC:DD:EE:04", chassis=chassis, name="")
++    r1 = adopt_name_on_chassis(db, chassis_id=chassis.id, value="CanonName")
++    db.commit()
++    r2 = adopt_name_on_chassis(db, chassis_id=chassis.id, value="CanonName")
++    db.commit()
++    assert r1["changed"] == 1
++    assert r2["changed"] == 0
++    db.refresh(a)
++    db.refresh(b)
++    # W4c.1: members keep their own names (empty); canon lives in fact_assertions.
++    assert a.name == "" and b.name == ""
++    cur = current(db, "chassis", chassis.id, "asset.name")
++    assert cur is not None
++    assert cur.value_norm == "CanonName"
++    assert cur.source == "manual"
++
++
++def test_w4b_5_4_member_409_chassis_ok(db):
++    chassis = Chassis(label="c2")
++    db.add(chassis)
++    db.flush()
++    a, _ = _asset(db, mac="AA:BB:CC:DD:EE:05", chassis=chassis)
++    _asset(db, mac="AA:BB:CC:DD:EE:06", chassis=chassis)
++    blocked = member_adopt_blocked_detail(db, a)
++    assert blocked is not None
++    assert blocked["chassis_id"] == chassis.id
++    assert "chassis" in blocked["message"].lower()
++    ok = adopt_name_on_chassis(db, chassis_id=chassis.id, value="OkName")
++    db.commit()
++    assert ok["changed"] == 1
++    assert ok["holder"] == "fact_assertion"
++
++
++def test_w4c_1_6_rename_four_members_one_canonical(db):
++    """W4c.1.6 — chassis with 4 members (like 23): one fact name, members untouched.
++
++    Declares change from test_w4b_5_5: old test used a single-member chassis 24
++    so names_24 == {LGS310C} could not catch the N-copy bug.
++    """
++    from app.services.name_proposal_chassis import chassis_canonical_presentation
++
++    chassis = Chassis(label="23-like")
++    db.add(chassis)
++    db.flush()
++    a, _ = _asset(db, mac="D8:EC:5E:CC:1C:01", chassis=chassis, name="LGS328C")
++    b, _ = _asset(db, mac="D8:EC:5E:CC:1C:02", chassis=chassis, name="")
++    c, _ = _asset(db, mac="D8:EC:5E:CC:1C:03", chassis=chassis, name="")
++    d, _ = _asset(db, mac="D8:EC:5E:CC:1C:04", chassis=chassis, name="")
++    before = {a.id: a.name, b.id: b.name, c.id: c.name, d.id: d.name}
++    r = adopt_name_on_chassis(db, chassis_id=chassis.id, value="LGS328C-Canon")
++    db.commit()
++    assert r["changed"] == 1
++    for m in (a, b, c, d):
++        db.refresh(m)
++    # Members NOT renamed / NOT marked manual
++    assert {a.id: a.name, b.id: b.name, c.id: c.name, d.id: d.name} == before
++    for m in (a, b, c, d):
++        overrides = set((m.meta or {}).get("manual_overrides") or [])
++        assert "name" not in overrides
++    cur = current(db, "chassis", chassis.id, "asset.name")
++    assert cur.value_norm == "LGS328C-Canon"
++    assert cur.source == "manual"
++    # Presentation: interfaces see chassis_canonical_name
++    for m in (a, b, c, d):
++        pres = chassis_canonical_presentation(db, m)
++        assert pres["chassis_canonical_name"] == "LGS328C-Canon"
++        assert pres["chassis_role"] in ("canonical", "interface")
++    interfaces = [
++        chassis_canonical_presentation(db, m)["chassis_role"] for m in (a, b, c, d)
++    ]
++    assert interfaces.count("canonical") == 1
++    assert interfaces.count("interface") == 3
++    # Sibling suppression: interface role alone (not empty-name gate)
++    from pathlib import Path
++
++    src = (
++        Path(__file__).resolve().parents[1] / "web" / "src" / "triageRules.js"
++    ).read_text(encoding="utf-8")
++    assert 'asset?.chassis_role === "interface" && asset?.chassis_canonical_name' in src
++
++
++def test_w4b_5_5_chassis_23_24_distinct(db):
++    """Chassis 23 and 24 remain distinct; rename does not fuse them."""
++    c23 = Chassis(label="LGS328")
++    c24 = Chassis(label="LGS310")
++    db.add_all([c23, c24])
++    db.flush()
++    _asset(db, mac="D8:EC:5E:CC:1C:05", chassis=c23, name="LGS328C")
++    a24, _ = _asset(
++        db, mac="D8:EC:5E:C5:7E:C7", chassis=c24, name="LGS310C", manual=True
++    )
++    _asset(db, mac="D8:EC:5E:C5:7E:C8", chassis=c24, name="")  # second member
++    adopt_name_on_chassis(db, chassis_id=c24.id, value="LGS310C")
++    db.commit()
++    assert c23.id != c24.id
++    assert a24.chassis_id == c24.id
++    cur24 = current(db, "chassis", c24.id, "asset.name")
++    assert cur24.value_norm == "LGS310C"
++    # Member that already had LGS310C stays; sibling not renamed to it
++    db.refresh(a24)
++    assert a24.name == "LGS310C"
++
++
++def test_w4b_5_6_lgs310c_manual_oui_suppressed(db):
++    chassis = Chassis(label="24")
++    db.add(chassis)
++    db.flush()
++    asset = Asset(
++        id=3,
++        uid=str(uuid.uuid4()),
++        name="LGS310C",
++        category="switch",
++        status="noto",
++        chassis_id=chassis.id,
++        meta={},
++    )
++    db.add(asset)
++    db.flush()
++    iface = Interface(asset_id=3, mac="D8:EC:5E:C5:7E:C7", is_primary=True)
++    db.add(iface)
++    db.add(
++        NameProposal(
++            asset_id=3,
++            source="oui",
++            value="Switch Linksys",
++            confidence=0.85,
++            status="pending",
++        )
++    )
++    db.commit()
++    r = mark_lgs310c_manual(db)
++    assert r["changed"] == 1
++    r2 = mark_lgs310c_manual(db)
++    assert r2["changed"] == 0
++    stats = reconcile_chassis_name_proposal_suppression(db)
++    db.commit()
++    assert stats["archived_a"] >= 1
++    pending = db.scalars(
++        select(NameProposal).where(
++            NameProposal.asset_id == 3, NameProposal.status == "pending"
++        )
++    ).all()
++    assert not any(p.value == "Switch Linksys" for p in pending)
++    db.refresh(iface)
++    apply_observation(
++        db,
++        fact_key="asset.name",
++        entity=iface,
++        value="Switch Linksys",
++        source="oui",
++        confidence=0.85,
++    )
++    db.commit()
++    cur = current(db, "chassis", chassis.id, "asset.name")
++    assert cur.value_norm == "LGS310C"
++    assert cur.source == "manual"
++    hist = db.scalars(
++        select(FactAssertion).where(
++            FactAssertion.state == "historical",
++            FactAssertion.value_norm == "Switch Linksys",
++        )
++    ).all()
++    assert len(hist) == 1
++
++
++def test_w4b_5_7_lgs328c_not_manual(db):
++    chassis = Chassis(label="23")
++    db.add(chassis)
++    db.flush()
++    a, _ = _asset(db, mac="D8:EC:5E:CC:1B:FF", name="LGS328C", chassis=chassis)
++    assert asset_name_authority(a) is None
++    assert chassis_has_manual_name(db, chassis.id) is False
++    prop = create_name_proposal(
++        db, asset_id=a.id, source="oui", value="Switch Linksys", confidence=0.85
++    )
++    db.commit()
++    assert prop is not None
++
++
++def test_w4b_5_8_alias_preserved(db):
++    chassis = Chassis(label="al")
++    db.add(chassis)
++    db.flush()
++    a, ia = _asset(
++        db, mac="AA:BB:CC:DD:EE:10", name="Canon", chassis=chassis, manual=True
++    )
++    b, ib = _asset(db, mac="AA:BB:CC:DD:EE:11", chassis=chassis)
++    apply_observation(
++        db, fact_key="asset.name", entity=ia, value="Canon", source="manual"
++    )
++    apply_observation(
++        db, fact_key="iface.alias", entity=ib, value="uplink-B", source="manual"
++    )
++    db.commit()
++    assert current(db, "chassis", chassis.id, "asset.name").value_norm == "Canon"
++    assert current(db, "asset", b.id, "iface.alias").value_norm == "uplink-B"
++
++
++def test_w4b_5_9_conflict_review_no_autorename(db):
++    asset, iface = _asset(db, mac="AA:BB:CC:DD:EE:12", name="Android", manual=True)
++    apply_observation(
++        db, fact_key="asset.name", entity=iface, value="Android", source="manual"
++    )
++    db.commit()
++    r = apply_observation(
++        db,
++        fact_key="os.guess",
++        entity=iface,
++        value="Microsoft Windows 11",
++        source="nmap",
++    )
++    db.commit()
++    assert r.action == "conflict_review"
++    assert current(db, "asset", asset.id, "asset.name").value_norm == "Android"
++    hist = db.scalars(
++        select(FactAssertion).where(FactAssertion.reason == "conflict_review")
++    ).all()
++    assert len(hist) == 1
++
++
++def test_w4b_5_10_unresolvable_not_high_priority():
++    """Presentation contract: unresolvable → priority bassa; adopt hidden unless chassis."""
++    from pathlib import Path
++
++    src = Path(__file__).resolve().parents[1] / "web" / "src" / "views" / "Oggi.vue"
++    text = src.read_text(encoding="utf-8")
++    assert "showAdoptButton" in text
++    assert "v-if=\"showAdoptButton(row)\"" in text
++    problems = (
++        Path(__file__).resolve().parents[1] / "web" / "src" / "oggiProblems.js"
++    ).read_text(encoding="utf-8")
++    assert 'verdict === "unresolvable"' in problems
++    assert 'priority = "bassa"' in problems
++
++def test_w4c_2_4_bonify_cutoff_skips_post_deploy_rows(db):
++    from datetime import timedelta
++
++    from app.facts.shadow import (
++        PROVENANCE_BONIFY_CUTOFF,
++        bonify_translated_provenance,
++        unmark_post_cutoff_provenance,
++    )
++
++    asset, iface = _asset(db, mac="AA:BB:CC:DD:EE:90")
++    old = FactAssertion(
++        subject_type="interface",
++        subject_id=iface.id,
++        fact_key="asset.iface_ip",
++        excl_key=f"asset.iface_ip:{iface.id}",
++        value_norm="10.0.0.1",
++        source="nmap",
++        authority=75,
++        confidence=0.75,
++        state="current",
++        reason="",
++        created_at=PROVENANCE_BONIFY_CUTOFF - timedelta(hours=1),
++    )
++    new = FactAssertion(
++        subject_type="interface",
++        subject_id=iface.id + 9999,
++        fact_key="asset.iface_ip",
++        excl_key=f"asset.iface_ip:{iface.id + 9999}",
++        value_norm="10.0.0.2",
++        source="nmap",
++        authority=75,
++        confidence=0.75,
++        state="historical",
++        reason="",
++        created_at=PROVENANCE_BONIFY_CUTOFF + timedelta(hours=1),
++    )
++    db.add_all([old, new])
++    db.commit()
++    r1 = bonify_translated_provenance(db)
++    db.commit()
++    assert r1["marked"] == 1
++    db.refresh(old)
++    db.refresh(new)
++    assert "provenance_unreliable" in (old.reason or "")
++    assert "provenance_unreliable" not in (new.reason or "")
++    new.reason = "provenance_unreliable"
++    db.commit()
++    u = unmark_post_cutoff_provenance(db)
++    db.commit()
++    assert new.id in u["ids"]
++    db.refresh(new)
++    assert "provenance_unreliable" not in (new.reason or "")
++    r2 = bonify_translated_provenance(db)
++    assert r2["marked"] == 0
++
++
++def test_w4c_3_2_asset3_manual_provenance_helper_idempotent(db):
++    """Asset 3 mark helper leaves value unchanged; already_manual → 0."""
++    chassis = Chassis(label="24")
++    db.add(chassis)
++    db.flush()
++    asset = Asset(
++        id=3,
++        uid=str(uuid.uuid4()),
++        name="LGS310C",
++        category="switch",
++        status="noto",
++        chassis_id=chassis.id,
++        meta={
++            "manual_overrides": ["name"],
++            "field_sources": {"name": {"source": "manual", "confidence": 1.0}},
++        },
++    )
++    db.add(asset)
++    db.flush()
++    db.add(Interface(asset_id=3, mac="D8:EC:5E:C5:7E:C7", is_primary=True))
++    db.commit()
++    r = mark_lgs310c_manual(db)
++    assert r["changed"] == 0
++    assert r["reason"] == "already_manual"
++    db.refresh(asset)
++    assert asset.name == "LGS310C"
++    assert "name" in set((asset.meta or {}).get("manual_overrides") or [])
+diff --git a/observatory/web/package.json b/observatory/web/package.json
+index 1de1bf7..a2c29fe 100644
+--- a/observatory/web/package.json
++++ b/observatory/web/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "lan-observatory-web",
+   "private": true,
+-  "version": "0.10.43",
++  "version": "0.10.50",
+   "type": "module",
+   "scripts": {
+     "dev": "vite",
+diff --git a/observatory/web/src/triageRules.js b/observatory/web/src/triageRules.js
+index aff7410..7ea5259 100644
+--- a/observatory/web/src/triageRules.js
++++ b/observatory/web/src/triageRules.js
+@@ -248,10 +248,17 @@ export function buildTriageRows(assets, chassisPayload = {}) {
+ 
+   for (const asset of list) {
+     if ((asset?.status || "") === "ignorato") continue;
++    // W4c.1.3: sibling interfaces never get their own rename cards — regardless
++    // of whether Asset.name is empty (rename must not break W4a suppression).
++    if (asset?.chassis_role === "interface" && asset?.chassis_canonical_name) {
++      continue;
++    }
+     const top = topPendingProposal(asset);
+     if (!top) continue;
+ 
+-    const currentName = String(asset?.name || "").trim();
++    const currentName = String(
++      asset?.name || asset?.chassis_canonical_name || "",
++    ).trim();
+     const proposedName = String(top.value || "").trim();
+     if (!proposedName) continue;
+     if (currentName && currentName === proposedName) continue;
+@@ -265,12 +272,18 @@ export function buildTriageRows(assets, chassisPayload = {}) {
+     const moreSpecific = scoreProposed > scoreCurrent;
+     const isNoise = isNoiseProposal(currentName, proposedName);
+     const isAi = String(top.source || "").toLowerCase() === "ai";
++    // W4a.2.5: computed resolvability (API). Default true only if field absent.
++    const actionable = top.actionable !== false && top.resolvable !== false;
+ 
+     let verdict;
+     let recommendedAction;
+     let massEligible = false;
+ 
+-    if (chassisMember) {
++    if (!actionable) {
++      // I2: declare non-resolvable; never high-priority adopt
++      verdict = "unresolvable";
++      recommendedAction = "verifica";
++    } else if (chassisMember) {
+       // D5: riga in verifica; D5-bis: rumore chassis entra in massa via noiseProposalIds
+       verdict = "chassis";
+       recommendedAction = "verifica";
+@@ -316,7 +329,11 @@ export function buildTriageRows(assets, chassisPayload = {}) {
+       score_proposed: scoreProposed,
+       collisions,
+       chassis_member: chassisMember,
++      chassis_id: asset.chassis_id ?? null,
++      chassis_canonical_name: asset.chassis_canonical_name || null,
+       is_noise: isNoise,
++      actionable,
++      actionable_reason: top.actionable_reason || null,
+       // mass_eligible: solo rumore di griglia (non chassis). La massa usa noiseProposalIds.
+       mass_eligible: massEligible,
+       manual_name: manual,
