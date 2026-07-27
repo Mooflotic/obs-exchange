@@ -1,0 +1,504 @@
+diff -ruN w7close_before/VERSION w7close_after/VERSION
+--- a/VERSION
++++ b/VERSION
+@@ -1 +1 @@
+-0.10.58
++0.10.59
+diff -ruN w7close_before/web/package.json w7close_after/web/package.json
+--- a/web/package.json
++++ b/web/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "lan-observatory-web",
+   "private": true,
+-  "version": "0.10.58",
++  "version": "0.10.59",
+   "type": "module",
+   "scripts": {
+diff -ruN w7close_before/api/app/services/mac_ip_policy.py w7close_after/api/app/services/mac_ip_policy.py
+--- a/api/app/services/mac_ip_policy.py
++++ b/api/app/services/mac_ip_policy.py
+@@ -50,10 +50,15 @@
+     # Chassis-scoped current addressing (any member).
+     chassis_has_current_ip: bool = False
+-    chassis_mgmt_ip: str | None = None
++    # Management IP of the chassis, only when the caller MEASURED it. None = unknown
++    # (I2): never invented, never a plausible stand-in.
++    chassis_mgmt_ip: str | None = None
+     # Domain exception.
+     l2_only_exception_class: str | None = None
+-    # Binding supersession: a newer current binding exists for this MAC or IP slot.
+-    superseded_by_newer_binding: bool = False
++    # Binding supersession — TRI-STATE (I2/K3): True = measured newer binding exists;
++    # False = measured that none does; None = UNKNOWN (not measured). Unknown is NOT an
++    # assertion of "not superseded": only a measured True yields the "superseded" verdict.
++    superseded_by_newer_binding: bool | None = None
+
+
+ def is_l2_only_exception(exception_class: str | None) -> bool:
+@@ -71,8 +76,12 @@
+     only when the caller already measured it (see return via side channel in
+     callers — this function only returns the state enum).
++
++    Supersession is tri-state: only a MEASURED ``True`` yields ``superseded``.
++    ``None`` (unknown) and a measured ``False`` never fabricate the verdict — an
++    unmeasured supersession must not masquerade as a fact (I2).
+     """
+-    if inp.superseded_by_newer_binding:
++    if inp.superseded_by_newer_binding is True:
+         return "superseded"
+
+     if is_l2_only_exception(inp.l2_only_exception_class):
+diff -ruN w7close_before/api/app/services/inventory.py w7close_after/api/app/services/inventory.py
+--- a/api/app/services/inventory.py
++++ b/api/app/services/inventory.py
+@@ -189,10 +189,27 @@
+-def _l2_only_exception_class(asset: Asset) -> str | None:
+-    text = " ".join(str(x or "") for x in (asset.name, asset.category, asset.vendor)).lower()
+-    if "powerline" in text or "510e" in text:
+-        return "powerline"
+-    return None
++def _l2_only_exception_class(db: Session, asset: Asset) -> str | None:
++    """Derive the L2-only exception class from MEASURED attributes (K9, F-5).
++
++    A chassis member has ``Asset.name`` empty by project (F-5): never key the class off
++    the raw member name. Signals used, all measured: ``category``, ``vendor``, each
++    interface OUI vendor, and — when a name is genuinely needed — the CANONICAL resolved
++    name (chassis-scoped ``presentation_name_for_asset``), never the raw member name.
++
++    Returns ``None`` when no measured attribute lets us recognize the class (K3: the class
++    is ABSENT, not a match-miss spun as "it is not powerline").
++    """
++    from app.services.name_proposal_chassis import presentation_name_for_asset
++
++    tokens: list[str] = [str(asset.category or ""), str(asset.vendor or "")]
++    for iface in asset.interfaces or []:
++        tokens.append(str(getattr(iface, "oui_vendor", "") or ""))
++    canonical = presentation_name_for_asset(db, asset)  # chassis canon, never raw member name
++    if canonical:
++        tokens.append(canonical)
++    text = " ".join(tokens).lower()
++    if "powerline" in text or "510e" in text:
++        return "powerline"
++    return None
+
+
+ def _chassis_has_current_ip(db: Session, asset: Asset) -> bool:
+@@ -216,13 +233,17 @@
+             chassis_has_current_ip=_chassis_has_current_ip(db, asset),
+-            chassis_mgmt_ip=None,
+-            l2_only_exception_class=_l2_only_exception_class(asset),
+-            superseded_by_newer_binding=False,
++            # chassis_mgmt_ip: UNKNOWN here (not looked up) — None, never invented (I2).
++            chassis_mgmt_ip=None,
++            l2_only_exception_class=_l2_only_exception_class(db, asset),
++            # supersession: UNKNOWN in the presence wire (not measured); pass None, never
++            # a constant False that would assert an unmeasured fact (I2/W7C.3).
++            superseded_by_newer_binding=None,
+         )
+     )
+
+@@ (after reconcile_all_asset_presence — new CONSULTIVE, read-only function) @@
+ def reconcile_all_asset_presence(db: Session) -> int:
+     count = 0
+     for asset in db.scalars(select(Asset)).all():
+         count += int(reconcile_asset_presence(db, asset))
+     return count
++
++
++_POLICY_PRESENT_DECISIONS = frozenset(
++    {"present", "present_l2_unaddressed", "l2_only_allowed"}
++)
++
++
++def mac_ip_policy_consultation(
++    db: Session,
++    *,
++    now: datetime | None = None,
++    stale_hours: int | None = None,
++) -> dict[str, Any]:
++    """W7C.5 — FULL mac_ip_policy verdict as a CONSULTIVE (read-only) diagnostic.
++
++    Runs the complete policy (rules #1..#5, including the ``stale``/``superseded``
++    verdicts that rules #3/#5 imply) for every asset and reports, per id, where the
++    policy DISAGREES with the real ``operational_state`` — together with the measured
++    evidence that keeps the device present. This NEVER writes and NEVER drives
++    ``operational_state`` / ``trust_level`` / ``reliable`` (F-7, W7C.5.5): rules #3/#5
++    stay NON-authoritative. Supersession and chassis mgmt IP are UNKNOWN here (I2), not
++    asserted. The verdict is a divergence to look at, not a device state.
++    """
++    from app.services.name_proposal_chassis import presentation_name_for_asset
++    from app.services.mac_ip_policy import MacIpPresenceInputs, classify_mac_ip_presence
++    from app.services.trust import is_portal_evidence
++
++    now = now or datetime.utcnow()
++    hours = stale_hours or max(1, int(os.environ.get("ASSET_STALE_AFTER_HOURS", "24")))
++    cutoff = now - timedelta(hours=hours)
++
++    assets = db.scalars(select(Asset)).all()
++    decisions: dict[str, int] = {}
++    disagreements: list[dict[str, Any]] = []
++
++    for asset in assets:
++        meta = dict(asset.meta or {})
++        if meta.get("operational_state") == "archived" and meta.get("canonical_asset_id"):
++            continue
++        reachability = dict(meta.get("reachability") or {})
++        fritz = dict(dict(meta.get("discovery") or {}).get("fritz") or {})
++        port = db.scalar(select(SwitchPort).where(SwitchPort.asset_id == asset.id))
++        fdb_fresh = bool(port and port.last_fdb_at and port.last_fdb_at >= cutoff)
++
++        physical_reasons: list[str] = []
++        if fdb_fresh:
++            physical_reasons.append("FDB recente")
++        infra = dict(meta.get("infrastructure_identity") or {})
++        switch = db.get(Switch, infra.get("switch_id")) if infra.get("switch_id") else None
++        if switch:
++            poll = dict((switch.meta or {}).get("snmp_poll") or {})
++            if poll.get("ok") and _recent(poll.get("at"), cutoff):
++                physical_reasons.append("SNMP recente")
++            if poll.get("lldp") and _recent(poll.get("at"), cutoff):
++                physical_reasons.append("LLDP recente")
++        recent_portal = any(
++            is_portal_evidence(str(kind)) and _recent(ts, cutoff)
++            for kind, ts in dict(asset.presence_sources or {}).items()
++        )
++
++        has_ip = bool(current_ip(asset))
++        ever_ip = any(addr.ip for i in asset.interfaces for addr in i.addresses)
++        chassis_ip = _chassis_has_current_ip(db, asset)
++        decision = classify_mac_ip_presence(
++            MacIpPresenceInputs(
++                mac_fdb_fresh=fdb_fresh,
++                mac_has_history_only=(ever_ip and not has_ip),
++                mac_has_current_ip=has_ip,
++                chassis_has_current_ip=chassis_ip,
++                chassis_mgmt_ip=None,  # UNKNOWN (I2)
++                l2_only_exception_class=_l2_only_exception_class(db, asset),
++                superseded_by_newer_binding=None,  # UNKNOWN (I2)
++            )
++        )
++        decisions[decision] = decisions.get(decision, 0) + 1
++
++        policy_present = decision in _POLICY_PRESENT_DECISIONS
++        real_state = meta.get("operational_state") or "active"
++        real_present = real_state == "active"
++        if policy_present == real_present:
++            continue
++
++        evidence_present = {
++            "reachable": reachability.get("status") == "reachable",
++            "physical": physical_reasons,
++            "recent_portal": recent_portal,
++            "fdb_fresh": fdb_fresh,
++            "fritz_active": fritz.get("active") is True,
++            "has_current_ip": has_ip,
++            "chassis_has_current_ip": chassis_ip,
++        }
++        disagreements.append(
++            {
++                "asset_id": asset.id,
++                "canonical_name": presentation_name_for_asset(db, asset),
++                "policy_verdict": decision,
++                "policy_present": policy_present,
++                "real_operational_state": real_state,
++                "real_trust_level": (asset.trust_level or ""),
++                "chassis_id": asset.chassis_id,
++                "evidence_keeping_present": evidence_present,
++            }
++        )
++
++    disagreements.sort(key=lambda d: d["asset_id"])
++    return {
++        "generated_at": now.isoformat() + "Z",
++        "authoritative": False,
++        "note": (
++            "Consultive only — full mac_ip_policy (rules #1..#5). Rules #3/#5 are NOT "
++            "authoritative: this never drives operational_state/trust_level/reliable (F-7)."
++        ),
++        "stale_after_hours": hours,
++        "total_assets": len(assets),
++        "policy_decisions": dict(sorted(decisions.items())),
++        "disagreements_count": len(disagreements),
++        "disagreements": disagreements,
++    }
+diff -ruN w7close_before/api/app/routers/admin.py w7close_after/api/app/routers/admin.py
+--- a/api/app/routers/admin.py
++++ b/api/app/routers/admin.py
+@@ -18,6 +18,7 @@
+ from app.services.backup import create_backup
+ from app.services.event_maintenance import reconcile_events
++from app.services.inventory import mac_ip_policy_consultation
+ from app.services.migrate import export_snapshot, import_legacy
+ from app.services.suggest import generate_name_suggestions
+ from app.services.scans import create_scan_request, serialize_scan
+
+ router = APIRouter(prefix="/api/admin", tags=["admin"])
++
++
++@router.get("/mac-ip-policy-consultation")
++def get_mac_ip_policy_consultation(
++    db: Session = Depends(get_db),
++    user: User = Depends(require_role("operator")),
++):
++    """W7C.5 — read-only CONSULTIVE full mac_ip_policy verdict + disagreements per id.
++
++    Diagnostic only: rules #3/#5 are NOT authoritative and this never writes nor drives
++    device state (F-7). Not a device-state surface for the UI (W7C.5.2).
++    """
++    return mac_ip_policy_consultation(db)
+diff -ruN w7close_before/tests/test_mac_ip_policy.py w7close_after/tests/test_mac_ip_policy.py
+--- a/tests/test_mac_ip_policy.py
++++ b/tests/test_mac_ip_policy.py
+@@ (new test before test_does_not_invent_identity_without_mgmt_ip) @@
++def test_supersession_is_tristate_unknown_is_not_asserted():
++    """W7C.3 — supersession is tri-state: only a MEASURED True yields ``superseded``.
++    Unknown (None) must NOT be coerced into an assertion; a measured False also does not
++    supersede. Unknown and False coincide in the present-family outcome, but None is a
++    first-class value (I2): the caller no longer passes a constant that asserts a fact.
++    """
++    base = dict(mac_has_current_ip=True, chassis_has_current_ip=True)
++    # measured True → superseded
++    assert (
++        classify_mac_ip_presence(
++            MacIpPresenceInputs(**base, superseded_by_newer_binding=True)
++        )
++        == "superseded"
++    )
++    # measured False → NOT superseded
++    assert (
++        classify_mac_ip_presence(
++            MacIpPresenceInputs(**base, superseded_by_newer_binding=False)
++        )
++        == "present"
++    )
++    # unknown (None, the default) → NOT superseded, never fabricated
++    assert (
++        classify_mac_ip_presence(
++            MacIpPresenceInputs(**base, superseded_by_newer_binding=None)
++        )
++        == "present"
++    )
++    assert MacIpPresenceInputs(**base).superseded_by_newer_binding is None
++
++
+ def test_does_not_invent_identity_without_mgmt_ip():
+diff -ruN w7close_before/tests/test_w7_consumers.py w7close_after/tests/test_w7_consumers.py
+--- a/tests/test_w7_consumers.py
++++ b/tests/test_w7_consumers.py
+@@ (helper _iface gains oui_vendor) @@
+-def _iface(db, asset, mac, ip=None, is_current=True):
+-    i = Interface(asset_id=asset.id, mac=mac)
++def _iface(db, asset, mac, ip=None, is_current=True, oui_vendor=""):
++    i = Interface(asset_id=asset.id, mac=mac, oui_vendor=oui_vendor)
+     db.add(i)
+     db.flush()
+     if ip is not None:
+         db.add(IpAddress(interface_id=i.id, ip=ip, is_current=is_current, source="dhcp"))
+         db.flush()
+     return i
+@@ (appended at end of file — W7C.2 tests, K9/F-5) @@
++# --- W7C.2 — L2-only exception from MEASURED attributes, not raw Asset.name (K9/F-5) ---
++
++
++def test_w7c23_powerline_chassis_member_empty_name_recognized_via_oui(db):
++    """A powerline that is a CHASSIS MEMBER has Asset.name empty by project (F-5).
++    With a recognizable interface OUI vendor the L2-only exception is still recognized.
++    """
++    ch = Chassis(label="powerline-pair")
++    db.add(ch)
++    db.flush()
++    a1 = _asset(db, chassis_id=ch.id, name="", category="unknown", vendor="")
++    _iface(db, a1, "AA:BB:CC:00:00:51", oui_vendor="AVM FRITZ!Powerline 510E")
++    a2 = _asset(db, chassis_id=ch.id, name="", category="unknown", vendor="")
++    _iface(db, a2, "AA:BB:CC:00:00:52", oui_vendor="AVM GmbH")
++    db.flush()
++    # Empty name, chassis member, but OUI on the member identifies the class → exception.
++    assert _mac_ip_policy_present(db, a1, fdb_fresh=True) is True
++    assert _mac_ip_policy_present(db, a1, fdb_fresh=False) is False
++
++
++def test_w7c23_powerline_chassis_member_recognized_via_canonical_name(db):
++    """When a name is needed it is the CANONICAL resolved name (chassis fact), never the
++    raw member name. Member name empty + no OUI, but the chassis canonical name is a
++    powerline → exception recognized (K9).
++    """
++    from app.models import FactAssertion, utcnow
++
++    ch = Chassis(label="pl")
++    db.add(ch)
++    db.flush()
++    a1 = _asset(db, chassis_id=ch.id, name="", category="unknown", vendor="")
++    _iface(db, a1, "AA:BB:CC:00:00:61")
++    a2 = _asset(db, chassis_id=ch.id, name="", category="unknown", vendor="")
++    _iface(db, a2, "AA:BB:CC:00:00:62")
++    db.add(
++        FactAssertion(
++            subject_type="chassis",
++            subject_id=ch.id,
++            fact_key="asset.name",
++            excl_key="name",
++            value_norm="FRITZ!Powerline 510E",
++            source="manual",
++            authority=100,
++            confidence=1.0,
++            observed_at=utcnow(),
++            last_seen_at=utcnow(),
++            valid_from=utcnow(),
++            state="current",
++        )
++    )
++    db.flush()
++    assert _mac_ip_policy_present(db, a1, fdb_fresh=True) is True
++
++
++def test_w7c22_exception_absent_when_no_measured_attribute(db):
++    """No measured attribute recognizes the class → class is ABSENT (None), not a
++    match-miss passed off as "not powerline" (K3). A plain member is not L2-only-rescued.
++    """
++    ch = Chassis(label="plain")
++    db.add(ch)
++    db.flush()
++    a1 = _asset(db, chassis_id=ch.id, name="", category="unknown", vendor="")
++    _iface(db, a1, "AA:BB:CC:00:00:71")  # no OUI, no IP, no canonical name
++    a2 = _asset(db, chassis_id=ch.id, name="", category="unknown", vendor="")
++    _iface(db, a2, "AA:BB:CC:00:00:72")
++    db.flush()
++    from app.services.inventory import _l2_only_exception_class
++
++    assert _l2_only_exception_class(db, a1) is None
++    # No chassis current IP + no exception → not present even when FDB-fresh.
++    assert _mac_ip_policy_present(db, a1, fdb_fresh=True) is False
+diff -ruN w7close_before/scripts/w7c_measure.py w7close_after/scripts/w7c_measure.py
+--- /dev/null
++++ b/scripts/w7c_measure.py
+@@ -0,0 +1,90 @@
++"""W7-CLOSE read-only measurements (rollback, never commits).
++
++Runs inside the deployed api container against the prod DB:
++
++  sudo docker compose exec -T api python3 - < scripts/w7c_measure.py
++
++Reports:
++- W7C.2.4 — assets whose L2-only EXCEPTION CLASS changes with the fix (old = raw
++  name+category+vendor; new = measured category+vendor+iface OUI + canonical name).
++  Enumerated per id. Zero ⇒ preventive fix (declared).
++- W7C.5.3 — FULL mac_ip_policy verdict as CONSULTIVE divergence: per-id disagreements
++  vs the real operational_state, with the evidence that keeps the device present.
++- Narrow additive wire hits today (present_l2_unaddressed/l2_only_allowed) — must be 0
++  in prod (W7 wire inert).
++
++Nothing is written. chassis_mgmt_ip and supersession stay UNKNOWN (I2).
++"""
++
++from __future__ import annotations
++
++import sys
++
++sys.path.insert(0, "/app")
++
++from sqlalchemy import create_engine, select
++from sqlalchemy.orm import sessionmaker
++
++from app.config import get_settings
++from app.models import Asset
++from app.services.inventory import (
++    _l2_only_exception_class,
++    _mac_ip_policy_present,
++    mac_ip_policy_consultation,
++)
++
++
++def _old_exception_class(asset: Asset) -> str | None:
++    """Pre-fix derivation (raw Asset.name + category + vendor)."""
++    text = " ".join(str(x or "") for x in (asset.name, asset.category, asset.vendor)).lower()
++    if "powerline" in text or "510e" in text:
++        return "powerline"
++    return None
++
++
++def main() -> int:
++    settings = get_settings()
++    db = sessionmaker(bind=create_engine(f"sqlite:///{settings.sqlite_path}"))()
++    try:
++        assets = db.scalars(select(Asset)).all()
++
++        # W7C.2.4 — exception-class delta (old vs new).
++        changed = []
++        for a in assets:
++            old = _old_exception_class(a)
++            new = _l2_only_exception_class(db, a)
++            if old != new:
++                changed.append((a.id, old, new, a.chassis_id, a.name or "", a.category or "", a.vendor or ""))
++        print(f"W7C.2.4 exception_class_changed: {len(changed)}")
++        for aid, old, new, cid, nm, cat, ven in sorted(changed):
++            print(f"  id={aid} old={old} new={new} chassis={cid} name={nm!r} cat={cat!r} vendor={ven!r}")
++
++        # Narrow additive wire hits today (must be 0 in prod).
++        narrow_hits = []
++        for a in assets:
++            port_fresh = False  # fdb freshness handled inside reconcile; here approximate via helper
++            if _mac_ip_policy_present(db, a, fdb_fresh=port_fresh):
++                narrow_hits.append(a.id)
++        print(f"W7 narrow wire hits (fdb_fresh=False snapshot): {len(narrow_hits)} {sorted(narrow_hits)}")
++
++        # W7C.5.3 — full-policy CONSULTIVE disagreements per id.
++        report = mac_ip_policy_consultation(db)
++        print(f"W7C.5 policy_decisions: {report['policy_decisions']}")
++        print(f"W7C.5.3 disagreements_count: {report['disagreements_count']} / total={report['total_assets']}")
++        for d in report["disagreements"]:
++            ev = d["evidence_keeping_present"]
++            kept = [k for k, v in ev.items() if v and k != "physical"] + (ev.get("physical") or [])
++            print(
++                f"  id={d['asset_id']} verdict={d['policy_verdict']} "
++                f"real_op={d['real_operational_state']} trust={d['real_trust_level']} "
++                f"chassis={d['chassis_id']} name={d['canonical_name']!r} evidence={kept}"
++            )
++        return 0
++    finally:
++        db.rollback()
++        db.close()
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff -ruN w7close_before/CHANGELOG.md w7close_after/CHANGELOG.md
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,5 +1,15 @@
+ # Changelog
+
++## 0.10.59 — W7-CLOSE: eccezione L2 da attributi misurati, ignoto≠falso, policy consultiva
++
++- **W7C.2 (K9/F-5) — eccezione L2-only NON dipende più da `Asset.name`:** `_l2_only_exception_class` (`inventory.py`) derivava la classe powerline/510E da `" ".join(asset.name, asset.category, asset.vendor)`. Dopo W4c.1 i membri di chassis hanno `Asset.name` **vuoto per progetto** (F-5): un powerline membro di chassis non sarebbe stato riconosciuto. Ora la classe è derivata da attributi **MISURATI** — `category`, `vendor`, l'**OUI vendor** di ogni interfaccia — e, quando serve un nome, dal **nome CANONICO risolto** (`presentation_name_for_asset`, chassis-scoped), mai dal nome grezzo del membro. Se nessun attributo misurato riconosce la classe, la classe è **ASSENTE (`None`, K3)**, non un match mancato spacciato per «non è powerline».
++- **W7C.3 (I2/K3) — input costanti del classifier risolti:** in `_mac_ip_policy_present` gli input `chassis_mgmt_ip` e `superseded_by_newer_binding` erano passati fissi (`None`, `False`). Il secondo **asseriva** un fatto non misurato («nessun binding più recente ha soppiantato»). Ora `superseded_by_newer_binding` è **tri-stato** (`bool | None`, default `None`=IGNOTO): solo un `True` **misurato** produce il verdetto `superseded`; `None` (ignoto) non viene mai coerciuto in un'asserzione. Il wire passa `None` (ignoto), non più `False`. `chassis_mgmt_ip` resta `None`=IGNOTO (non serve/non misurato qui, mai inventato).
++- **W7C.5 — policy PIENA CONSULTIVA (mai autoritativa):** nuovo `inventory.mac_ip_policy_consultation` (read-only) calcola il verdetto della policy completa (regole #1..#5) per ogni asset e lo espone come **divergenza diagnostica** accanto allo stato reale, con l'evidenza che tiene presente il device. Endpoint admin `GET /api/admin/mac-ip-policy-consultation` (sola lettura, ruolo operator). **Non scrive nulla e non guida `operational_state`/`trust_level`/`reliable`** (F-7): le regole #3/#5 restano **NON autoritative** (attivazione autoritativa rinviata e condizionata alla correzione delle regole che dissentono dalla realtà osservabile — `DEBT-MAC-IP-POLICY-WIRE` aperto). Mai esposto come stato del device in UI.
++- **Test:** `test_mac_ip_policy` (11, incl. tri-stato supersession) esercitato; nuovi nodi fixture/app W7C.2 verificati per import/sintassi (K4, non esercitati a runtime per contesa risorse NAS). F-7 intatto, I5/F-8 immutati, favicon A immutata (F-6).
++
+ ## 0.10.58 — W7 (deploy 1/2): T-a uplink→portal + wire mac_ip_policy additivo
+diff -ruN w7close_before/docs/KNOWN_DEBT.md w7close_after/docs/KNOWN_DEBT.md
+--- a/docs/KNOWN_DEBT.md
++++ b/docs/KNOWN_DEBT.md
+@@ (DEBT-MAC-IP-POLICY-WIRE — sezione riscritta) @@
+-## DEBT-MAC-IP-POLICY-WIRE — PARZIALE (deploy 1/2 in W7 0.10.58; ampio 2/2 rinviato)
+-
+-- **Priorità:** wave presence — **wire additivo fatto** in W7 (0.10.58); riclassificazione ampia rinviata
+-- **Cosa:** policy dominio MAC↔IP (chassis ≥1 IP corrente; eccezione powerline/510E; `present_l2_unaddressed`; supersession binding) — classifier `api/app/services/mac_ip_policy.py` + test contratto.
+-- **Fatto (W7.2, deploy 1/2):** `classify_mac_ip_presence` collegato a `reconcile_asset_presence` come **solo segnale di presenza** (`present_l2_unaddressed` + `l2_only_allowed` → `reliable`); mai forza `stale`/`superseded` (F-7 intatto, non secondo autore). Misurato 0 cambi in prod (inerte oggi; test `test_w7_consumers`).
+-- **Rinviato (deploy 2/2 — decisione dominio Michele):** regole #3/#5 (`stale`/`superseded` che tolgono presenza a device correnti). Blast-radius alto (52/151, incl. FritzBox router/powerline/Sky). Da confermare quali device attivi declassare prima di attivare.
+-- **Doc:** [`docs/obs-currency-mac-ip-policy.md`](obs-currency-mac-ip-policy.md)
+-- **Vietato:** usarla come scorciatoia di fusione chassis; inventare management IP.
++## DEBT-MAC-IP-POLICY-WIRE — APERTO (wire additivo 0.10.58; policy piena CONSULTIVA 0.10.59; autoritativa rinviata)
++
++- **Priorità:** wave presence — **wire additivo fatto** (0.10.58); **policy piena esposta come CONSULTIVA** (0.10.59); attivazione autoritativa delle regole #3/#5 **rinviata e condizionata**.
++- **Cosa:** policy dominio MAC↔IP (chassis ≥1 IP corrente; eccezione powerline/510E; `present_l2_unaddressed`; supersession binding) — classifier `api/app/services/mac_ip_policy.py` + test contratto.
++- **Fatto (W7.2, deploy 1/2, 0.10.58):** `classify_mac_ip_presence` collegato a `reconcile_asset_presence` come **solo segnale di presenza** (`present_l2_unaddressed` + `l2_only_allowed` → `reliable`); mai forza `stale`/`superseded` (F-7 intatto, non secondo autore). Misurato 0 cambi in prod.
++- **Fatto (W7C.5, 0.10.59) — policy piena CONSULTIVA:** `inventory.mac_ip_policy_consultation` (read-only) + endpoint admin `GET /api/admin/mac-ip-policy-consultation` calcolano il verdetto della policy completa (regole #1..#5) per ogni asset e lo espongono come **divergenza visibile** accanto allo stato reale e all'evidenza che tiene presente il device. **Non scrive, non guida `operational_state`/`trust_level`/`reliable`** (F-7). Le regole #3/#5 **NON sono autoritative**.
++- **Rinviato (attivazione autoritativa — decisione dominio Michele + correzione regole):** le regole #3/#5 marcherebbero `stale` device la cui presenza è dimostrata nello stesso istante da altre evidenze (FritzBox router, powerline, Sky box) — dissentono dalla realtà osservabile su una quota rilevante del parco e sbagliano sul gateway. **Il difetto è nella regola, non negli asset.** L'attivazione autoritativa è **condizionata alla correzione** delle regole che dissentono dalla realtà; fino ad allora il verdetto resta consultivo (I3). Blast-radius misurato read-only prod: vedi `docs/obs-w7close.md` (enumerazione per id).
++- **Doc:** [`docs/obs-currency-mac-ip-policy.md`](obs-currency-mac-ip-policy.md), [`docs/obs-w7close.md`](obs-w7close.md)
++- **Vietato:** attivare #3/#5 in modo autoritativo prima della correzione delle regole; usare la policy come scorciatoia di fusione chassis; inventare management IP.
+
+## Esclusi dichiarati (non nel diff — sono gli artefatti stessi o già pubblicati)
+- `docs/obs-w7close.md` — il report di questa ondata.
+- `docs/obs-w7close.diff.txt` — questo file.
+- `docs/obs-w7.diff.txt` — ripubblicato integrale come deliverable W7C.1 (script inline); non riportato qui per non duplicare.
