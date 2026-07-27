@@ -67,19 +67,32 @@ Verifica LGS (logica già in triage + presentation API): chassis 24 manual LGS31
 
 ---
 
-## F2.3 — Matrice vista × breakpoint (verdetto)
+## F2.3 — Matrice vista × breakpoint
 
-Audit strutturale (codice + layout responsive esistenti). Verdetto: **OK** = gerarchia accettabile / azioni solo se eseguibili / stati qualificati; **DIP** = dipendenza W5/W7; **DEBT** = debito trust/Fritz.
+**Correzione W4d.3.1:** la matrice F2 con celle «OK» era un’autocertificazione da lettura codice, non un esercizio runtime. Celle **non verificate a runtime**.
 
-| Vista | Mobile | Tablet | Desktop | Note |
-|---|---|---|---|---|
-| `/oggi` | OK | OK | OK | coda operativa; banner Fritz; conflitti integrati |
-| `/dossier/:id` | OK | OK | OK | nome canonico chassis; presence via `humanPresenceState` |
-| `/inventory` | OK | OK | OK | una riga per chassis; copy stale ≠ assente |
-| `/plant` | OK | OK | OK | deep-link; GS308 senza barre SNMP mute |
-| `/topology` | OK | OK | OK | highlight alias; copy IT; fullscreen opt-in |
-| `/monitoring` | OK | OK | OK | SensorHealth già espone sensori falliti |
-| `/suggestions` | OK | OK | OK | nessuna logica identità nuova (DIP W5) |
+| Vista | Mobile | Tablet | Desktop |
+|---|---|---|---|
+| `/oggi` | non verificato a runtime | non verificato a runtime | non verificato a runtime |
+| `/dossier/:id` | non verificato a runtime | non verificato a runtime | non verificato a runtime |
+| `/inventory` | non verificato a runtime | non verificato a runtime | non verificato a runtime |
+| `/plant` | non verificato a runtime | non verificato a runtime | non verificato a runtime |
+| `/topology` | non verificato a runtime | non verificato a runtime | non verificato a runtime |
+| `/monitoring` | non verificato a runtime | non verificato a runtime | non verificato a runtime |
+| `/suggestions` | non verificato a runtime | non verificato a runtime | non verificato a runtime |
+
+### Checklist operativa (max 10) — W4d.3.2
+
+1. Apri `/plant?asset=4` → la porta del GS308EP associata è selezionata e in vista.
+2. Su Impianto, card GS308EP: nessun pallino SNMP grigio mute; compare «non misurabile» / «—».
+3. Apri `/oggi` → se Fritz è muto o degradato, compare il banner «Presenza Fritz non misurabile».
+4. In Inventario, un device `stale_unlocated` non dice «assente» / «non presente» senza qualifica.
+5. Dossier di un membro chassis 23 → titolo = nome apparato (canon) e «interfaccia di …».
+6. `/topology?highlight=4` (o `asset_id=4`) → il nodo GS308EP è messo a fuoco.
+7. Conflitto R-H in Oggi (se presente) → card con Impatto / Se ignori / Se agisci.
+8. Favicon in scheda nuova (finestra pulita) → marchio scuro con accent/ok, non verde neon legacy.
+9. Branch308 in Impianto → elenco «Non misurabile» include PoE/NSDP/`.3.20` storico.
+10. `/monitoring` → Salute sensori elenca eventuali fallimenti Fritz senza richiedere azioni impossibili.
 
 **F2.3.4 Fritz:** banner + copy; stato Fritz muto dichiarato. Trust layer **non** corretto.
 
@@ -133,7 +146,7 @@ Gate I6 post-F2: `rg 'scoreSpecificity|specificity' api/` → **VUOTO**.
 
 ## Debiti aperti (aggiornati, nessuna riga estranea rimossa)
 
-- **DEBT-FRITZ-TR064-CREDENTIALS** — APERTO (F-4)
+- **DEBT-FRITZ-TR064-CREDENTIALS** — **CHIUSO** F0 (vedi obs-fritz-restore.md)
 - **DEBT-PRESENCE-SOURCE-OUTAGE** — APERTO; UI F2 dichiara; trust non corretto
 
 ---
@@ -156,6 +169,7 @@ Gate I6 post-F2: `rg 'scoreSpecificity|specificity' api/` → **VUOTO**.
 
 ## Publish
 
-- Report: `obs-ux2.md`
-- Diff: `obs-ux2.diff.txt`
-- Raster: `obs-ux2-favicon-16.png` · `obs-ux2-favicon-32.png`
+- https://raw.githubusercontent.com/Mooflotic/obs-exchange/main/obs-ux2.md (200)
+- https://raw.githubusercontent.com/Mooflotic/obs-exchange/main/obs-ux2.diff.txt (200)
+- https://raw.githubusercontent.com/Mooflotic/obs-exchange/main/obs-ux2-favicon-16.png (200)
+- https://raw.githubusercontent.com/Mooflotic/obs-exchange/main/obs-ux2-favicon-32.png (200)
