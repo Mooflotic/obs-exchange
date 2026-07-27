@@ -1,0 +1,310 @@
+==============================================================================
+ obs-w8.diff.txt — W8 ENFORCEMENT DELLA CORRENTEZZA
+==============================================================================
+ W8 e' un'ondata SENZA cambio di codice runtime: il censimento (W8.1) ha trovato
+ 0 calcoli locali di correntezza da migrare (classe (a) vuota; i consumatori
+ erano gia' migrati al resolver in W5/W6/W7). Percio' NESSUN deploy, NESSUN bump
+ (VERSION resta 0.10.63). Artefatti di W8 = presidio di repo + doc.
+
+ FILE INCLUSI (contenuto integrale delle modifiche W8):
+   + observatory/scripts/w8_currency_gate.py      (nuovo, gate permanente W8.3)
+   + observatory/scripts/w8_g8_equivalence.py     (nuovo, G8 W8.5)
+   ~ observatory/docs/obs-design-spec-025.md       (§12 presidio, W8-only)
+   ~ observatory/docs/KNOWN_DEBT.md                (blocco PRESIDIO-CURRENCY-GATE)
+   ~ observatory/CHANGELOG.md                      (entry W8)
+
+ ESCLUSIONI DICHIARATE (una per una):
+   - observatory/docs/obs-w8.md      : e' il REPORT stesso (deliverable a parte).
+   - observatory/docs/obs-w8.diff.txt: e' QUESTO file (auto-riferimento).
+   - Altri hunk in KNOWN_DEBT.md / CHANGELOG.md gia' presenti prima di W8:
+     appartengono a ondate precedenti (UX2/UX3), NON a W8. Qui sotto compare
+     SOLO il blocco aggiunto da W8 (inserimento additivo, resto invariato).
+==============================================================================
+
+############## git diff (isolato W8: 2 script nuovi + design-spec) ##############
+diff --git a/observatory/docs/obs-design-spec-025.md b/observatory/docs/obs-design-spec-025.md
+index 3f97af8..dc07c3a 100644
+--- a/observatory/docs/obs-design-spec-025.md
++++ b/observatory/docs/obs-design-spec-025.md
+@@ -545,3 +545,45 @@ utile a lungo termine.
+ 
+ Da attivare **prima** del punto 3 (componenti primitivi), che è la fase
+ con più spostamenti di codice.
++
++---
++
++## 12. Presidio permanente della correntezza (W8)
++
++**Principio.** La correntezza dei FATTI (nome, alias, IP eletto, mgmt IP,
++presenza, FDB, link, OS, proposte) si legge da UN SOLO posto: il resolver in
++`api/app/facts/`. Nessun altro punto di `api/` può interrogare `FactAssertion`
++per decidere «qual è il valore adesso». L'evidenza si scrive, lo stato si
++deriva (F-7): i consumatori leggono lo STATO derivato (`classify_asset`) o il
++resolver, mai un calcolo di correntezza per conto proprio.
++
++**Gate.** `scripts/w8_currency_gate.py` è il presidio ripetibile: scansiona
++`api/app/**` (escluso `api/app/facts/**`), usa come sentinella ogni riga che
++nomina `FactAssertion` e **fallisce** se compare un accesso non presente
++nell'allowlist. L'allowlist è **per (file, snippet esatto)** con motivazione —
++mai un pattern generico. Va eseguito, con output completo, a ogni ondata futura
++**insieme al gate I6**.
++
++**Eccezioni giustificate (allowlist, W8.3.1).**
++- `api/app/models.py` — `class FactAssertion(Base):` (definizione ORM).
++- `api/app/bootstrap.py` — import per `create_all` (registrazione schema, no query).
++- `api/app/routers/admin.py` — `/facts/shadow-stats`: `COUNT(*)` righe (osservabilità
++  breaker, non un valore corrente); `/facts/conflicts`: elenco divergenze
++  `conflict_review` con `state="historical"` (I3, l'opposto di current), ordinate
++  per display.
++
++**Falsi positivi legittimi non presidiati qui (criterio dichiarato).**
++- `ip_addresses.is_current` è il **meccanismo di elezione** dell'IP eletto
++  (F-15, W8.1.3), non correntezza dei fatti: il resolver non è fonte esclusiva
++  per gli IP finché il ruolo non entra nella `excl_key` (pre-condizione W3).
++- Colonne di stato derivate di `Asset` (name/os_guess/presence_state): STATO
++  derivato dall'unico derivatore (F-7), non ricalcolo.
++- Letture di evidenza grezza / oggetti di dominio (ObservationRaw, Event,
++  ScanRun, SpeedTestResult, Finding, Suggestion, Snapshot, ActionRequest): non
++  sono fatti del registry.
++- `resolver.history()` è il percorso storico sanzionato, esposto solo su
++  richiesta esplicita (`?history=true`): l'API resta **corrente per default**.
++
++**Equivalenza.** `scripts/w8_g8_equivalence.py` (G8, read-only, mai commit)
++confronta a writer fermi la correntezza del nome prodotta dal resolver con la
++presentazione consumer-facing: `DIVERGE=0` è la condizione di non-regressione.
+diff --git a/observatory/scripts/w8_currency_gate.py b/observatory/scripts/w8_currency_gate.py
+new file mode 100644
+index 0000000..ec8b368
+--- /dev/null
++++ b/observatory/scripts/w8_currency_gate.py
+@@ -0,0 +1,121 @@
++#!/usr/bin/env python3
++"""W8.3 — Gate permanente della correntezza (presidio ripetibile).
++
++Regola presidiata (W8): la correntezza dei FATTI si legge SOLO dal resolver
++(`api/app/facts/`). Nessun altro punto di `api/` puo' interrogare direttamente
++`FactAssertion` per decidere «qual e' il valore adesso».
++
++Sentinella: ogni riga che nomina `FactAssertion` in un file sotto `api/app/`
++FUORI da `api/app/facts/`. Ogni riga cosi' individuata DEVE comparire
++nell'allowlist per (file, snippet) con la sua motivazione. Un'eccezione che
++ammette qualunque riga non e' un'eccezione: qui l'allowlist e' per snippet esatto.
++
++NON presidiato qui (per costruzione, con criterio dichiarato):
++- `ip_addresses.is_current`: e' il MECCANISMO DI ELEZIONE dell'IP eletto
++  (F-15, W8.1.3), non una correntezza dei fatti. Il resolver non e' fonte
++  esclusiva per gli IP finche' il ruolo non entra nella excl_key (pre-condizione
++  W3). Presidiarlo qui sarebbe un falso positivo.
++- Colonne di stato derivate di `Asset` (name/os_guess/presence_state): sono lo
++  STATO derivato dall'unico derivatore `classify_asset` (F-7); leggerle e'
++  legittimo, non e' ricalcolo di correntezza.
++- Letture di evidenza grezza / oggetti di dominio (ObservationRaw, Event,
++  ScanRun, SpeedTestResult, Finding, Suggestion, Snapshot, ActionRequest):
++  non sono fatti del registry.
++
++Uso:
++    python3 scripts/w8_currency_gate.py
++Esce 0 se pulito, 1 se compare un accesso nuovo non giustificato.
++"""
++
++from __future__ import annotations
++
++import sys
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++API_APP = ROOT / "api" / "app"
++FACTS_DIR = API_APP / "facts"
++SENTINEL = "FactAssertion"
++
++# Allowlist: (path relativo a repo, snippet stripped esatto) -> motivazione.
++# Ogni voce e' una riga specifica, non un pattern generico.
++ALLOWLIST: dict[tuple[str, str], str] = {
++    (
++        "api/app/models.py",
++        "class FactAssertion(Base):",
++    ): "models: DEFINIZIONE ORM della tabella. Non e' una lettura di correntezza.",
++    (
++        "api/app/bootstrap.py",
++        "from app.models import FactAssertion, IdentityEvidence, IdentityLinkProposal, Switch, User  # noqa: F401 — create_all",
++    ): "bootstrap: import per la registrazione dei modelli in create_all (schema). Nessuna query.",
++    (
++        "api/app/routers/admin.py",
++        "from app.models import FactAssertion",
++    ): "admin: import per diagnostica read-only (shadow-stats COUNT + conflitti I3). Nessuna lettura di correntezza.",
++    (
++        "api/app/routers/admin.py",
++        "rows = int(db.scalar(select(func.count()).select_from(FactAssertion)) or 0)",
++    ): "admin /facts/shadow-stats: COUNT totale righe (osservabilita' breaker), non una lettura del valore corrente.",
++    (
++        "api/app/routers/admin.py",
++        "select(FactAssertion)",
++    ): "admin /facts/conflicts: elenco divergenze conflict_review (I3), state='historical' — NON current.",
++    (
++        "api/app/routers/admin.py",
++        'FactAssertion.reason == "conflict_review",',
++    ): "admin /facts/conflicts: filtro divergenze I3 (non correntezza).",
++    (
++        "api/app/routers/admin.py",
++        'FactAssertion.state == "historical",',
++    ): "admin /facts/conflicts: esplicitamente state='historical', l'opposto di current.",
++    (
++        "api/app/routers/admin.py",
++        ".order_by(FactAssertion.last_seen_at.desc(), FactAssertion.id.desc())",
++    ): "admin /facts/conflicts: ordinamento di DISPLAY delle divergenze storiche.",
++}
++
++
++def _rel(p: Path) -> str:
++    return str(p.relative_to(ROOT)).replace("\\", "/")
++
++
++def scan() -> tuple[list[tuple[str, int, str]], list[tuple[str, int, str, str]]]:
++    violations: list[tuple[str, int, str]] = []
++    accounted: list[tuple[str, int, str, str]] = []
++    for path in sorted(API_APP.rglob("*.py")):
++        if FACTS_DIR in path.parents or path == FACTS_DIR:
++            continue
++        rel = _rel(path)
++        for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
++            if SENTINEL not in raw:
++                continue
++            snippet = raw.strip()
++            reason = ALLOWLIST.get((rel, snippet))
++            if reason is None:
++                violations.append((rel, lineno, snippet))
++            else:
++                accounted.append((rel, lineno, snippet, reason))
++    return violations, accounted
++
++
++def main() -> int:
++    violations, accounted = scan()
++    print("== W8 CURRENCY GATE ==")
++    print(f"scope: {_rel(API_APP)}/**  (escluso {_rel(FACTS_DIR)}/**)")
++    print(f"sentinella: righe che nominano `{SENTINEL}`\n")
++
++    print(f"ECCEZIONI GIUSTIFICATE (accounted): {len(accounted)}")
++    for rel, lineno, snippet, reason in accounted:
++        print(f"  OK  {rel}:{lineno}  | {snippet}")
++        print(f"      → {reason}")
++
++    print(f"\nVIOLAZIONI (accessi nuovi non giustificati): {len(violations)}")
++    for rel, lineno, snippet in violations:
++        print(f"  FAIL {rel}:{lineno}  | {snippet}")
++
++    print("\nRISULTATO:", "PASS" if not violations else "FAIL")
++    return 1 if violations else 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/observatory/scripts/w8_g8_equivalence.py b/observatory/scripts/w8_g8_equivalence.py
+new file mode 100644
+index 0000000..83d029f
+--- /dev/null
++++ b/observatory/scripts/w8_g8_equivalence.py
+@@ -0,0 +1,82 @@
++"""W8.5 G8 — equivalenza della correntezza (writer fermi, read-only, mai commit).
++
++Dimostra che la correntezza del NOME (unico fatto di identita' consumer-facing
++pienamente nel resolver) e' prodotta SOLO dal resolver, e che la presentazione
++NON diverge da esso per un calcolo locale parallelo.
++
++Per ogni asset confronta:
++  R = resolver.current("asset.name") sul subject corretto (chassis o asset)
++  P = presentation_name_for_asset(db, asset)  (consumer-facing)
++  S = asset.name (colonna di stato derivata, F-7)
++
++Classi enumerate per id:
++  - RESOLVER : P == R (la presentazione viene dal fatto risolto)
++  - FALLBACK : R is None, P from derived state (I2: assenza del fatto dichiarata,
++               ripiego legittimo sullo stato derivato F-7 — NON una divergenza)
++  - DIVERGE  : R is not None e P != R  → sospetto calcolo locale (deve essere 0: (c))
++  - ABSENT   : R is None e P is None   → assenza dichiarata (I2)
++
++Un solo caso DIVERGE ⇒ STOP (regressione (c)). Nessuna tolleranza percentuale.
++Va eseguito a collector fermo (api unico writer), `now` implicito nel resolver.
++"""
++
++from __future__ import annotations
++
++import sys
++
++sys.path.insert(0, "/app")
++
++from sqlalchemy import create_engine, select
++from sqlalchemy.orm import sessionmaker
++
++from app.config import get_settings
++from app.facts.resolver import current, subject_of
++from app.models import Asset
++from app.services.name_proposal_chassis import presentation_name_for_asset
++
++
++def main() -> int:
++    settings = get_settings()
++    db = sessionmaker(bind=create_engine(f"sqlite:///{settings.sqlite_path}"))()
++    try:
++        assets = db.scalars(select(Asset)).all()
++        resolver_ids: list[int] = []
++        fallback: list[tuple[int, str]] = []
++        diverge: list[tuple[int, str, str]] = []
++        absent: list[int] = []
++        for a in assets:
++            st, sid = subject_of("asset.name", a)
++            row = current(db, st, sid, "asset.name")
++            r = (row.value_norm or "").strip() if row is not None else None
++            p = presentation_name_for_asset(db, a)
++            p = (p or "").strip() or None
++            if r is not None and p == r:
++                resolver_ids.append(a.id)
++            elif r is None and p is not None:
++                fallback.append((a.id, p))
++            elif r is not None and p != r:
++                diverge.append((a.id, r, p or ""))
++            else:
++                absent.append(a.id)
++        print(
++            f"G8 name currency — assets={len(assets)} "
++            f"resolver={len(resolver_ids)} fallback={len(fallback)} "
++            f"diverge={len(diverge)} absent={len(absent)}"
++        )
++        print("RESOLVER ids:", sorted(resolver_ids))
++        print("FALLBACK (R=None → stato derivato, I2):")
++        for aid, p in sorted(fallback):
++            print(f"  id={aid} presentation={p!r}")
++        print("ABSENT (R=None, P=None, I2):", sorted(absent))
++        print("DIVERGE (sospetto calcolo locale — deve essere vuoto):")
++        for aid, r, p in sorted(diverge):
++            print(f"  id={aid} resolver={r!r} presentation={p!r}")
++        print("RISULTATO:", "PASS" if not diverge else "FAIL (c)")
++        return 1 if diverge else 0
++    finally:
++        db.rollback()
++        db.close()
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+
+############## KNOWN_DEBT.md — blocco AGGIUNTO da W8 (inserito dopo l'intro) ##############
++## PRESIDIO-CURRENCY-GATE (presidio permanente, non debito)
++
++- **Natura:** presidio, non debito da chiudere — istituito W8 / 0.10.63.
++- **Cosa presidia:** la correntezza dei FATTI si legge SOLO dal resolver (`api/app/facts/`). Nessun altro punto di `api/` può interrogare `FactAssertion` per decidere «qual è il valore adesso» (evidenza si scrive, stato si deriva — F-7).
++- **Come:** `scripts/w8_currency_gate.py` — sentinella su ogni riga che nomina `FactAssertion` fuori da `api/app/facts/`; **fallisce** su accessi nuovi. Allowlist **per (file, snippet)** con motivazione (mai pattern generico): `models.py` (def ORM), `bootstrap.py` (import per `create_all`), `admin.py` (`/facts/shadow-stats` COUNT + `/facts/conflicts` divergenze `state="historical"`, I3). Stato W8: **9 eccezioni giustificate, 0 violazioni (PASS)**.
++- **Da eseguire:** a ogni ondata futura, con output completo, **insieme a I6**.
++- **Non presidiato (criterio dichiarato):** `ip_addresses.is_current` = elezione IP (F-15, W8.1.3), non correntezza dei fatti — il resolver non è fonte esclusiva per gli IP finché il ruolo non entra nella `excl_key` (pre-condizioni W3: `DEBT-DOUBLE-CURRENT-IP`, `DEBT-IFACE-IP-CARDINALITY-ROLE`, `DEBT-LASTSEEN-DUAL-SEMANTICS`).
++- **Equivalenza:** `scripts/w8_g8_equivalence.py` (G8, read-only) — `DIVERGE=0` non-regressione della correntezza del nome (resolver vs presentazione).
++- **Doc:** [`docs/obs-design-spec-025.md`](obs-design-spec-025.md) §12 · [`docs/obs-w8.md`](obs-w8.md)
++- **Vietato:** aggiungere all'allowlist un pattern generico; leggere correntezza dei fatti fuori dal resolver; introdurre un secondo autore di stato (F-7).
+
+############## CHANGELOG.md — entry AGGIUNTA da W8 (in testa) ##############
++## W8 — enforcement della correntezza (presidio; NESSUN deploy, nessun bump)
++
++- **W8.1 censimento esaustivo → 0 calcoli locali di correntezza da migrare (classe (a) vuota).** Grep su `api/` e `web/src/`: ogni punto che «decide qual è il valore adesso» è già dentro il resolver (`api/app/facts/`), oppure è (b) legittimo con criterio dichiarato — `ip_addresses.is_current` = elezione IP (F-15, non correntezza), colonne di stato derivate di `Asset` (F-7), evidenza grezza/oggetti di dominio (Event/ScanRun/SpeedTest/Finding/Suggestion/Snapshot/ActionRequest), FE che consuma la correntezza fornita dal server. Nessuna classe (a): la migrazione dei consumatori era già stata completata in W5/W6/W7.
++- **W8.3 gate permanente istituito:** `scripts/w8_currency_gate.py` — sentinella su ogni riga che nomina `FactAssertion` fuori da `api/app/facts/`; **fallisce** su accessi nuovi; allowlist per (file, snippet) con motivazione. Eseguito: **9 eccezioni giustificate, 0 violazioni (PASS)**. Da eseguire a ogni ondata futura insieme a I6. Documentato in `docs/obs-design-spec-025.md` §12 e `KNOWN_DEBT.md` (PRESIDIO-CURRENCY-GATE).
++- **W8.4 API corrente per default:** già così — `GET /api/assets` con `include_historical=false`/`all_proposals=false`, `resolver.history()` percorso storico sanzionato ma non cablato ad alcun endpoint. **0 contratti cambiati.** Verifica runtime (method A): `ips`/`ip_bindings` vuoti → «assente» (≠ zero); binding non-eletti/duplicati restano visibili (F-15). UI stale/superseded invariata da UX3.
++- **W8.5 G8:** `scripts/w8_g8_equivalence.py` (read-only) — equivalenza correntezza nome resolver↔presentazione; 0 migrazioni ⇒ 0 casi (c) per costruzione; probe da confermare a writer fermi sul NAS.
++- **Nessun cambio di codice runtime** ⇒ nessun deploy, VERSION resta 0.10.63. Pre-condizioni W3 (IP) restano aperte.
