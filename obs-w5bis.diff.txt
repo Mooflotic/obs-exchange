@@ -1,0 +1,541 @@
+--- a/observatory/api/app/services/trust.py
++++ b/observatory/api/app/services/trust.py
+@@ -625,15 +625,23 @@
+                 ),
+             }
+         )
+-    elif meta.get("inventory_hidden_auto") and level in {"confirmed_present", "known"}:
+-        meta.update(
+-            {
+-                "operational_state": "active",
+-                "inventory_hidden": False,
+-                "inventory_hidden_auto": False,
+-                "inventory_hidden_reason": "",
+-            }
+-        )
++    elif level in {"confirmed_present", "known"}:
++        # W5b.1.3 — mapping TOTALE: ogni livello attivo scrive SEMPRE
++        # operational_state="active". _build_trust_plan confronta operational_state
++        # (riga ~519), quindi lasciarlo invariato quando inventory_hidden_auto è falso
++        # produceva uno structural permanente (stessa forma del difetto 109 dietro una
++        # condizione). L'auto-hide viene revocato; un nascondimento MANUALE
++        # (inventory_hidden senza _auto) resta rispettato — esclusione dichiarata: NON è
++        # structural perché il piano confronta operational_state, non i flag di hide.
++        meta["operational_state"] = "active"
++        if meta.get("inventory_hidden_auto"):
++            meta.update(
++                {
++                    "inventory_hidden": False,
++                    "inventory_hidden_auto": False,
++                    "inventory_hidden_reason": "",
++                }
++            )
+     asset.meta = meta
+ 
+ 
+--- a/observatory/api/app/services/wifi_associations.py
++++ b/observatory/api/app/services/wifi_associations.py
+@@ -6,15 +6,27 @@
+ from sqlalchemy import select
+ from sqlalchemy.orm import Session
+ 
+-from app.models import Asset, Interface, IpAddress
++from app.models import Asset
+ from app.services.identity import (
+     apply_observed_link,
+     find_asset_by_mac,
++    resolve_asset_by_ip_at,
+     upsert_observation_asset,
+ )
+ from app.services.macutil import normalize_mac
+ 
+ 
++def _parse_observed_at(value: Any) -> datetime | None:
++    text = str(value or "").strip()
++    if not text:
++        return None
++    try:
++        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
++    except ValueError:
++        return None
++    return dt.replace(tzinfo=None) if dt.tzinfo else dt
++
++
+ def materialize_wifi_association(
+     db: Session,
+     association: dict[str, Any],
+@@ -43,7 +55,8 @@
+             source=source,
+             seen_at=now,
+         )
+-    ap = resolve_ap_asset(db, client, ap_ref, radio_bssid)
++    observed_dt = _parse_observed_at(association.get("observed_at")) or now
++    ap = resolve_ap_asset(db, client, ap_ref, radio_bssid, observed_at=observed_dt)
+     if not ap:
+         return client, None, False
+ 
+@@ -80,6 +93,8 @@
+     client: Asset,
+     ap_ref: dict[str, Any],
+     radio_bssid: str = "",
++    *,
++    observed_at: datetime | None = None,
+ ) -> Asset | None:
+     asset_id = ap_ref.get("asset_id")
+     if asset_id:
+@@ -96,12 +111,12 @@
+ 
+     ip = str(ap_ref.get("ip") or "").strip()
+     if ip:
+-        found = db.scalar(
+-            select(Asset)
+-            .join(Interface)
+-            .join(IpAddress)
+-            .where(IpAddress.ip == ip, IpAddress.is_current == True)  # noqa: E712
+-        )
++        # W5b.3.2 / DEBT-TOPO-IP-CONTEXTUAL (facet ingest Wi-Fi): risolvi l'AP per chi
++        # DETENEVA ap_ip al momento dell'associazione (observed_at), non per il
++        # detentore is_current. Stesso fix già applicato in W5 a topology._resolve_ap_asset;
++        # questa copia dell'ingest era rimasta su is_current. Tie ambiguo → None →
++        # fall-through all'euristica sul nome (I2, nessun proprietario indovinato).
++        found = resolve_asset_by_ip_at(db, ip, observed_at or datetime.utcnow())
+         if found and found.id != client.id:
+             return found
+ 
+--- a/observatory/tests/test_wp_presence.py
++++ b/observatory/tests/test_wp_presence.py
+@@ -191,6 +191,87 @@
+     assert _structural_for(_build_trust_plan(db, now=now, use_prefetch=True), asset.id) == []
+ 
+ 
++def test_w5b15_total_mapping_known_without_auto_hide_converges(db):
++    """W5b.1.5 — mapping livello→stato TOTALE.
++
++    Asset con livello derivato ``known``, ``inventory_hidden_auto`` FALSO e
++    ``operational_state`` divergente da ``active``: prima del fix ``_apply_level_meta``
++    non scriveva ``operational_state`` (nessun ramo lo copriva) e ``_build_trust_plan``
++    marcava structural in perpetuo. Dopo il fix: apply → due build consecutivi
++    ``structural == []`` (convergenza).
++    """
++    now = datetime.utcnow()
++    chassis = Chassis()
++    db.add(chassis)
++    db.flush()
++    asset = Asset(
++        uid=str(uuid.uuid4()),
++        name="Router-Studio",  # protected → classify_asset = known
++        status="noto",
++        trust_level="known",
++        chassis_id=chassis.id,
++        portal_last_seen=None,
++        meta={
++            "operational_state": "stale_unlocated",  # divergente da 'active'
++            "inventory_hidden": False,
++            "inventory_hidden_auto": False,  # NON auto: il vecchio ramo non scriveva
++        },
++    )
++    db.add(asset)
++    db.flush()
++    db.add(Interface(asset_id=asset.id, mac="AA:BB:CC:DD:EE:01"))
++    db.flush()
++    db.refresh(asset)
++
++    assert classify_asset(asset, now=now) == "known"
++    plan1 = _build_trust_plan(db, now=now, use_prefetch=True)
++    assert _structural_for(plan1, asset.id)  # divergenza operational_state rilevata
++    _apply_trust_plan(db, plan1, now=now)
++    db.flush()
++    assert asset.meta["operational_state"] == "active"
++    assert _structural_for(_build_trust_plan(db, now=now, use_prefetch=True), asset.id) == []
++    assert _structural_for(_build_trust_plan(db, now=now, use_prefetch=True), asset.id) == []
++
++
++def test_w5b15_manual_hide_preserved_and_not_structural(db):
++    """W5b.1.3 (esclusione dichiarata) — nascondimento MANUALE rispettato.
++
++    Livello derivato ``known`` con ``inventory_hidden=True`` / ``inventory_hidden_auto``
++    falso (scelta umana): dopo apply lo stato è ``active`` (mapping totale) ma l'hide
++    manuale resta; il piano NON marca structural (confronta operational_state, non i
++    flag di hide) → nessuna oscillazione silenziosa.
++    """
++    now = datetime.utcnow()
++    chassis = Chassis()
++    db.add(chassis)
++    db.flush()
++    asset = Asset(
++        uid=str(uuid.uuid4()),
++        name="Router-Nascosto",
++        status="noto",
++        trust_level="known",
++        chassis_id=chassis.id,
++        portal_last_seen=None,
++        meta={
++            "operational_state": "stale_unlocated",
++            "inventory_hidden": True,
++            "inventory_hidden_auto": False,  # hide MANUALE
++        },
++    )
++    db.add(asset)
++    db.flush()
++    db.add(Interface(asset_id=asset.id, mac="AA:BB:CC:DD:EE:02"))
++    db.flush()
++    db.refresh(asset)
++
++    _apply_trust_plan(db, _build_trust_plan(db, now=now, use_prefetch=True), now=now)
++    db.flush()
++    assert asset.meta["operational_state"] == "active"
++    assert asset.meta["inventory_hidden"] is True  # hide manuale preservato
++    assert asset.meta.get("inventory_hidden_auto") is False
++    assert _structural_for(_build_trust_plan(db, now=now, use_prefetch=True), asset.id) == []
++
++
+ def test_wp35_stale_fritz_evidence_stays_stale(db):
+     """W-P — fritz-active NON fresca (come 140/145/148): resta stale_unlocated."""
+     now = datetime.utcnow()
+--- a/observatory/tests/test_w5_consumers.py
++++ b/observatory/tests/test_w5_consumers.py
+@@ -24,6 +24,7 @@
+ from app.models import Asset, Chassis, Interface, IpAddress
+ from app.services.name_proposal_chassis import presentation_name_for_asset
+ from app.services.topology import _resolve_ap_asset
++from app.services.wifi_associations import resolve_ap_asset as ingest_resolve_ap_asset
+ 
+ 
+ @pytest.fixture()
+@@ -107,6 +108,50 @@
+     assert ap is not None and ap.id == a1.id
+ 
+ 
++def test_w5b3_ingest_resolve_ap_by_ip_at_contextual(db):
++    """W5b.3.2 — l'ingest Wi-Fi (`wifi_associations.resolve_ap_asset`) risolve l'AP per
++    chi DETENEVA ap_ip all'associazione (contestuale), non per il detentore is_current.
++    Copia dell'ingest rimasta su is_current dopo W5: chiusa qui."""
++    t0 = datetime(2026, 7, 1, 10, 0, 0)
++    t_assoc = datetime(2026, 7, 1, 12, 0, 0)
++    t1 = datetime(2026, 7, 1, 14, 0, 0)
++    t2 = datetime(2026, 7, 2, 9, 0, 0)
++
++    ap = _asset(db, name="AP-vecchio")
++    ap_if = _iface(db, ap, "AA:AA:AA:AA:CC:01")
++    _ip(db, ap_if, "192.168.9.20", is_current=False, first_seen=t0, last_seen=t1)
++
++    taker = _asset(db, name="nuovo-detentore")
++    tk_if = _iface(db, taker, "BB:BB:BB:BB:CC:02")
++    _ip(db, tk_if, "192.168.9.20", is_current=True, first_seen=t2, last_seen=t2)
++
++    client = _asset(db, name="client-wifi")
++    ap_ref = {"ip": "192.168.9.20"}
++    resolved = ingest_resolve_ap_asset(db, client, ap_ref, observed_at=t_assoc)
++    assert resolved is not None and resolved.id == ap.id  # contestuale, non is_current
++
++
++def test_w5b3_ingest_tie_returns_none_fallthrough_to_name(db):
++    """W5b.3.2 — tie temporale → None → fall-through all'euristica sul nome (I2)."""
++    t0 = datetime(2026, 7, 1, 10, 0, 0)
++    t_assoc = datetime(2026, 7, 1, 12, 0, 0)
++    t1 = datetime(2026, 7, 1, 14, 0, 0)
++
++    a1 = _asset(db, name="AP-uno-ingest")
++    i1 = _iface(db, a1, "AA:AA:AA:AA:CC:11")
++    _ip(db, i1, "192.168.9.21", is_current=False, first_seen=t0, last_seen=t1)
++    a2 = _asset(db, name="AP-due-ingest")
++    i2 = _iface(db, a2, "BB:BB:BB:BB:CC:22")
++    _ip(db, i2, "192.168.9.21", is_current=False, first_seen=t0, last_seen=t1)
++
++    client = _asset(db, name="client")
++    assert ingest_resolve_ap_asset(db, client, {"ip": "192.168.9.21"}, observed_at=t_assoc) is None
++    ap = ingest_resolve_ap_asset(
++        db, client, {"ip": "192.168.9.21", "name": "AP-uno-ingest"}, observed_at=t_assoc
++    )
++    assert ap is not None and ap.id == a1.id
++
++
+ def test_w545_chassis_one_canonical_name_from_resolver(db):
+     """Chassis: un apparato = un nome canonico (resolver) per ogni membro."""
+     ch = Chassis()
+--- a/observatory/scripts/wp_gate.py
++++ b/observatory/scripts/wp_gate.py
+@@ -1,6 +1,18 @@
+ #!/usr/bin/env python3
+-"""W-P.5 gate di regime (read-only): due piani consecutivi a writer fermi.
++"""W5b.2 gate di regime — CONVERGENZA (non determinismo).
+ 
++Difetto chiuso: il vecchio gate costruiva DUE piani `dry_run` sullo stesso stato con
++lo stesso `now`; un dry-run non applica, quindi i due piani coincidevano per
++costruzione — verificava il DETERMINISMO, non la CONVERGENZA.
++
++Qui si dimostra la convergenza (opzione a del piano): piano → APPLY → ricostruzione →
++`structural == []`, con `now` RICALCOLATO a ogni costruzione (così una divergenza
++dipendente dalla finestra di freschezza 24h può emergere invece di essere congelata).
++
++Sicurezza (scrittura): snapshot pre-op OBBLIGATORIO del file DB in /data/backups; in
++più l'apply avviene NELLA SESSIONE e non viene MAI committato (rollback finale) — il
++file DB resta invariato. Se lo snapshot non riesce, il gate si ferma.
++
+   sudo docker compose stop collector
+   sudo docker compose exec -T api python3 - < scripts/wp_gate.py
+   sudo docker compose start collector
+@@ -8,8 +20,9 @@
+ 
+ from __future__ import annotations
+ 
++import shutil
+ import sys
+-from datetime import datetime, timedelta
++from datetime import datetime
+ from pathlib import Path
+ 
+ API = Path("/app") if Path("/app/app").exists() else Path(__file__).resolve().parents[1] / "api"
+@@ -25,48 +38,82 @@
+ from app.services.trust import reconcile_trust_history, trust_needs_apply  # noqa: E402
+ 
+ 
+-def _plan(db, now):
++def _build(db, now):
+     prev = reconcile_trust_history(db, dry_run=True, now=now)
+-    plan = prev.get("plan") or {}
+-    struct = [a for a in (plan.get("actions") or []) if a.get("structural")]
+-    return prev, struct
++    built = prev.get("plan") or {}
++    struct = [a for a in (built.get("actions") or []) if a.get("structural")]
++    return prev, built, struct
+ 
+ 
++def _snapshot(src_path: str) -> Path:
++    src = Path(src_path)
++    dst_dir = Path("/data/backups") if Path("/data/backups").exists() else src.parent
++    ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
++    dst = dst_dir / f"pre-wpgate-{ts}.db"
++    shutil.copy2(src, dst)
++    return dst
++
++
+ def main():
+     settings = get_settings()
++    snap = _snapshot(settings.sqlite_path)  # obbligatorio: fallisce → eccezione → stop
++    print(f"snapshot pre-op: {snap}")
++
+     db = sessionmaker(bind=create_engine(f"sqlite:///{settings.sqlite_path}"))()
+-    now = datetime.utcnow()
++    failed = False
+     try:
+-        for i in (1, 2):
+-            prev, struct = _plan(db, now)
+-            ids = sorted(a["asset_id"] for a in struct)
+-            print(
+-                f"PIANO {i}: structural={len(struct)} ids={ids} "
+-                f"needs_apply={trust_needs_apply(prev)} "
+-                f"changed={prev.get('changed_assets')} "
+-                f"ts_refresh={prev.get('timestamp_refreshes')} "
+-                f"proposals_archived={prev.get('proposals_archived')}"
+-            )
++        # PIANO 1 — costruzione sullo stato memorizzato (now ricalcolato).
++        now1 = datetime.utcnow()
++        prev1, built1, struct1 = _build(db, now1)
++        ids1 = sorted(a["asset_id"] for a in struct1)
++        print(
++            f"PIANO 1 (build): structural={len(struct1)} ids={ids1} "
++            f"needs_apply={trust_needs_apply(prev1)} changed={prev1.get('changed_assets')} "
++            f"ts_refresh={prev1.get('timestamp_refreshes')} "
++            f"proposals_archived={prev1.get('proposals_archived')}"
++        )
++
++        # APPLY del piano NELLA SESSIONE (nessun commit): esercita _apply_level_meta /
++        # _write_trust_state — è il passo che distingue convergenza da determinismo.
++        reconcile_trust_history(db, plan=built1)
++        db.flush()
++
++        # PIANO 2 — ricostruzione sullo stato APPLICATO, now RICALCOLATO. Deve essere [].
++        now2 = datetime.utcnow()
++        _prev2, _built2, struct2 = _build(db, now2)
++        ids2 = sorted(a["asset_id"] for a in struct2)
++        print(f"PIANO 2 (post-apply, now ricalcolato): structural={len(struct2)} ids={ids2}")
++
++        # PIANO 3 — stabilità: un ulteriore build (now ricalcolato) resta [].
++        now3 = datetime.utcnow()
++        _prev3, _built3, struct3 = _build(db, now3)
++        ids3 = sorted(a["asset_id"] for a in struct3)
++        print(f"PIANO 3 (stabilità, now ricalcolato): structural={len(struct3)} ids={ids3}")
++
++        converged = struct2 == [] and struct3 == []
++        print(f"CONVERGENZA: {'OK' if converged else 'FAIL'} (structural post-apply == [])")
++        failed = not converged
++
++        # Metriche di regime (osservazione).
+         assets = int(db.scalar(select(func.count()).select_from(Asset)) or 0)
+         ipc = int(db.scalar(select(func.count()).select_from(IpAddress).where(IpAddress.is_current == True)) or 0)  # noqa: E712
+         npt = int(db.scalar(select(func.count()).select_from(NameProposal)) or 0)
++        npp = int(db.scalar(select(func.count()).select_from(NameProposal).where(NameProposal.status == "pending")) or 0)
+         fat = int(db.scalar(select(func.count()).select_from(FactAssertion)) or 0)
+         fa_cur = int(db.scalar(select(func.count()).select_from(FactAssertion).where(FactAssertion.state == "current")) or 0)
+-        dc = device_counters(db, now=now)
++        dc = device_counters(db, now=now3)
+         from app.facts.shadow import evaluate_circuit_breaker
+ 
+-        bopen, breason = evaluate_circuit_breaker(db)
+-        # 109/136 stato osservato
++        bopen, _breason = evaluate_circuit_breaker(db)
+         for aid in (109, 136):
+             a = db.get(Asset, aid)
+             if a:
+                 print(f"asset {aid}: trust_level={a.trust_level} op={(a.meta or {}).get('operational_state')}")
+         print(
+-            f"REGIME: assets={assets} ip_current={ipc} name_proposals={npt} "
++            f"REGIME: assets={assets} ip_current={ipc} name_proposals={npt}(pending={npp}) "
+             f"fact_assertions={fat}(current={fa_cur}) AD={dc.get('devices_active')} "
+             f"breaker_open={bopen}"
+         )
+-        # observations assente da sqlite_master
+         from sqlalchemy import text
+ 
+         obs = db.execute(
+@@ -74,8 +121,9 @@
+         ).scalar()
+         print(f"observations_in_sqlite_master={obs}")
+     finally:
+-        db.rollback()
++        db.rollback()  # scarta l'apply in-sessione: il file DB resta invariato
+         db.close()
++    return 1 if failed else 0
+ 
+ 
+ if __name__ == "__main__":
+--- a/observatory/scripts/w5b_measure.py
++++ b/observatory/scripts/w5b_measure.py
+@@ -0,0 +1,75 @@
++#!/usr/bin/env python3
++"""W5b.1.1 misura PRIMA (read-only): asset col buco del mapping non-totale.
++
++Enumera gli asset che hanno OGGI ``inventory_hidden_auto`` falso o assente E un livello
++derivato in {known, confirmed_present} E ``operational_state`` diverso da ``active``.
++Sono gli asset per cui, PRIMA del fix W5b.1.3, ``_apply_level_meta`` non scriveva
++``operational_state`` → structural permanente. Se sono zero, il fix resta preventivo.
++
++Cross-check: structural del piano dry_run sullo stato memorizzato (id enumerati).
++Nessuna scrittura (rollback finale).
++
++  sudo docker compose exec -T api python3 - < scripts/w5b_measure.py
++"""
++
++from __future__ import annotations
++
++import json
++import sys
++from datetime import datetime
++from pathlib import Path
++
++API = Path("/app") if Path("/app/app").exists() else Path(__file__).resolve().parents[1] / "api"
++if str(API) not in sys.path:
++    sys.path.insert(0, str(API))
++
++from sqlalchemy import create_engine, select  # noqa: E402
++from sqlalchemy.orm import sessionmaker  # noqa: E402
++
++from app.config import get_settings  # noqa: E402
++from app.models import Asset  # noqa: E402
++from app.services.trust import classify_asset, reconcile_trust_history  # noqa: E402
++
++
++def main():
++    settings = get_settings()
++    db = sessionmaker(bind=create_engine(f"sqlite:///{settings.sqlite_path}"))()
++    now = datetime.utcnow()
++    try:
++        hits = []
++        for a in db.scalars(select(Asset)).all():
++            meta = a.meta or {}
++            auto = bool(meta.get("inventory_hidden_auto"))
++            level = classify_asset(a, now=now)
++            op = meta.get("operational_state", "active")
++            if (not auto) and level in {"known", "confirmed_present"} and op != "active":
++                hits.append(
++                    {
++                        "id": a.id,
++                        "trust_level": a.trust_level,
++                        "operational_state": op,
++                        "inventory_hidden": meta.get("inventory_hidden"),
++                        "inventory_hidden_auto": meta.get("inventory_hidden_auto"),
++                        "derived_level": level,
++                    }
++                )
++        print(
++            "W5b.1.1 asset [inventory_hidden_auto falso/assente AND derived in "
++            f"{{known,confirmed_present}} AND op!=active]: {len(hits)}"
++        )
++        for h in sorted(hits, key=lambda x: x["id"]):
++            print("  " + json.dumps(h, ensure_ascii=False))
++        if not hits:
++            print("  (zero → il fix W5b.1.3 resta PREVENTIVO)")
++
++        prev = reconcile_trust_history(db, dry_run=True, now=now)
++        plan = prev.get("plan") or {}
++        struct = sorted(a["asset_id"] for a in (plan.get("actions") or []) if a.get("structural"))
++        print(f"cross-check structural (dry_run stato memorizzato): {len(struct)} ids={struct}")
++    finally:
++        db.rollback()
++        db.close()
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+--- a/observatory/docs/obs-wp.md
++++ b/observatory/docs/obs-wp.md
+@@ -149,6 +149,17 @@
+ 
+ Rollback: revert del bump + deploy tag `v0.10.52`.
+ 
++## Precisazione W5b.2 (aggiunta, non riscrittura)
++
++Il gate `scripts/wp_gate.py` di questa ondata costruiva DUE piani `dry_run` sullo stesso
++stato con lo stesso `now`: un dry-run non applica, quindi i due piani coincidevano **per
++costruzione**. Verificava il **determinismo**, non la **convergenza**. La convergenza
++vera era comunque dimostrata da `test_wp31_roundtrip` (apply → build → build → `[]`) e
++confermata dal regime osservato, ma l'etichetta del gate era fuorviante. In **W5-bis**
++`wp_gate.py` è stato riscritto: piano → **apply** (in-sessione, mai committato, con
++snapshot pre-op) → ricostruzione con `now` **ricalcolato** → `structural == []`. Vedi
++`obs-w5bis.md` §W5b.2.
++
+ ## Diff
+ `obs-wp.diff.txt` — file toccati: `api/app/services/trust.py`, `tests/test_wp_presence.py`,
+ `VERSION`, `web/package.json`, `CHANGELOG.md`, `docs/KNOWN_DEBT.md`, `scripts/wp_diagnose.py`,
+--- a/observatory/VERSION
++++ b/observatory/VERSION
+@@ -1 +1 @@
+-0.10.54
++0.10.55
+--- a/observatory/web/package.json
++++ b/observatory/web/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "lan-observatory-web",
+   "private": true,
+-  "version": "0.10.54",
++  "version": "0.10.55",
+   "type": "module",
+   "scripts": {
+     "dev": "vite",
+--- a/observatory/CHANGELOG.md
++++ b/observatory/CHANGELOG.md
+@@ -1,5 +1,12 @@
+ # Changelog
+ 
++## 0.10.55 — W5-bis: chiusure prima di W6
++
++- **W5b.1 mapping livello→stato TOTALE (`trust.py` `_apply_level_meta`):** per ogni livello attivo (`known`/`confirmed_present`) `operational_state="active"` viene scritto SEMPRE. Prima, se `inventory_hidden_auto` era falso, `operational_state` restava invariato e `_build_trust_plan` (che confronta `operational_state`) marcava `structural` in perpetuo — stessa forma del difetto 109 dietro una condizione. L'auto-hide viene revocato; un nascondimento MANUALE resta rispettato ed esplicitamente escluso (non è `structural`: il piano confronta `operational_state`, non i flag di hide). Mapping reso totale, gate NON reso cieco (F-7: unico writer del campo).
++- **W5b.2 gate di regime = CONVERGENZA (`scripts/wp_gate.py` riscritto):** prima costruiva due piani `dry_run` sullo stesso stato con lo stesso `now` (verificava il determinismo, non la convergenza). Ora: piano → **apply** (in-sessione, mai committato, snapshot pre-op) → ricostruzione con `now` **ricalcolato** → `structural == []`. Precisazione aggiunta a `obs-wp.md` (non riscritta la storia).
++- **W5b.3 lista classe-(b) chiusa voce per voce:** copia ingest `wifi_associations.resolve_ap_asset` era rimasta su `is_current` dopo la migrazione W5 di `topology._resolve_ap_asset`; migrata al resolver contestuale `resolve_asset_by_ip_at(ap_ip, observed_at)`, tie → None → fall-through sul nome (I2). Chiamanti di `presentation_name_for_asset` verificati: nessuno annulla il None con `or ""`/placeholder come surrogato di nome canonico (i fallback sono display-di-ultima-istanza, dichiarati). G5 di W5 non ha esercitato il path `ap_ip` (0/62): copertura nei test unitari (dichiarato, non «verificato»).
++- **W5b.5 test (nodi nominati):** 176 nodi Python verdi + 39 JS verdi + nuovi W5b.1.5 (mapping totale, hide manuale preservato) e W5b.3 (ingest AP contestuale + tie). T-c/T-d (`test_printer_enrichment`, DEBT-IPP-PRECEDENCE) restano ROSSI: contratti W6, non addomesticati. Gate I6 `rg 'scoreSpecificity|specificity' api/` vuoto.
++
+ ## 0.10.54 — W5: consumatori dello stato corrente sul resolver
+ 
+ - **W5.0/1 perimetro:** migrazione di LETTURA (nessuna scrittura su colonne Asset). Il nome canonico nelle viste migrate passa già dal resolver (`presentation_name_for_asset` → `current("chassis", …, "asset.name")`, fallback dichiarato I2 quando assente).
+--- a/observatory/docs/KNOWN_DEBT.md
++++ b/observatory/docs/KNOWN_DEBT.md
+@@ -151,6 +151,7 @@
+   - **Cassiopea (ex-bond):** `DEBT-LAG-CASSIOPEA` **CHIUSO** 21/07/2026 (eth0 LAN / eth1 SPAN).
+ - **Nota architetturale:** il dedup raw per-MAC scartava le osservazioni L3 multi-IP (sul Fritz 4/5 IP perse nel raw, `hit_count≈5` ma `l3.ip` resta solo `.1.1`) mentre l’upsert legacy scrive comunque i binding e gli `ip_change`: le due pipeline divergevano. Fix 0.10.46: `dedup_key` MAC+IP per L3.
+ - **Sintomo latente (BUG 3 originale / consumatore di correttezza) — MIGRATO W5 (0.10.54):** [`_resolve_ap_asset`](../api/app/services/topology.py) usa ora `resolve_asset_by_ip_at(ap_ip, observed_at)` (contestuale) invece di `is_current`; tie → None → fall-through sul nome. Gate G5 a writer fermi: 62 associazioni Wi-Fi, 0 sul path `ap_ip` → **0 differenze** (fix latente, equivalenza-preservante). Il facet «consumatore di correntezza» di questo debito è chiuso; la cardinalità/ruolo multi-IP resta tracciata in **DEBT-IFACE-IP-CARDINALITY-ROLE** (pre-condizione W3). Vedi [`docs/obs-w5.md`](obs-w5.md).
++- **Copia ingest chiusa — W5-bis (0.10.55):** [`wifi_associations.resolve_ap_asset`](../api/app/services/wifi_associations.py) (risoluzione AP lato ingest Wi-Fi) era rimasta su `is_current` dopo la migrazione W5 della sola copia di `topology`; ora usa `resolve_asset_by_ip_at(ap_ip, observed_at)` con `observed_at` dall'associazione; tie → None → fall-through sul nome (I2). Equivalenza-preservante sui dati correnti (a ingest `observed_at ≈ now`). Copertura: `tests/test_w5_consumers.py` (contestuale + tie). Vedi [`docs/obs-w5bis.md`](obs-w5bis.md).
+ - **Fix quando servirà:** (1) ruoli IP + `ip_change` solo primario; (2) dedup L3 MAC+IP *(fatto 0.10.46)*; (3) nel solo ramo (b) di `_resolve_ap_asset`, `resolve_asset_by_ip_at` + `observed_at`; tie→None→fall-through. NON toccare `is_current` alla cieca su multi-NIC storiche.
+ - **Riattivazione:** attribuzione topologia sbagliata su IP DHCP migrato, oppure ripresa del rumore `ip_change` multi-ruolo dopo unmute.
+ - **Stato FASE B (codice):** elezione + `role` + dedup `mac|ip` + `ip_change` solo primario — in tree. Bonifica storica duplicate `(interface_id, ip)` resta fuori scope. UI secondari = FASE C.
