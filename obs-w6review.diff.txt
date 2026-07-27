@@ -1,0 +1,236 @@
+diff -ruN w6r_before/VERSION w6r_after/VERSION
+--- a/VERSION
++++ b/VERSION
+@@ -1 +1 @@
+-0.10.56
++0.10.57
+diff -ruN w6r_before/web/package.json w6r_after/web/package.json
+--- a/web/package.json
++++ b/web/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "lan-observatory-web",
+   "private": true,
+-  "version": "0.10.56",
++  "version": "0.10.57",
+   "type": "module",
+   "scripts": {
+diff -ruN w6r_before/api/app/facts/registry.py w6r_after/api/app/facts/registry.py
+--- a/api/app/facts/registry.py
++++ b/api/app/facts/registry.py
+@@ -8,22 +8,24 @@
+ from app.models import Asset, Chassis, Interface
+ 
+-# I5 — single hierarchy: manual > ai > dhcp(0.95) > fritz(0.90) > oui(0.70)
+-# Discovery family (scan/arp/icmp) shares nmap tier — declared, not translated.
+-# W6.2 (DEBT-IPP-PRECEDENCE): ipp/snmp sono identità AUTO-DICHIARATA dal device via
+-# protocolli di management (IPP printer-name; SNMP make-and-model/sysName). Autorità
+-# DICHIARATA esplicita — non tradotta, non approssimata — appena sotto l'AI curata e
+-# sopra i nomi assegnati dalla rete (dhcp/fritz): ipp=88, snmp=87. Unica gerarchia:
+-# best_guess ora ordina per authority_for (nessun secondo prospetto di pesi).
++# I5 — single hierarchy (PRODUCT invariant, F-8): manual > ai > dhcp(0.95) >
++# fritz(0.90) > oui(0.70). Discovery family (scan/arp/icmp) shares nmap tier — declared.
++# W6-REVIEW.1 (DEBT-IPP-PRECEDENCE): ipp/snmp sono identità AUTO-DICHIARATA dal device via
++# management (IPP printer-name; SNMP make-and-model/sysName). L'UNICO vincolo MISURATO è
++# `ipp > fritz` (test T-c, fixture fritz vs ipp) — nessun test impone `ipp > dhcp` né alcun
++# ordine per snmp. Perciò collocati nel tier minimo NON alterante di I5: sopra fritz(80),
++# SOTTO dhcp(85), così l'invariante di prodotto dhcp>fritz>oui resta intatto. Valore
++# minimo che la misura richiede (ipp>80 ⇒ 81); snmp allo stesso tier (nessuna misura lo
++# ordina, tie risolto da confidence). La posizione del tier management vs dhcp è una
++# decisione di DOMINIO lasciata a Michele (STOP-5, K8): qui è tenuta sotto dhcp. In prod
++# 0 proposte pending ipp/snmp ⇒ 0 flip di best_guess (fix inerte, misurato in W6R.1.3).
+ AUTHORITY_RANK: dict[str, int] = {
+     "manual": 100,
+     "ai": 90,
+-    "ipp": 88,
+-    "snmp": 87,
+     "dhcp": 85,
++    "ipp": 81,
++    "snmp": 81,
+     "fritz": 80,
+     "mgmt": 80,
+     "nmap": 75,
+diff -ruN w6r_before/docs/KNOWN_DEBT.md w6r_after/docs/KNOWN_DEBT.md
+--- a/docs/KNOWN_DEBT.md
++++ b/docs/KNOWN_DEBT.md
+@@ -71,13 +71,13 @@
+-## DEBT-IPP-PRECEDENCE (T-c / T-d) — CHIUSO in W6 (0.10.56)
++## DEBT-IPP-PRECEDENCE (T-c / T-d) — CHIUSO in W6, rank corretto in W6-REVIEW (0.10.57)
+ 
+-- **Priorità:** media (autorità naming) — registrato W-D 2026-07-26, **chiuso** W6 2026-07-27
++- **Priorità:** media (autorità naming) — registrato W-D 2026-07-26, **chiuso** W6 2026-07-27, rank rivisto W6-REVIEW
+ - **Test:** `test_ipp_precedence_and_human_category_override` (T-c); `test_snmp_enrichment_creates_proposal_without_overwriting_name` (T-d) — entrambi VERDI
+ - **Root-cause:** `create_name_proposal` faceva `db.add` senza sincronizzare la relazione `asset.name_proposals` (proposte create invisibili in-sessione) + `best_guess` usava un secondo prospetto di pesi (`SOURCE_WEIGHT`) non coincidente con I5.
+-- **Fix (W6.2):** `create_name_proposal` → `append` alla relazione; `best_guess` ordina per `authority_for` (I5) primario + confidence; `ipp=88`/`snmp=87` dichiarati in `AUTHORITY_RANK`. Nessuna seconda gerarchia. Test non indeboliti.
++- **Fix (W6.2 + W6R.1):** `create_name_proposal` → `append` alla relazione (guardia `has_rejected_name_proposal` invariata, non ricrea rifiutate); `best_guess` ordina per `authority_for` (I5) primario + confidence. **Rank corretto in W6-REVIEW:** `ipp=88`/`snmp=87` (sopra dhcp, alteravano I5) → **`ipp=snmp=81`** — unico vincolo misurato `ipp>fritz` (T-c); sotto `dhcp=85`, I5 di prodotto intatto. Posizione tier vs dhcp = decisione di dominio (Michele, STOP-5). Misurato: 0 flip in prod. Nessuna seconda gerarchia. Test non indeboliti.
+diff -ruN w6r_before/CHANGELOG.md w6r_after/CHANGELOG.md
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,5 +1,15 @@
+ # Changelog
+ 
++## 0.10.57 — W6-REVIEW: rank ipp/snmp riportato al minimo non alterante di I5
++
++- **W6R.1 (DEBT-IPP-PRECEDENCE, correzione soglia non misurata):** W6 aveva collocato `ipp=88`/`snmp=87` **sopra** `dhcp=85`, alterando l'ordinamento dell'invariante di PRODOTTO I5 (`manual > ai > dhcp > fritz > oui`) per far passare due test — stessa classe di difetto della soglia inventata rimossa in W1.5-bis. L'UNICO vincolo MISURATO è `ipp > fritz` (test T-c, fixture fritz(0.9) vs ipp(0.96)); nessun test impone `ipp > dhcp` né alcun ordine per `snmp` (T-d e `test_printer_provider` asseriscono solo creazione/valore della proposta, mai `best_guess`). Rank riportato al minimo non alterante: **`ipp=snmp=81`** (tier «identità auto-dichiarata via management», sopra `fritz=80`, **sotto `dhcp=85`** → I5 intatto; tie ipp/snmp risolto da confidence). La posizione del tier vs `dhcp` è una decisione di dominio lasciata a Michele (STOP-5, K8), tenuta sotto dhcp.
++- **W6R.1.3 effetto misurato (read-only prod 0.10.56):** **0 proposte pending `ipp`/`snmp`**, **0 asset vinti** da `ipp`/`snmp`, **0 flip** di `best_guess` abbassando i rank → il fix è **comportamentalmente inerte** in produzione. Le 3 differenze `i5_reorder` (id 109/120/134) sono `ai` (rank 90, non toccato) e **restano**.
++- **W6R.2.1 `adopted_names_changed = 0` (misurato):** i 30 nomi adottati (`manual_overrides` include `name`) sono **identici** tra prod 0.10.56, backup pre-deploy W6 e nightly pre-W6 — nessun nome adottato ha cambiato valore.
++- **W6R.2.2 asset senza best guess:** 28 asset con `best_guess` vuoto; di questi 9 senza nome canonico (`presented=None`) → la UI dichiara l'assenza («Device senza nome» / MAC, I2), mai un placeholder spacciato per nome. Gli altri mostrano il nome dell'apparato (asset.name o canon chassis).
++- **Test:** nodi nominati Python verdi (T-c/T-d verdi con `ipp=snmp=81`); gate I6 `rg 'scoreSpecificity|specificity' api/` vuoto. Nessun test indebolito. Artefatti W6 e W5-bis ripubblicati con URL raw (curl 200).
++
+ ## 0.10.56 — W6: fingerprinting, inferenze AI, generazione proposte alla correntezza
+diff -ruN w6r_before/scripts/w6review_measure.py w6r_after/scripts/w6review_measure.py
+--- /dev/null
++++ b/scripts/w6review_measure.py
+@@ -0,0 +1,116 @@
++"""W6-REVIEW read-only measurement (runs inside api container).
++
++Read-only: rolls back at the end, never commits. Answers:
++- pending NameProposal count by source (ipp/snmp presence)
++- deployed best_guess winners by source; assets won by a pending ipp/snmp proposal
++- FLIPS if ipp/snmp rank is lowered below dhcp (W6R.1 proposed fix ipp=snmp=81)
++- assets with empty best_guess (W6R.2.2), with raw name + presented name (I2)
++- adopted names (manual_overrides includes "name") for adopted_names_changed baseline
++"""
++
++from __future__ import annotations
++
++import sys
++from collections import Counter
++
++sys.path.insert(0, "/app")
++
++from sqlalchemy import create_engine, select
++from sqlalchemy.orm import sessionmaker
++
++from app.config import get_settings
++from app.facts.registry import AUTHORITY_RANK
++from app.models import Asset, NameProposal
++from app.services.identity import classify_oui
++from app.services.inventory import is_synthetic_fritz_name
++from app.services.name_proposal_chassis import presentation_name_for_asset
++from app.services.suggest import best_guess  # deployed (ipp=88 / snmp=87)
++
++# W6R.1 proposed fix: device self-declared management tier below dhcp(85),
++# above fritz(80). Only measured constraint is ipp>fritz (T-c). snmp unconstrained.
++LOWERED = dict(AUTHORITY_RANK)
++LOWERED["ipp"] = 81
++LOWERED["snmp"] = 81
++
++
++def bg_with_rank(asset: Asset, rankmap: dict[str, int]) -> tuple[str, str]:
++    mac = asset.interfaces[0].mac if asset.interfaces else ""
++    ranked: list[tuple[int, float, str, str]] = []
++    for p in asset.name_proposals:
++        if (p.status or "pending") != "pending":
++            continue
++        if not p.value:
++            continue
++        if p.source == "fritz" and is_synthetic_fritz_name(p.value, mac):
++            continue
++        ranked.append(
++            (rankmap.get((p.source or "").lower(), 20), float(p.confidence or 0.5), p.value, p.source)
++        )
++    if asset.vendor and not any(r[3] == "oui" for r in ranked):
++        name, _cat, conf = classify_oui(mac, asset.vendor)
++        if name:
++            ranked.append((rankmap.get("oui", 70), conf, name, "oui"))
++    ranked.sort(key=lambda x: (x[0], x[1]), reverse=True)
++    return (ranked[0][2], ranked[0][3]) if ranked else ("", "")
++
++
++def main() -> int:
++    settings = get_settings()
++    db = sessionmaker(bind=create_engine(f"sqlite:///{settings.sqlite_path}"))()
++    try:
++        assets = db.scalars(select(Asset)).all()
++
++        by_src: Counter = Counter()
++        for p in db.scalars(select(NameProposal).where(NameProposal.status == "pending")).all():
++            by_src[(p.source or "").lower()] += 1
++        print("PENDING_BY_SOURCE:", dict(sorted(by_src.items())))
++
++        winners: Counter = Counter()
++        ipp_snmp_winners = []
++        absent = []
++        flips = []
++        for a in assets:
++            now = tuple(best_guess(a)[:2])
++            low = bg_with_rank(a, LOWERED)
++            winners[now[1]] += 1
++            if now[1] in ("ipp", "snmp"):
++                ipp_snmp_winners.append((a.id, now))
++            if now[0] == "":
++                pres = presentation_name_for_asset(db, a)
++                absent.append((a.id, (a.name or ""), pres))
++            if now != low:
++                flips.append((a.id, now, low))
++
++        print("DEPLOYED_WINNERS_BY_SOURCE:", dict(sorted(winners.items())))
++        print("IPP_SNMP_WINNERS:", sorted(ipp_snmp_winners))
++        print(f"FLIPS deployed(ipp=88,snmp=87) vs lowered(ipp=snmp=81): {len(flips)}")
++        for f in sorted(flips):
++            print("  flip", f)
++
++        print(f"ABSENT_best_guess count: {len(absent)}")
++        for a_id, nm, pres in sorted(absent):
++            print(f"  absent id={a_id} raw_name={nm!r} presented={pres!r}")
++
++        adopted = []
++        for a in assets:
++            ov = set((a.meta or {}).get("manual_overrides") or [])
++            if "name" in ov or "nome" in ov:
++                adopted.append((a.id, a.name))
++        print(f"ADOPTED_NAMES count: {len(adopted)}")
++        for a_id, nm in sorted(adopted):
++            print(f"  adopted id={a_id} name={nm!r}")
++        return 0
++    finally:
++        db.rollback()
++        db.close()
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff -ruN w6r_before/scripts/adopted_dump.py w6r_after/scripts/adopted_dump.py
+--- /dev/null
++++ b/scripts/adopted_dump.py
+@@ -0,0 +1,42 @@
++"""Dump adopted names (manual_overrides includes "name") from a given sqlite path.
++
++Read-only. Usage (inside api container): python3 - <path> < adopted_dump.py
++Path is read from argv[1]; defaults to settings.sqlite_path.
++"""
++
++from __future__ import annotations
++
++import sys
++
++sys.path.insert(0, "/app")
++
++from sqlalchemy import create_engine, select
++from sqlalchemy.orm import sessionmaker
++
++from app.config import get_settings
++from app.models import Asset
++
++
++def main() -> int:
++    path = sys.argv[1] if len(sys.argv) > 1 else get_settings().sqlite_path
++    db = sessionmaker(bind=create_engine(f"sqlite:///{path}"))()
++    try:
++        rows = []
++        for a in db.scalars(select(Asset)).all():
++            ov = set((a.meta or {}).get("manual_overrides") or [])
++            if "name" in ov or "nome" in ov:
++                rows.append((a.id, a.name or ""))
++        print(f"# {path} adopted={len(rows)}")
++        for a_id, nm in sorted(rows):
++            print(f"{a_id}\t{nm}")
++        return 0
++    finally:
++        db.rollback()
++        db.close()
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
