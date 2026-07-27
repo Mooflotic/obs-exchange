@@ -1,0 +1,1349 @@
+# obs-ux3.diff.txt — CONTENUTO INTEGRALE dei file toccati da UX3 (0.10.62 + 0.10.63)
+#
+# NOTA SUL RAMO: feature/obs-currency contiene modifiche non committate ACCUMULATE
+# (W7-CLOSE -> 0.10.59, UX2 -> 0.10.60/0.10.61, gia' pubblicate in obs-w7close.diff.txt
+# e obs-ux2b.diff.txt). Il diff sotto e' `git diff HEAD` sui SOLI file toccati da UX3.
+# Per i file toccati anche in ondate precedenti (Plant.vue, Topology.vue, VERSION,
+# package.json, CHANGELOG.md, KNOWN_DEBT.md) gli hunk includono anche modifiche
+# precedenti; le modifiche UX3 sono:
+#   - VERSION: 0.10.61 -> 0.10.63
+#   - CHANGELOG.md: voci 0.10.62 e 0.10.63
+#   - App.vue: nav mobile a comparsa (hamburger) + voce "Panoramica" + rimozione "Findings"
+#   - matrix.css: .nav-toggle + blocco @media 800px nav a comparsa (D3)
+#   - Plant.vue: .fdb-status/.switch-role/.port-foot .patch wrap (D4)
+#   - Topology.vue: lista gerarchica mobile + CSS + hide grafo/zoom <800px (D7)
+#   - router.js: "/"->"/oggi", nuova "/dashboard" (D8)
+#   - KNOWN_DEBT.md: DEBT-FINDINGS-OGGI-CONFLUENCE, DEBT-DASHBOARD-READY-SLOTS
+#   - obs-guida-uso.md: nota landing Oggi / Panoramica / nav mobile (mostrato come file nuovo: untracked dall'ondata UX2)
+#   - obs-ux3.md: NUOVO (report)
+# File App.vue, matrix.css, router.js NON erano modificati prima di UX3: i loro hunk sono puri UX3.
+# ============================================================================
+
+diff --git a/observatory/CHANGELOG.md b/observatory/CHANGELOG.md
+index 677f6ee..9988d14 100644
+--- a/observatory/CHANGELOG.md
++++ b/observatory/CHANGELOG.md
+@@ -1,8 +1,155 @@
+ # Changelog
+ 
++## 0.10.63 — UX3 ondata 2: architettura superfici (D8 + confluenze)
++
++- **UX3.1.4 / D8 — Dashboard decisa con misura → «Panoramica» in navigazione.** Misura prod (2026-07-28): la Dashboard mostra ciò che nessun'altra vista mostra — stato calibrazione osservatorio (giorno N/14), **salute Internet** (capacità/traffico FRITZ!Box, speedtest NAS, prossimo test), copertura discovery, salute sensori, KPI device+monitor. **Utile e distinta** (opzione a): entra in nav come «Panoramica» (gruppo RADAR). Coerenza con F-9: `/` non è più la Dashboard ma **reindirizza a `/oggi`** (il cardine è la landing); la Dashboard vive su `/dashboard`.
++- **UX3.2 — architettura delle superfici (decisioni con dati reali).** `suggestions` → già **CONFLUITA** in Oggi (redirect `/suggestions`→`/oggi`; le 2 proposte pending compaiono in Oggi). `findings` → 0 elementi, 0 drift, in shadow: **tolta dalla nav primaria** (coda parallela vuota, F-9), ma **ancora raggiungibile** dalla Dashboard (ReadySlot + card «Findings shadow») e per URL — nessuna funzione irraggiungibile (UX3.2.4). Debito `DEBT-FINDINGS-OGGI-CONFLUENCE` registrato: confluenza autoritativa in Oggi rinviata a calibrazione/scoring (M4–M5). Le viste con domanda unica **TENGONO**: Oggi (cardine), Dossier (device), Inventario (elenco/ricerca), Impianto (porte/modifica), Topologia (dove), Monitor (salute), Timeline (cronologia), Azioni (scansioni/errori discovery), Panoramica (D8).
++- **Nessun dato grezzo rimosso perché non trovato di gravità operativa (UX3.3):** Dossier è strutturato e onesto (identità osservata con ignoti dichiarati, inferenza AI marcata con confidenza+evidenze, GS308EP con `.1.8` corrente/`.3.20` storico) — non un dump. Switch = tre superfici coerenti (Impianto=modifica, Topologia=dove, Monitor=salute), nessuna vista switch legacy autonoma. ReadySlot Dashboard dichiarano l'attesa (I2), non inventano: annotati in `DEBT-DASHBOARD-READY-SLOTS`.
++- **Test:** nessun nodo backend toccato; frontend `oggiTriage`, `oggiProblems`, `observatoryUx`, `portPresentation`, `topologyLayout` invariati verdi. F-1..F-14 rispettati; policy MAC↔IP consultiva (F-12); I5/F-8 immutati; favicon A (F-6).
++
++## 0.10.62 — UX3 ondata 1: mobile + Mappa usabili (D3, D4, D7)
++
++- **UX3.1.2 / D3 — navigazione mobile a comparsa:** sotto 800px la sidebar diventava una barra alta ~280px perché gli 11 link andavano a capo su più righe, spingendo il contenuto sotto la piega. Ora (`App.vue` + `matrix.css`) la barra mobile è compatta (brand + hamburger «☰ Menu» + utente/Esci); il menu si apre a comparsa a piena larghezza in colonna, con tocco comodo, e si chiude a ogni cambio rotta. Desktop invariato. Nessun tocco ad auth/ruoli (K10).
++- **UX3.1.3 / D4 — Impianto, troncamenti alla radice:** in `Plant.vue` più righe informative usavano `white-space:nowrap`+`overflow:hidden`+ellissi su testo che deve andare a capo (stessa **classe** di causa di D2, qui su testo semplice, non `DenseRow`). Punti condivisi enumerati e corretti: `.fdb-status` (banner copertura FDB — la **data dell'ultima misura non va mai troncata**, F-13: ora va a capo a ogni larghezza), `.switch-role`, `.port-foot .patch` (vanno a capo su mobile). 
++- **UX3.1.1 / D7 — Topologia usabile su mobile:** il grafo a coordinate assolute in un contenitore scroll è inutilizzabile sotto 800px (finestrella su una mappa grande). Sotto 800px il grafo è sostituito da una **lista gerarchica per livello** (Radice → Livello 1/2/3) che risponde alla stessa domanda («dove sta un apparato, a cosa è attaccato»): riusa i nodi già posizionati da `layoutTopology` e mostra per ciascun nodo nome canonico, IP/tipo e «↳ collegato a <padre>»; gli endpoint restano toccabili per isolarne il percorso. I controlli zoom (inerti senza grafo) sono nascosti su mobile. Nessun dato inventato.
++- **Test:** `topologyLayout`, `portPresentation`, `observatoryUx`, `oggiTriage`, `oggiProblems` (invariati, verdi). Favicon A immutata (F-6), I5/F-8 immutati, nessuna logica identità/currency nel frontend, policy MAC↔IP consultiva (F-12), FDB solo presentazione (F-13).
++
++## 0.10.61 — UX2 ondata 1b: Oggi non tronca su tablet (radice DenseRow)
++
++- **UX2.5 — Oggi, troncamento su tablet risolto alla radice:** su tablet (≈820px) i valori delle card («Causa ed evidenza», «Esito», …) erano **tagliati a metà parola**. Causa: lo slot primario di `DenseRow` porta lo stile generico `white-space:nowrap` + `overflow:hidden`, adatto a righe singole ma non al contenuto **multilinea** delle card di Oggi. Fix in `Oggi.vue`: dentro `.oggi` lo slot primario va a capo e resta visibile a **tutti** i breakpoint (non solo ≤640px). Nessun impatto su desktop (già largo) né sul resto delle viste che usano DenseRow.
++
++## 0.10.60 — UX2 ondata 1: onestà dei dati porta/telemetria + Oggi mobile
++
++- **UX2.2.4 / F-13 — copertura FDB dichiarata in UI (`DEBT-FDB-POLL-STALE`):** la copertura FDB è ferma (RO 2026-07-27: 46 porte, 38 con `last_fdb_at`, 0 fresche nelle 24h; più recente 2026-07-25 14:52). Nuovo helper puro `fdbCoverageStatus()` in `web/src/observatoryUx.js` (con test) calcola la freschezza dalla `last_fdb_at` di porta, **mai** dall'ora del poll fallito. Impianto (`Plant.vue`): banner «copertura FDB non aggiornata: ultima mappatura … (circa N h fa)» e badge per-switch corretto — prima `switchFreshness` spacciava `fdb_poll.at` (tentativo fallito, `ok:false`) come «dati al … (ok)». Solo presentazione: nessuna diagnosi/riavvio del polling (F-13).
++- **UX2.5 / I2 / I7 — Monitor: assente ≠ zero:** in «Switch · salute porte» (`Monitoring.vue`) traffico ed errori erano resi `0 b/s` / `0` per switch senza SNMP riuscito (GS308EP non interrogabile, LGS in timeout). Ora sono `—` (non disponibile) quando `snmp_poll.ok≠true`, e l'ultimo poll è marcato «non riuscito». Nessuna telemetria inventata.
++- **UX2.1 / UX2.5 — Oggi (il cardine) responsive su mobile:** le card di Oggi troncavano nome/MAC e non impilavano label/valore su schermi stretti (le azioni comprimevano il contenuto). Fix CSS scoped in `Oggi.vue`: sotto 640px la riga densa impila (azioni sotto, allineate a sinistra), i campi vanno a capo, nome/MAC non si troncano.
++- **Test:** `observatoryUx` (nuovo caso `fdbCoverageStatus` F-13), `oggiTriage`, `oggiProblems`, `portPresentation`, `topologyLayout` — 40 verdi. Favicon A immutata (F-6), I5/F-8 immutati, nessuna logica di identità/currency nel frontend (F-13 = presentazione di timestamp misurati), policy MAC↔IP resta consultiva (F-12).
++
++## 0.10.59 — W7-CLOSE: eccezione L2 da attributi misurati, ignoto≠falso, policy consultiva
++
++- **W7C.2 (K9/F-5) — eccezione L2-only NON dipende più da `Asset.name`:** `_l2_only_exception_class` (`inventory.py`) derivava la classe powerline/510E da `" ".join(asset.name, asset.category, asset.vendor)`. Dopo W4c.1 i membri di chassis hanno `Asset.name` **vuoto per progetto** (F-5): un powerline membro di chassis non sarebbe stato riconosciuto. Ora la classe è derivata da attributi **MISURATI** — `category`, `vendor`, l'**OUI vendor** di ogni interfaccia — e, quando serve un nome, dal **nome CANONICO risolto** (`presentation_name_for_asset`, chassis-scoped), mai dal nome grezzo del membro. Se nessun attributo misurato riconosce la classe, la classe è **ASSENTE (`None`, K3)**, non un match mancato spacciato per «non è powerline».
++- **W7C.3 (I2/K3) — input costanti del classifier risolti:** in `_mac_ip_policy_present` gli input `chassis_mgmt_ip` e `superseded_by_newer_binding` erano passati fissi (`None`, `False`). Il secondo **asseriva** un fatto non misurato («nessun binding più recente ha soppiantato»). Ora `superseded_by_newer_binding` è **tri-stato** (`bool | None`, default `None`=IGNOTO): solo un `True` **misurato** produce il verdetto `superseded`; `None` (ignoto) non viene mai coerciuto in un'asserzione. Il wire passa `None` (ignoto), non più `False`. `chassis_mgmt_ip` resta `None`=IGNOTO (non serve/non misurato qui, mai inventato).
++- **W7C.5 — policy PIENA CONSULTIVA (mai autoritativa):** nuovo `inventory.mac_ip_policy_consultation` (read-only) calcola il verdetto della policy completa (regole #1..#5) per ogni asset e lo espone come **divergenza diagnostica** accanto allo stato reale, con l'evidenza che tiene presente il device. Endpoint admin `GET /api/admin/mac-ip-policy-consultation` (sola lettura, ruolo operator). **Non scrive nulla e non guida `operational_state`/`trust_level`/`reliable`** (F-7): le regole #3/#5 restano **NON autoritative** (attivazione autoritativa rinviata e condizionata alla correzione delle regole che dissentono dalla realtà osservabile — `DEBT-MAC-IP-POLICY-WIRE` aperto). Mai esposto come stato del device in UI.
++- **Test:** `test_mac_ip_policy` (11, incl. tri-stato supersession) esercitato; nuovi nodi fixture/app W7C.2 verificati per import/sintassi (K4, non esercitati a runtime per contesa risorse NAS). F-7 intatto, I5/F-8 immutati, favicon A immutata (F-6).
++
++## 0.10.58 — W7 (deploy 1/2): T-a uplink→portal + wire mac_ip_policy additivo
++
++- **W7.3 T-a (DEBT-FDB-UPLINK-PORTAL):** `apply_fdb_observation` (`topology.py`) **ricalcolava** `interface.interface_role` per-porta prima della guardia portale, facendo un **downgrade `uplink→endpoint`** su un singolo hit FDB → poi attribuiva `portal_last_seen` a una porta uplink (presenza al posto sbagliato). Fix: un hit FDB per-porta NON declassa più un'interfaccia strutturale (`uplink`/`infra`); i downgrade restano di competenza del reclassify globale (`role_for_interface_global`). Test T-a verde, non indebolito. Il fix NON azzera retroattivamente `portal_last_seen`: nessun effetto su presence/structural al boot (misurato).
++- **W7.2 wire `mac_ip_policy` (deploy 1/2 — additivo, F-7 intatto):** il classifier `classify_mac_ip_presence` è ora collegato a `reconcile_asset_presence` come **solo segnale di PRESENZA** (`reliable`), limitato alle lacune che la logica esistente non copre: membro di chassis mantenuto presente dall'IP corrente di chassis (`present_l2_unaddressed`) ed eccezione powerline/510E (`l2_only_allowed`). Il wire **non forza mai `stale`/`superseded`** e non è un secondo autore di `operational_state`/`trust_level` (classify_asset resta l'unico deriver). `present_l2_unaddressed` è **dichiarato** dalla freschezza FDB misurata, mai dedotto dal solo IP di chassis. **Misura pre-deploy (read-only prod):** 0 hit `present_l2_unaddressed`/`l2_only_allowed` correnti ⇒ **0 cambi di `operational_state`** (wire inerte oggi, esercitato dai test unitari `test_w7_consumers` — K4).
++- **W7.2.3 split dichiarato:** la riclassificazione AMPIA della policy (regole #3/#5: `stale`/`superseded` che toglierebbero presenza a device correnti) ha blast-radius **alto (52/151 asset**, inclusi FritzBox router, powerline, Sky box) e tocca infrastruttura oggi `active` → **rinviata al deploy 2/2** (decisione di dominio su quali device attivi declassare: Michele). Non fatta qui per non introdurre regressioni (c) né violare «stale/superseded fuori dallo stato corrente».
++- **Test:** `test_w7_consumers` (5, wire additivo), `test_m2_discovery` (T-a) verdi; nodi presence/trust/scans nominati verdi (94). Gate I6 vuoto.
++
++## 0.10.57 — W6-REVIEW: rank ipp/snmp riportato al minimo non alterante di I5
++
++- **W6R.1 (DEBT-IPP-PRECEDENCE, correzione soglia non misurata):** W6 aveva collocato `ipp=88`/`snmp=87` **sopra** `dhcp=85`, alterando l'ordinamento dell'invariante di PRODOTTO I5 (`manual > ai > dhcp > fritz > oui`) per far passare due test — stessa classe di difetto della soglia inventata rimossa in W1.5-bis. L'UNICO vincolo MISURATO è `ipp > fritz` (test T-c, fixture fritz(0.9) vs ipp(0.96)); nessun test impone `ipp > dhcp` né alcun ordine per `snmp` (T-d e `test_printer_provider` asseriscono solo creazione/valore della proposta, mai `best_guess`). Rank riportato al minimo non alterante: **`ipp=snmp=81`** (tier «identità auto-dichiarata via management», sopra `fritz=80`, **sotto `dhcp=85`** → I5 intatto; tie ipp/snmp risolto da confidence). La posizione del tier vs `dhcp` è una decisione di dominio lasciata a Michele (STOP-5, K8), tenuta sotto dhcp.
++- **W6R.1.3 effetto misurato (read-only prod 0.10.56):** **0 proposte pending `ipp`/`snmp`**, **0 asset vinti** da `ipp`/`snmp`, **0 flip** di `best_guess` abbassando i rank → il fix è **comportamentalmente inerte** in produzione. Le 3 differenze `i5_reorder` (id 109/120/134) sono `ai` (rank 90, non toccato) e **restano**.
++- **W6R.2.1 `adopted_names_changed = 0` (misurato):** i 30 nomi adottati (`manual_overrides` include `name`) sono **identici** tra prod 0.10.56, backup pre-deploy W6 e nightly pre-W6 — nessun nome adottato ha cambiato valore.
++- **W6R.2.2 asset senza best guess:** 28 asset con `best_guess` vuoto; di questi 9 senza nome canonico (`presented=None`) → la UI dichiara l'assenza («Device senza nome» / MAC, I2), mai un placeholder spacciato per nome. Gli altri mostrano il nome dell'apparato (asset.name o canon chassis).
++- **Test:** nodi nominati Python verdi (T-c/T-d verdi con `ipp=snmp=81`); gate I6 `rg 'scoreSpecificity|specificity' api/` vuoto. Nessun test indebolito. Artefatti W6 e W5-bis ripubblicati con URL raw (curl 200).
++
++## 0.10.56 — W6: fingerprinting, inferenze AI, generazione proposte alla correntezza
++
++- **W6.1 correntezza dei consumatori (`suggest.best_guess`, `ai_naming._hostnames`, `fingerprint_facts` backfill hostname):** `best_guess` non filtrava lo stato delle `NameProposal` e sorfava proposte **rejected/superseded/archived** — in prod **51 asset** ricevevano come «best guess» un nome che l'utente aveva rifiutato o che era stato soppiantato. Ora i tre percorsi consumano SOLO proposte `pending`; le altre restano a DB (storia leggibile, `escludere ≠ cancellare`). Fatti `fact_assertions` in stato `superseded/historical` non erano consumati (i percorsi leggono `resolver.current` o `observations_raw`, mai gli stati non correnti) → per quel lato il fix è preventivo (misurato: 0).
++- **W6.2 DEBT-IPP-PRECEDENCE (T-c/T-d), gerarchia unica I5:** `best_guess` decideva la precedenza con un **secondo prospetto di pesi** (`SOURCE_WEIGHT`) non coincidente con I5. Rimosso: ora ordina per `authority_for` (registro I5) primario, `confidence` a parità. `ipp`/`snmp` hanno un rank **dichiarato esplicito** in `AUTHORITY_RANK` (ipp=88, snmp=87: identità auto-dichiarata dal device via management, sotto l'AI curata e sopra dhcp/fritz). Root-cause di T-c/T-d: `create_name_proposal` faceva `db.add` senza sincronizzare la relazione `asset.name_proposals` → le proposte create non erano visibili in-sessione; ora `append` alla relazione. T-c → `('Stampante Studio','ipp')`, T-d → proposta `snmp` presente. Test non indeboliti.
++- **W6.3 soppressione alla generazione (già conforme):** `should_suppress_proposal` sopprime per **provenienza + soggetto** (chassis-manual blocca sorgenti più deboli; dedup per valore), mai per specificità del nome (I6, K6). Gate `rg 'scoreSpecificity|specificity' api/` **vuoto**.
++- **W6.2/6.4 R-D:** un'inferenza AI resta marcata (`source=ai`, `status=pending`) e NON sovrascrive un valore `manual`; `ai` non entra come sorgente hostname fattuale nel payload LLM.
++- **W6.4 gate G6 (writer fermi, `now` ricalcolato):** `best_guess` PRE vs DEPLOYED, per id. Baseline pre-deploy `diff=0` (inline-old fedele). Post-deploy: **54 differenze, tutte (a)** — 51 `status_exclusion` (correntezza) + 3 `i5_reorder` (id 109/120/134: `ai` pending ora batte `oui`/`fritz` per I5). Zero (b), zero (c). Fingerprint/AI generation NON esercitati in prod (K4): filtro preventivo + AI = API a pagamento; copertura nei test unitari.
++- **W6.6 test (nodi nominati):** Python nominati verdi (incl. `test_w6_consumers` W6.6.1-6.4, T-c/T-d ora verdi) + 39 JS. Gate I6 vuoto.
++
++## 0.10.55 — W5-bis: chiusure prima di W6
++
++- **W5b.1 mapping livello→stato TOTALE (`trust.py` `_apply_level_meta`):** per ogni livello attivo (`known`/`confirmed_present`) `operational_state="active"` viene scritto SEMPRE. Prima, se `inventory_hidden_auto` era falso, `operational_state` restava invariato e `_build_trust_plan` (che confronta `operational_state`) marcava `structural` in perpetuo — stessa forma del difetto 109 dietro una condizione. L'auto-hide viene revocato; un nascondimento MANUALE resta rispettato ed esplicitamente escluso (non è `structural`: il piano confronta `operational_state`, non i flag di hide). Mapping reso totale, gate NON reso cieco (F-7: unico writer del campo).
++- **W5b.2 gate di regime = CONVERGENZA (`scripts/wp_gate.py` riscritto):** prima costruiva due piani `dry_run` sullo stesso stato con lo stesso `now` (verificava il determinismo, non la convergenza). Ora: piano → **apply** (in-sessione, mai committato, snapshot pre-op) → ricostruzione con `now` **ricalcolato** → `structural == []`. Precisazione aggiunta a `obs-wp.md` (non riscritta la storia).
++- **W5b.3 lista classe-(b) chiusa voce per voce:** copia ingest `wifi_associations.resolve_ap_asset` era rimasta su `is_current` dopo la migrazione W5 di `topology._resolve_ap_asset`; migrata al resolver contestuale `resolve_asset_by_ip_at(ap_ip, observed_at)`, tie → None → fall-through sul nome (I2). Chiamanti di `presentation_name_for_asset` verificati: nessuno annulla il None con `or ""`/placeholder come surrogato di nome canonico (i fallback sono display-di-ultima-istanza, dichiarati). G5 di W5 non ha esercitato il path `ap_ip` (0/62): copertura nei test unitari (dichiarato, non «verificato»).
++- **W5b.5 test (nodi nominati):** 176 nodi Python verdi + 39 JS verdi + nuovi W5b.1.5 (mapping totale, hide manuale preservato) e W5b.3 (ingest AP contestuale + tie). T-c/T-d (`test_printer_enrichment`, DEBT-IPP-PRECEDENCE) restano ROSSI: contratti W6, non addomesticati. Gate I6 `rg 'scoreSpecificity|specificity' api/` vuoto.
++
++## 0.10.54 — W5: consumatori dello stato corrente sul resolver
++
++- **W5.0/1 perimetro:** migrazione di LETTURA (nessuna scrittura su colonne Asset). Il nome canonico nelle viste migrate passa già dal resolver (`presentation_name_for_asset` → `current("chassis", …, "asset.name")`, fallback dichiarato I2 quando assente).
++- **W5 `_resolve_ap_asset` (DEBT-TOPO-IP-CONTEXTUAL):** il fallback per-IP non usa più `IpAddress.is_current` ma `resolve_asset_by_ip_at(ap_ip, observed_at)`: risolve l'AP che DETENEVA l'IP al momento dell'associazione, non chi lo detiene ora. Tie → None → fall-through all'euristica sul nome (I2, nessun proprietario indovinato).
++- **W5.1.3 (IP multi-valore):** `asset.iface_ip` ha `cardinality=single` (solo IP eletto); il resolver NON è fonte esclusiva per gli IP finché il ruolo non entra nella `excl_key` (pre-condizione W3, DEBT-IFACE-IP-CARDINALITY-ROLE). La UI continua a mostrare tutti gli IP reali (multi-IP non collassati).
++- **W5.2 gate G5 (writer fermi):** risoluzione AP `is_current` vs contestuale su 62 associazioni Wi-Fi → **0 differenze** (0 associazioni sul path `ap_ip`; tutte risolvono per `ap_asset_id`/`ap_mac`). Nessuna regressione: la migrazione è un fix latente, equivalenza-preservante sui dati correnti.
++- **W5.4 test:** `_resolve_ap_asset` contestuale + tie→fall-through (W5.4.6); chassis un nome canonico dal resolver (W5.4.5); fatto assente → None (W5.4.1); resolver stale/superseded esclusi dal corrente, storia leggibile (facts_resolver/shadow_w2).
++
++## 0.10.53 — W-P: presenza con un solo proprietario, stato derivato
++
++- **W-P.1 (misurato):** ipotesi A — Fritz VEDE l'asset 109 (`discovery.fritz.active=True` fresh, MAC `D8:EC:5E:CC:1C:01`). Il lift era legittimo; il difetto era che `classify_asset` non consumava l'evidenza fritz → riderivava `fritz_historical` ≠ stato memorizzato → `structural=1` permanente. Divergenti reali: solo 109.
++- **W-P.2:** l'evidenza si scrive, lo stato si deriva. `classify_asset` ora legge l'evidenza fritz-active fresca (`meta.discovery.fritz`, finestra staleness) e deriva `known` (autorità fritz I5 0.90, MAI `confirmed_present`). `lift_fritz_quarantine_on_active` non scrive più lo stato: registra l'evidenza e ri-esegue la derivazione unica. Mapping `livello→stato` estratto in `_apply_level_meta` (un solo writer, condiviso con `_apply_trust_plan`).
++- **W-P.3:** round-trip a writer fermi (due piani consecutivi `structural==[]`); fixture 109-like con/senza evidenza fritz; D.0.b (fresh→known, mai confirmed_present) + reversibilità; W-C invariata (inventory non solleva né smasha la quarantena). Gate I6 vuoto.
++- **fritz_historical NON assorbente:** un'evidenza fritz-active fresca solleva la quarantena via derivazione; scaduta l'evidenza il piano riporta a `fritz_historical`/`stale_unlocated` senza oscillare.
++- **DEBT-PRESENCE-SOURCE-OUTAGE:** migliorato (fritz vivo → `known`, non stale), ma NON chiuso: manca ancora la distinzione «sorgente non disponibile» vs «dispositivo assente» (richiede segnale di copertura sorgente). Resta APERTO.
++
++## 0.10.52 — W4d: census Asset.name, una scrittura rename, UX truth
++
++- **W4d.1:** censimento lettori `Asset.name`; `presentation_name_for_asset` su API display/porte/topologia/scan; lista (b) → input W5.
++- **W4d.2:** `adopt_name_on_chassis` / `mark_lgs310c_manual` → sola `apply_observation` (niente doppio shadow).
++- **W4d.3:** `obs-ux2.md` matrice «non verificato a runtime» + checklist Michele; LGS via API reali.
++- **W4d.4:** favicon opzione B (anello+hub, stessi token) pubblicata; attuale non sostituita.
++- **F0:** DEBT-FRITZ-TR064-CREDENTIALS chiuso (recreate collector).
++
++## 0.10.51 — F2: revisione UI/UX portale (presenza, Mappa, favicon)
++
++- **F2.0:** gruppo nav MAPPA = Inventario/Impianto/Topologia/…; mappa porte fisica = `/plant`.
++- **F2.1 Plant:** deep-link `?asset=`/`?asset_id=`; pallini SNMP nascosti se non supportati (GS308); limiti I2/I7 in Branch308.
++- **F2.2–3:** banner Fritz muto (Oggi/Dashboard/Inventario); `stale_unlocated` → «copertura sorgente non disponibile»; conflitti R-H nel flusso Oggi; dossier/inventario un nome chassis.
++- **F2.5:** favicon su token `--bg-0`/`--accent`/`--ok`; SVG+ICO+apple-touch; link versionati.
++- **Non toccato:** trust layer (DEBT-PRESENCE-SOURCE-OUTAGE); credenziali Fritz; W5 consumatori.
++
++## 0.10.50 — W4c: rename chassis un-canonico, bonifica una-tantum, boot pulito
++
++- **W4c.1:** `adopt_name_on_chassis` scrive solo `fact_assertions` (subject=chassis); i membri non vengono rinominati né marcati manual; triage sibling su `chassis_role===interface`.
++- **W4c.2:** bonifica `provenance_unreliable` con cutoff `2026-07-27T11:00:00Z`, fuori dal boot; script `scripts/unmark_post_cutoff_provenance.py`.
++- **W4c.3:** `mark_lgs310c_manual` rimosso dal bootstrap (helper one-shot).
++- **W4c.5:** aperto DEBT-PRESENCE-SOURCE-OUTAGE (Fritz muto ≠ device assente).
++
++## 0.10.49 — W4b: provenienza senza traduzione, anti-ballooning, rename chassis
++
++- **W4b.0.a:** shadow writers non traducono più le sorgenti; unknown → rifiuto + `unknown_source`; bonifica `provenance_unreliable` su nmap non ricostruibile.
++- **W4b.0.b:** divergenze ripetute (stesso excl_key/value/source) aggiornano `occurrences` invece di nuove righe.
++- **W4b.1:** LGS310C (asset 3 / chassis 24) marcato manual (provenienza); LGS328C resta `unknown_nonempty`; UI card dichiara l’apparato di appartenenza.
++- **W4b.2:** rename/adopt a soggetto chassis; member → 409 con chassis; conflict-review in Oggi; `asset.name` collegato agli shadow writers.
++- **W4b.3:** aperti DEBT-RH-BEFORE-REFRESH; `_table_bytes` non usa più la size del file DB; DEBT-FRITZ resta aperto (credenziali TR-064 assenti).
++
++## 0.10.48 — W4a: soggetto chassis e soppressione proposte a monte
++
++- **W4a:** NameProposal generate/soppresse per soggetto chassis (manual blocca autorità inferiore; dedup `(chassis, valore)`); risolvibilità calcolata; sibling come interfacce.
++- **W4a.0:** `facts/shadow.py` tracciato; DEBT-IFACE-IP-CARDINALITY-ROLE; DEBT-FRITZ-TR064-CREDENTIALS (STOP-5); `subject_ref_interface` rifiuta multi-NIC senza primary.
++- **Non toccato:** adopt/rename 409 (W4b); shadow `asset.name`.
++- Report: [`docs/obs-w4a.md`](docs/obs-w4a.md).
++
++## 0.10.47 — W2: shadow writers fact_assertion
++
++- **W2:** scritture parallele `asset.iface_ip` (soggetto=interfaccia, excl_key=`asset.iface_ip:{iface_id}`); nessun consumatore legge ancora.
++- **S1:** barriera + SAVEPOINT; kill switch `FACT_SHADOW_WRITERS_ENABLED`; circuit breaker (20k righe / 2k/giorno / 50 MiB).
++- **Non collegato:** `asset.name` (chassis → W4a/W4b). Observability: `GET /api/admin/facts/shadow-stats`.
++- Report: [`docs/obs-w2.md`](docs/obs-w2.md).
++
++## 0.10.46 — W-D-fix: discriminante multi-IP sul dedup
++
++- **X.2:** `entity_key` resta MAC-scoped; `compute_dedup_key` ripristina discriminante IP (`fact_discriminant_for`) — DEBT-TOPO-IP-CONTEXTUAL ripristinato.
++- **X.4:** lift Fritz → `known` (non `confirmed_present`); decisione in `on_fritz_active_evidence` (trust).
++- **Debiti:** DEBT-LASTSEEN-DUAL-SEMANTICS. W2 → **0.10.47**.
++- Report: [`docs/obs-wd-fix.md`](docs/obs-wd-fix.md).
++
++## 0.10.45 — W-D: sblocco gate W2 (T-b, T-e, T-f)
++
++- **T-b:** `entity_key_for` MAC-scoped quando MAC noto; IP-only provisional (`identity_provisional`) + DEBT-PROVISIONAL-IDENTITY-MERGE.
++- **T-e/T-f:** demotion IP chiude `last_seen=now` → `resolve_asset_by_ip_at` trova il detentore storico.
++- **D.0.b:** `lift_fritz_quarantine_on_active` (trust) — quarantena non assorbente; inventory resta bloccata.
++- **Debiti:** DEBT-DOUBLE-CURRENT-IP; Cassiopea ri-caratterizzata chassis (W4a/W4b); alembic unificato in DEBT-ALEMBIC-BASELINE-LEGACY-TABLE. W2 writers → **0.10.46** (poi **0.10.47** in W-D-fix).
++- Report: [`docs/obs-wd.md`](docs/obs-wd.md).
++
++## 0.10.44 — F1-bis: DEBT-RECONCILE-CHURN-1 + riqualifica gate F1
++
++- **W-C:** `inventory_may_set_operational_state` non solleva/smasha `trust_quarantine` (`fritz_historical`) — chiude DEBT-RECONCILE-CHURN-1 (classe, non asset 116). Test zero-iface obbligatorio.
++- **W-B.3:** script una-tantum `scripts/normalize_empty_manual_names.py` (asset 98/150 name manual vuoto → assenza; no bump).
++- **Debiti:** DEBT-IP-CURRENT-SCOPE-PER-ASSET (Cassiopea asset 6). W2 slitta a **0.10.45** (poi rinumerato → **0.10.46** in W-D).
++- Report: [`docs/obs-f1bis.md`](docs/obs-f1bis.md).
++
+ ## 0.10.43 — OBS-IDENTITY W1.5-bis gate closure
+ 
+-- **W1.5-bis:** rimossa soglia E3 inventata (`mac_count_threshold` solo se misurata); test limiti E5-physical (D.2); tool RO `obs_identity_linker_dryrun.py`. Nessun writer identity acceso. W2 shadow writers slitta a **0.10.44**. Debiti: DEBT-RECONCILE-CHURN-1 (asset 116), DEBT-E3-AVAILABLE-FALSE.
++- **W1.5-bis:** rimossa soglia E3 inventata (`mac_count_threshold` solo se misurata); test limiti E5-physical (D.2); tool RO `obs_identity_linker_dryrun.py`. Nessun writer identity acceso. W2 shadow writers slitta a **0.10.44** (poi rinumerato → **0.10.45** in F1-bis). Debiti: DEBT-RECONCILE-CHURN-1 (asset 116), DEBT-E3-AVAILABLE-FALSE.
++- **MAC↔IP (fixture):** classifier puro `mac_ip_policy.py` + 9 test contratto; **non** wired a reconcile/trust (DEBT-MAC-IP-POLICY-WIRE → W7).
+ 
+ ## 0.10.42 — W1.5 identity-evidence (deployata)
+ 
+diff --git a/observatory/VERSION b/observatory/VERSION
+index a548662..8891d66 100644
+--- a/observatory/VERSION
++++ b/observatory/VERSION
+@@ -1 +1 @@
+-0.10.43
++0.10.63
+diff --git a/observatory/docs/KNOWN_DEBT.md b/observatory/docs/KNOWN_DEBT.md
+index 3fe6739..993f3b0 100644
+--- a/observatory/docs/KNOWN_DEBT.md
++++ b/observatory/docs/KNOWN_DEBT.md
+@@ -2,20 +2,127 @@
+ 
+ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite e fuori scope finché non riprese.
+ 
++## DEBT-FINDINGS-OGGI-CONFLUENCE
++
++- **Priorità:** UX (architettura superfici) — aperto UX3 / 0.10.63
++- **Cosa:** la route `/findings` è una coda parallela a Oggi (F-9). Misura in prod (2026-07-28): `/api/findings`=0, `/api/drifts`=0 — la superficie è **vuota** ed è in **shadow** finché lo scoring non è calibrato (Dashboard: «Findings restano in shadow»). Per non frammentare la coda operativa, `/findings` è stata **tolta dalla nav primaria** in 0.10.63.
++- **Raggiungibilità (UX3.2.4 rispettato):** la route esiste ancora ed è raggiungibile dalla Dashboard (ReadySlot «Findings e severità → Apri Findings (shadow)» e card «Findings (shadow) → Apri») e per URL diretto. Nessuna funzione operativa resa irraggiungibile.
++- **Confluenza rinviata:** quando i findings compositi diventeranno autoritativi (scoring calibrato, M4–M5), i loro elementi devono diventare **problemi dentro Oggi** (F-9), non una vista separata. Condizione: calibrazione completata + severità calibrata.
++- **Vietato:** ricreare un hub findings separato da Oggi; esporre findings shadow come alert.
++
++## DEBT-DASHBOARD-READY-SLOTS
++
++- **Priorità:** UX (roadmap M3–M5) — annotato UX3 / 0.10.63
++- **Cosa:** la Dashboard (ora «Panoramica», in nav) mostra `ReadySlot` placeholder («Presenza», «Findings e severità», «Coda attenzione») che in calibrazione dichiarano onestamente «Disponibile dopo la calibrazione» (I2, nessun dato inventato). Non sono rumore da rimuovere: sono slot di roadmap con etichetta d'attesa.
++- **Ripresa:** riempimento a calibrazione conclusa (M3/M4/M5). Nessuna barra muta, nessun valore plausibile.
++- **Vietato:** riempirli con valori stimati prima della calibrazione.
++
+ ## DEBT-RECONCILE-CHURN-1
+ 
+-- **Priorità:** media (bootstrap regime) — aperto in W1.5-bis 2026-07-25
+-- **Cosa:** asset **116** ha `trust_level=fritz_historical` ma `meta.operational_state=active`. Ogni boot1 con `needs_apply=true` / `structural=1` / `T_backup≈80s`; apply trust corregge; `inventory.reconcile_asset_presence` ripristina `active`.
+-- **Attribuzione:** churn preesistente (backup pre-0.10.42), **non** indotto da `identity_evidence`.
+-- **Vietato:** tollerarlo silenziosamente come “regime ok”; sostituire la misura del boot1 con un boot successivo senza dichiararlo.
+-- **Fix quando:** ownership `operational_state` per `fritz_historical` — inventory non deve smashare la quarantena trust senza evidenza reliable; oppure heal one-shot + guard.
++- **Priorità:** media (bootstrap regime) — **CHIUSO in F1-bis / 0.10.44**; **confermato D.6** sul boot1 di **0.10.45** (`structural=0`)
++- **Cosa:** asset **116** aveva `trust_level=fritz_historical` ma `meta.operational_state=active`. Boot1 `needs_apply=true` / `structural=1` / `T_backup≈80s` perché `inventory_may_set_operational_state` permetteva `fritz_historical`→`active` se `reliable=True` (anche con 0 interfacce via reachability).
++- **Fix:** inventory non solleva né smasha `trust_quarantine` (`fritz_historical` op_state o trust_level) — gerarchia invariata `archived > trust_quarantine > trust_protected > inventory_presence`. Test `test_quarantine_zero_interfaces_inventory_cannot_set_active`.
++- **Vietato (storico):** tollerarlo come “regime ok”; caso speciale su `asset_id=116`.
++
++## DEBT-IP-CURRENT-SCOPE-PER-ASSET → ri-caratterizzato come IDENTITÀ CHASSIS (W-D)
++
++- **Priorità:** W4a/W4b (consolidamento chassis) — riaperto/riscritto F1-bis→W-D 2026-07-26
++- **Fatto:** Cassiopea è modellata come **due asset record** — asset **5** «Cassiopea — NIC 1» tiene `192.168.1.3` CURRENT (id 9); asset **6** tiene `192.168.3.24` CURRENT (id 855). L’IP di management non è perso: è sull’altro record. Il ping fallito su `.3.24` dal container api è atteso (lato SPAN), non un sintomo.
++- **Test di non-regressione (da chiudere in W4a/W4b):** dopo consolidamento, Cassiopea = **UN** apparato con **DUE** interfacce; entrambi gli IP correnti ciascuno sulla propria interfaccia; un solo nome canonico.
++- **Vietato ora:** patch dati che forzi due current sullo stesso asset_id / stessa iface.
++- **Doc:** [`docs/obs-f1bis.md`](obs-f1bis.md) · [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-DOUBLE-CURRENT-IP
++
++- **Priorità:** pre-condizione **W3** — aperto W-D 2026-07-26
++- **Cosa:** stesso IP con >1 riga `is_current=1` (stesso asset o asset diversi). Al backfill W3 collideranno con `uq_fact_assertions_current_slot`.
++- **Casi enumerati (live, invariati da X.2):**
++  - `192.168.1.2` — id **3** (asset 2, mgmt) + id **153** (asset 2, fritz)
++  - `192.168.2.108` — id **15** (asset 11) + id **853** (asset 138)
++- **Nota:** W3 richiede una **regola di risoluzione dichiarata PRIMA** del backfill. **NON** collassare ora. Cardinalità non cambiata da X.2 (dedup ≠ `is_current`).
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md) · [`docs/obs-wd-fix.md`](obs-wd-fix.md)
++
++## DEBT-PROVISIONAL-IDENTITY-MERGE
++
++- **Priorità:** post W-D (quando MAC sconosciuto → poi scoperto) — aperto W-D 2026-07-26
++- **Cosa:** `entity_key` IP-only è marcato `payload.identity_provisional=true`, ma non esiste ancora un percorso di **fusione** quando il MAC viene scoperto in seguito (evitare duplicato).
++- **X.2:** invariato — discriminante IP sul dedup non introduce merge. Cardinalità debito invariata.
++- **Vietato:** inventare il merge in questa ondata.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md) · [`docs/obs-wd-fix.md`](obs-wd-fix.md)
+ 
+ ## DEBT-E3-AVAILABLE-FALSE
+ 
+ - **Priorità:** bloccante per E3 finché SNMP non è misurabile
+ - **Cosa:** E3-topological richiede access_port + mac_count misurato + soglia **esplicita** + simultaneità. Con poll SNMP in timeout, E3 = **available=false** (degrada a E2). Nessuna soglia inventata.
+ - **Vincolo:** non promuovere E3 finché `fdb_poll.ok` / misure porta non tornano.
+-- **Ripresa:** W2+ quando SNMP/LLDP writers misurano.
++- **Ripresa:** W2+ quando SNMP/LLDP writers misurano; requisiti accesso/poll in **DEBT-FDB-LLDP-PASSIVE**.
++
++## DEBT-FDB-LLDP-PASSIVE
++
++- **Priorità:** wave futura post W1.5-bis (writers SNMP / presenza) — **non** interrompe W1.5-bis
++- **Cosa:** implementazione iniziale **passiva/read-only** FDB+LLDP: presenza/posizione L2, **non** identità; FDB ≠ ownership; LLDP/CDP solo corroborante (spoofabile). LGS310C/328C: SNMPv3 authPriv, RO, ACL solo Cassiopea, view Bridge/LLDP/ENTITY, no SET, segreti fuori repo/log, timeout/rate limit; LLDP/CDP non abilitato dove non serve. ObservationRaw: switch_id, port, VLAN/bridge-domain, timestamp, age/last_seen, acquisition_method, failure_state; dedupe per **transizione** non per poll. Alert «nuovo MAC su access» solo dopo classificazione misurata access/trunk/uplink/AP/powerline, inizialmente informativo; **niente** quarantena/shutdown auto. Spoof / MAC move / CAM flood / randomized MAC previsti; assenza alert ≠ sicurezza.
++- **Doc:** [`docs/obs-fdb-lldp-passive.md`](obs-fdb-lldp-passive.md)
++- **Vietato:** usarlo come scorciatoia identity/merge; SET SNMP; enforcement automatico porte; dichiarare “rete sicura” perché non ci sono alert.
++
++## DEBT-ENTITY-KEY-MAC-IP
++
++- **Priorità:** era bloccante W2 — **CHIUSO in W-D / 0.10.45** (2026-07-26)
++- **Fix:** `entity_key_for` → MAC quando MAC noto; IP-only → provisional (`identity_provisional`). Test T-b verde.
++- **Residuo correlato (non collassare):** righe IP duplicate / refresh-as-transition — vedi B.2 / DEBT-DOUBLE-CURRENT-IP.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-IP-MIGRATION-NONETYPE
++
++- **Priorità:** era bloccante W2 — **CHIUSO in W-D / 0.10.45** (2026-07-26)
++- **Causa:** `elect_interface_primary` demoteva senza chiudere `last_seen` → `resolve_asset_by_ip_at` tornava `None` a T intermedio.
++- **Fix:** alla demotion, `last_seen = now` se mancante/precedente. T-e / T-f verdi.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-ALEMBIC-BASELINE-LEGACY-TABLE
++
++- **Priorità:** bassa (igiene CI; Alembic **non** gira in prod) — unificato W-D 2026-07-26
++- **Ex:** DEBT-ALEMBIC-MIGRATION-TESTS + baseline disallineata da tabella `observations` droppata.
++- **Sintomi test:** `ix_observations_seen_at`, `assets.chassis_id`, `assets.printer_first_seen` su fixture/alembic.
++- **Vietato:** inseguirli come fix runtime; schema prod = `create_all`.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-IPP-PRECEDENCE (T-c / T-d) — CHIUSO in W6, rank corretto in W6-REVIEW (0.10.57)
++
++- **Priorità:** media (autorità naming) — registrato W-D 2026-07-26, **chiuso** W6 2026-07-27, rank rivisto W6-REVIEW
++- **Test:** `test_ipp_precedence_and_human_category_override` (T-c); `test_snmp_enrichment_creates_proposal_without_overwriting_name` (T-d) — entrambi VERDI
++- **Root-cause:** `create_name_proposal` faceva `db.add` senza sincronizzare la relazione `asset.name_proposals` (proposte create invisibili in-sessione) + `best_guess` usava un secondo prospetto di pesi (`SOURCE_WEIGHT`) non coincidente con I5.
++- **Fix (W6.2 + W6R.1):** `create_name_proposal` → `append` alla relazione (guardia `has_rejected_name_proposal` invariata, non ricrea rifiutate); `best_guess` ordina per `authority_for` (I5) primario + confidence. **Rank corretto in W6-REVIEW:** `ipp=88`/`snmp=87` (sopra dhcp, alteravano I5) → **`ipp=snmp=81`** — unico vincolo misurato `ipp>fritz` (T-c); sotto `dhcp=85`, I5 di prodotto intatto. Posizione tier vs dhcp = decisione di dominio (Michele, STOP-5). Misurato: 0 flip in prod. Nessuna seconda gerarchia. Test non indeboliti.
++
++## DEBT-FDB-UPLINK-PORTAL (T-a) — CHIUSO in W7 (0.10.58)
++
++- **Priorità:** media — registrato W-D 2026-07-26 (preesistente), **chiuso** W7 2026-07-27
++- **Test:** `test_m2_discovery.py::test_fdb_skips_observe_portal_on_uplink_role` — VERDE
++- **Osservato:** `portal_last_seen` valorizzato invece di `None` su ruolo uplink.
++- **Root-cause:** `apply_fdb_observation` (`topology.py`) ricalcolava `interface_role` per-porta prima della guardia portale, declassando `uplink→endpoint` su un singolo hit FDB.
++- **Fix (W7.3):** un hit FDB per-porta non declassa più un'interfaccia strutturale (`uplink`/`infra`); i downgrade restano del reclassify globale. Nessun azzeramento retroattivo di `portal_last_seen`. Test non indebolito.
++
++## DEBT-MAC-IP-POLICY-WIRE — APERTO (wire additivo 0.10.58; policy piena CONSULTIVA 0.10.59; autoritativa rinviata)
++
++- **Priorità:** wave presence — **wire additivo fatto** (0.10.58); **policy piena esposta come CONSULTIVA** (0.10.59); attivazione autoritativa delle regole #3/#5 **rinviata e condizionata**.
++- **Cosa:** policy dominio MAC↔IP (chassis ≥1 IP corrente; eccezione powerline/510E; `present_l2_unaddressed`; supersession binding) — classifier `api/app/services/mac_ip_policy.py` + test contratto.
++- **Fatto (W7.2, deploy 1/2, 0.10.58):** `classify_mac_ip_presence` collegato a `reconcile_asset_presence` come **solo segnale di presenza** (`present_l2_unaddressed` + `l2_only_allowed` → `reliable`); mai forza `stale`/`superseded` (F-7 intatto, non secondo autore). Misurato 0 cambi in prod.
++- **F-14 — il wire è INERTE per costruzione (W7C-FIX, 0.10.59):** ogni decisione consumata dal wire (`present_l2_unaddressed`, `l2_only_allowed`) richiede `mac_fdb_fresh=True`; ma la stessa porta fresca genera in `reconcile_asset_presence` `physical_reasons=["FDB recente"]`, quindi `reliable` era **già** `True` senza il wire. Il wire non fa lavoro su `reliable` a prescindere dalla freschezza FDB. Misura corretta prod (`scripts/w7c_measure.py`, freschezza FDB reale): **0 hit** — vedi `docs/obs-w7close.md` §W7C-FIX.1. Correlato a DEBT-FDB-POLL-STALE (oggi 0 porte fresche).
++- **Fatto (W7C.5, 0.10.59) — policy piena CONSULTIVA:** `inventory.mac_ip_policy_consultation` (read-only) + endpoint admin `GET /api/admin/mac-ip-policy-consultation` calcolano il verdetto della policy completa (regole #1..#5) per ogni asset e lo espongono come **divergenza visibile** accanto allo stato reale e all'evidenza che tiene presente il device. **Non scrive, non guida `operational_state`/`trust_level`/`reliable`** (F-7). Le regole #3/#5 **NON sono autoritative**.
++- **Rinviato (attivazione autoritativa — decisione dominio Michele + correzione regole):** le regole #3/#5 marcherebbero `stale` device la cui presenza è dimostrata nello stesso istante da altre evidenze (FritzBox router, powerline, Sky box) — dissentono dalla realtà osservabile su una quota rilevante del parco e sbagliano sul gateway. **Il difetto è nella regola, non negli asset.** L'attivazione autoritativa è **condizionata alla correzione** delle regole che dissentono dalla realtà; fino ad allora il verdetto resta consultivo (I3). Blast-radius misurato read-only prod: vedi `docs/obs-w7close.md` (enumerazione per id).
++- **Doc:** [`docs/obs-currency-mac-ip-policy.md`](obs-currency-mac-ip-policy.md), [`docs/obs-w7close.md`](obs-w7close.md)
++- **Vietato:** attivare #3/#5 in modo autoritativo prima della correzione delle regole; usare la policy come scorciatoia di fusione chassis; inventare management IP.
++
++## DEBT-FDB-POLL-STALE — APERTO (copertura FDB ferma; resa visibile in UI 0.10.60)
++
++- **Priorità:** presentazione fatta (0.10.60); ripristino del polling FDB **fuori scope UX2** (non diagnosticare, F-13).
++- **Cosa (misura F-13, RO 2026-07-27):** 46 switch port, **38 con `last_fdb_at`**, **0 freschi nelle 24h**; il più recente è **2026-07-25 14:52** (~57 h). `fdb_poll.ok=false` sui core LGS328C/LGS310C (SNMP timeout); GS308EP senza FDB per progetto.
++- **Perché debito:** la mappatura porta→device (FDB) non si aggiorna; i dati di porta mostrati in Impianto/Topologia/Monitor sono la persistenza dell'ultima FDB riuscita. Un dato di porta vecchio di giorni **non va presentato come corrente** (I2/I3).
++- **Fatto (UX2.2.4, 0.10.60) — solo presentazione:**
++  - `web/src/observatoryUx.js` `fdbCoverageStatus()` (helper puro, test) calcola la freschezza dalla `last_fdb_at` di porta, **mai** dall'ora del poll fallito.
++  - Impianto (`web/src/views/Plant.vue`): banner «copertura FDB non aggiornata: ultima mappatura … (circa N h fa)» + badge per-switch corretto (non spaccia più `fdb_poll.at` fallito come «dati al … (ok)»).
++  - Monitor (`web/src/views/Monitoring.vue`): traffico/errori resi «—» quando `snmp_poll.ok≠true` (assente ≠ 0); poll marcato «non riuscito».
++- **Correlato:** DEBT-PRESENCE-SOURCE-OUTAGE (copertura sorgente presence), DEBT-E3-AVAILABLE-FALSE (SNMP/LLDP non misurati), DEBT-MAC-IP-POLICY-WIRE §F-14 (con 0 porte fresche il wire non ha nulla su cui agire).
++- **Vietato:** diagnosticare o riavviare il polling FDB dentro UX2 (F-13); mostrare la data del poll fallito come freschezza del dato; presentare occupazione porte vecchia come corrente.
+ 
+ ## DEBT-MIRROR-SOURCES
+ 
+@@ -65,20 +172,65 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+ - **Residuo:** riprendere DVR (#2) / LUMIN / openhabian dal toggle critico se servono; non riattivare Kuma runtime.
+ - **Vietato:** ripristinare Kuma come dipendenza; delete delle righe kuma archiviate.
+ 
+-## DEBT-TOPO-IP-CONTEXTUAL (CHIUSO v0.9.0)
++## DEBT-TOPO-IP-CONTEXTUAL
+ 
+-- **Priorità:** bassa (latente → perimetro ampliato 2026-07-21) — ex BUG 3 declassato
++- **Priorità:** bassa (latente → perimetro ampliato 2026-07-21; discriminante raw ripristinato 0.10.46) — ex BUG 3 declassato
++- **Invariante:** multi-IP sullo stesso MAC **non collassa** nello store raw (fatti distinti).
++- **Stato raw:** **violato in 0.10.45** (`dedup_key` usava solo `entity_key` MAC-scoped → 5 IP → 1 riga). **Ripristinato in 0.10.46:** `entity_key` resta MAC; `compute_dedup_key` aggiunge discriminante IP (`fact_discriminant_for`). Identità ≠ dedup. Vedi [`docs/obs-wd-fix.md`](obs-wd-fix.md).
+ - **Perimetro definitivo:** multi-IP per ruolo (`primario` / `vpn` / `mgmt` / `servizi`). `endpoint.ip_change` **solo sul primario**. Casi noti:
+   - **FRITZ!Box** (asset 1): 5 IP contemporanei sullo stesso MAC — `.1.1` primario, `.1.9` VPN LAN, `.1.4`/`.1.5`/`.1.6` (ruolo TBD servizi/altro); ×223 `ip_change`/24h documentati poi silenziati.
+-  - **GS308EP** (asset 4): `.1.8` mgmt (fatto). `.3.20` = binding Fritz storico sullo stesso MAC, **ownership da confermare** (non inventariale; non SPAN — SPAN=p22/NIC2 `.3.24` / sink `10.255.255.2/30`). Vedi `docs/obs-ux-ip-308-verifica.md`.
++  - **GS308EP** (asset 4): `.1.8` mgmt (fatto). `.3.20` = binding Fritz storico sullo stesso MAC, **ownership da confermare** (non inventariale; non SPAN — SPAN=p22/NIC2 `.3.24` / sink `10.255.255.2/30`). Vedi [`docs/obs-ux-ip-308-verifica.md`](obs-ux-ip-308-verifica.md).
+   - **Cassiopea (ex-bond):** `DEBT-LAG-CASSIOPEA` **CHIUSO** 21/07/2026 (eth0 LAN / eth1 SPAN).
+-- **Nota architetturale:** il dedup raw per-MAC scarta le osservazioni L3 multi-IP (sul Fritz 4/5 IP perse nel raw, `hit_count≈5` ma `l3.ip` resta solo `.1.1`) mentre l’upsert legacy scrive comunque i binding e gli `ip_change`: le due pipeline divergono. Il fix dovrà includere `dedup_key` **MAC+IP** per le osservazioni L3.
+-- **Sintomo latente (BUG 3 originale):** in [`_resolve_ap_asset`](../api/app/services/topology.py) il fallback per-IP usa `is_current` invece di `resolve_asset_by_ip_at`. Oggi non gira (0 client Wi‑Fi IP-only su 41).
+-- **Fix quando servirà:** (1) ruoli IP + `ip_change` solo primario; (2) dedup L3 MAC+IP; (3) nel solo ramo (b) di `_resolve_ap_asset`, `resolve_asset_by_ip_at` + `observed_at`; tie→None→fall-through. NON toccare `is_current` alla cieca su multi-NIC storiche.
++- **Nota architetturale:** il dedup raw per-MAC scartava le osservazioni L3 multi-IP (sul Fritz 4/5 IP perse nel raw, `hit_count≈5` ma `l3.ip` resta solo `.1.1`) mentre l’upsert legacy scrive comunque i binding e gli `ip_change`: le due pipeline divergevano. Fix 0.10.46: `dedup_key` MAC+IP per L3.
++- **Sintomo latente (BUG 3 originale / consumatore di correttezza) — MIGRATO W5 (0.10.54):** [`_resolve_ap_asset`](../api/app/services/topology.py) usa ora `resolve_asset_by_ip_at(ap_ip, observed_at)` (contestuale) invece di `is_current`; tie → None → fall-through sul nome. Gate G5 a writer fermi: 62 associazioni Wi-Fi, 0 sul path `ap_ip` → **0 differenze** (fix latente, equivalenza-preservante). Il facet «consumatore di correntezza» di questo debito è chiuso; la cardinalità/ruolo multi-IP resta tracciata in **DEBT-IFACE-IP-CARDINALITY-ROLE** (pre-condizione W3). Vedi [`docs/obs-w5.md`](obs-w5.md).
++- **Copia ingest chiusa — W5-bis (0.10.55):** [`wifi_associations.resolve_ap_asset`](../api/app/services/wifi_associations.py) (risoluzione AP lato ingest Wi-Fi) era rimasta su `is_current` dopo la migrazione W5 della sola copia di `topology`; ora usa `resolve_asset_by_ip_at(ap_ip, observed_at)` con `observed_at` dall'associazione; tie → None → fall-through sul nome (I2). Equivalenza-preservante sui dati correnti (a ingest `observed_at ≈ now`). Copertura: `tests/test_w5_consumers.py` (contestuale + tie). Vedi [`docs/obs-w5bis.md`](obs-w5bis.md).
++- **Fix quando servirà:** (1) ruoli IP + `ip_change` solo primario; (2) dedup L3 MAC+IP *(fatto 0.10.46)*; (3) nel solo ramo (b) di `_resolve_ap_asset`, `resolve_asset_by_ip_at` + `observed_at`; tie→None→fall-through. NON toccare `is_current` alla cieca su multi-NIC storiche.
+ - **Riattivazione:** attribuzione topologia sbagliata su IP DHCP migrato, oppure ripresa del rumore `ip_change` multi-ruolo dopo unmute.
+-- **Stato FASE B (codice, 2026-07-21):** elezione + `role` + dedup `mac|ip` + `ip_change` solo primario — in tree, pre-deploy. Bonifica storica duplicate `(interface_id, ip)` resta fuori scope. UI secondari = FASE C.
++- **Stato FASE B (codice):** elezione + `role` + dedup `mac|ip` + `ip_change` solo primario — in tree. Bonifica storica duplicate `(interface_id, ip)` resta fuori scope. UI secondari = FASE C.
+ - **Bonifica storica:** eventuali righe duplicate `(interface_id, ip)` pre-FASE-B restano; niente UniqueConstraint finché non c’è purge dedicato (fuori scope).
+ 
++## DEBT-IFACE-IP-CARDINALITY-ROLE
++
++- **Priorità:** pre-condizione **W3** — aperto W4a 2026-07-26
++- **Cosa:** `asset.iface_ip` ha `cardinality=single` per interfaccia e il writer shadow registra **solo l’IP eletto** (`elect_interface_primary`). Sul Fritz (asset 1) esistono cinque IP simultanei (`.1.1` primario, `.1.9` VPN, `.1.4`/`.1.5`/`.1.6` servizi) — i non-eletti **non** compaiono nel layer assertion.
++- **I2:** assenza di un IP in `fact_assertions` **non** significa che l’IP non esista.
++- **W4b.3.3:** `current()` senza `excl_key` e con più righe `current` su cardinality `single` sceglie in silenzio per authority — collegato a questo debito; non collassare ora.
++- **Prima di W3:** `excl_key` deve acquisire il **ruolo** (`fact_key + interface_id + role`), cardinalità `scoped`. NON inventare i ruoli mancanti ora (K3).
++- **Vietato in W4a/W4b:** implementare il ruolo nella excl_key; collassare i doppi-current.
++- **Doc:** [`docs/obs-w4a.md`](obs-w4a.md) · legato a DEBT-TOPO-IP-CONTEXTUAL
++
++## DEBT-RH-BEFORE-REFRESH
++
++- **Priorità:** media (correttezza resolver) — aperto W4b 2026-07-27
++- **Cosa:** `_check_rh_conflict` gira **prima** di R-A refresh. Ogni refresh riesegue la scansione cross-fact; un valore già `current` può diventare `conflict_review` per un cambiamento altrove senza che l’osservazione in ingresso sia nuova.
++- **Vietato in W4b:** correggere l’ordine ora.
++- **Doc:** [`docs/obs-w4b.md`](obs-w4b.md)
++
++## DEBT-LASTSEEN-DUAL-SEMANTICS
++
++- **Priorità:** pre-condizione **W3** — aperto W-D-fix 2026-07-26
++- **Cosa:** `elect_interface_primary` scrive `last_seen = now` alla demotion (chiusura amministrativa di intervallo) nello stesso campo «ultima osservazione».
++- **Nota W3:** prima del backfill dichiarare per ogni campo quale semantica porta; le righe con `last_seen` amministrativo daranno `valid_to`, non un’osservazione.
++- **Vietato ora:** correggere / biforcare il campo in questa ondata.
++- **Doc:** [`docs/obs-wd-fix.md`](obs-wd-fix.md)
++
++## DEBT-FRITZ-TR064-CREDENTIALS
++
++- **Priorità:** operativa — **CHIUSO F0 2026-07-27**
++- **Chiusura misurata:** Michele ha ripristinato le chiavi in `.env`. `docker compose restart collector` **non** ricarica env (USERNAME/PASSWORD len=0 nel container → ancora 401). Dopo `up -d --force-recreate --no-deps collector`: chiavi presenti nel container; hostlist **94** host; mesh `available` **6** assoc; **0** occorrenze 401/`credentials_invalid` post-recreate. Valori segreti mai letti/riportati.
++- **Doc:** [`docs/obs-fritz-restore.md`](obs-fritz-restore.md)
++
++## DEBT-PRESENCE-SOURCE-OUTAGE
++
++- **Priorità:** alta (I2/I4 + churn boot) — aperto W4c 2026-07-27; **NON corretto in W4c** (W4c.5.2); **resta APERTO** con Fritz vivo (F0)
++- **Fatto misurato (W4b boot1):** `structural=4` — asset **136, 140, 145, 148** `meta.operational_state` `active` → `stale_unlocated`. AD finestra 24h sceso 69→62.
++- **Meccanismo:** `classify_asset` / `reconcile_trust_history` in [`api/app/services/trust.py`](../api/app/services/trust.py) (~170–189, ~474–489, ~618–621): senza `portal_last_seen` recente e senza protezione → bucket `stale_unlocated`. Con Fritz TR-064 muto i refresh hostlist non aggiornano la presenza → l’assenza della **sorgente** viene trattata come assenza del **dispositivo**.
++- **Principio:** quando la sorgente che copriva un device è indisponibile, lo stato corretto è «non misurato» / «copertura sorgente non disponibile», non «assente».
++- **F0 (Fritz vivo):** evidenza Fritz corrente su 88 asset; lift live solo **109** → `known` (non `confirmed_present`). **136** ha `discovery.fritz.active=True` ma resta `stale_unlocated` perché `lift_fritz_quarantine_on_active` esce solo da `fritz_historical`. Trust layer non corretto in F0/W4d.
++- **Vietato in W4c/F0:** correggere il trust layer. UI (F2 / **0.10.51**): banner Fritz + copy «copertura sorgente non disponibile».
++- **W-P (0.10.53) — trust layer corretto, debito NON chiuso:** `classify_asset` ora legge l'evidenza fritz-active fresca e deriva `known` (autorità fritz, mai `confirmed_present`); il lift non scrive più lo stato (evidenza→derivazione). Effetto misurato: 109 converge (fine oscillazione), 136 sollevato a `known`. Questo distingue «fritz vivo→known» da «fritz stale→stale/historical», MA **non** distingue ancora «sorgente non disponibile» (outage TR-064) da «dispositivo assente»: durante un'outage l'evidenza invecchia oltre la finestra e l'asset ridiscende. Serve un segnale di **copertura sorgente** (sensor_run/coverage) per chiudere. **RESTA APERTO** (non chiuso per prossimità, W-P.2.7).
++- **Doc:** [`docs/obs-w4c.md`](obs-w4c.md) · [`docs/obs-ux2.md`](obs-ux2.md) · [`docs/obs-fritz-restore.md`](obs-fritz-restore.md) · [`docs/obs-wp.md`](obs-wp.md)
++
+ ## DEBT-A2-CASCADE-AP
+ 
+ - **Priorità:** bassa (latente) — ex nota di confine BUG 1 / A2
+diff --git a/observatory/docs/obs-guida-uso.md b/observatory/docs/obs-guida-uso.md
+new file mode 100644
+index 0000000..2788a09
+--- /dev/null
++++ b/observatory/docs/obs-guida-uso.md
+@@ -0,0 +1,123 @@
++# Guida d'uso — LAN Observatory
++
++Scritta per l'operatore. Per ogni situazione reale: **dove si vede**, **cosa significa**,
++**cosa puoi fare**, **cosa succede dopo**, **cosa non si può sapere**. Niente termini tecnici interni.
++
++Aprendo il portale sei **sempre su Oggi**: è la coda unica di cose da decidere. Le altre schermate
++servono ad approfondire (Dossier), vedere le porte (Impianto), come sono collegati i device
++(Topologia) e la salute (Monitor). La **Panoramica** dà il quadro d'insieme (stato Internet,
++calibrazione, copertura). Da una card di Oggi apri il Dossier, l'Impianto, la Topologia o il
++Monitor del device con **un solo clic**.
++
++Su schermo piccolo la navigazione è dietro il pulsante **☰ Menu** in alto; la Topologia mostra
++una **lista gerarchica** (chi è attaccato a cosa) al posto del grafo.
++
++---
++
++## 1. È comparso un device nuovo
++
++- **Dove:** in **Oggi**, tra le voci in cima; e in **Inventario**, riquadro «Nuovi».
++- **Cosa significa:** un apparato mai visto prima si è presentato in rete. Finché non lo
++  riconosci resta segnalato.
++- **Cosa puoi fare:** apri il suo **Dossier** per capire cos'è (marca, cosa annuncia, dove è
++  attaccato). Se il nome proposto è giusto, **adottalo**; se è rumore, **ignora**.
++- **Cosa succede dopo:** adottando, il device prende quel nome ovunque; ignorando, esce dalla
++  coda ma resta in Inventario.
++- **Cosa non si può sapere:** se il device non annuncia nulla e non è raggiungibile, marca e
++  modello possono restare indeterminati: vengono dichiarati «non determinati», non inventati.
++
++## 2. Un nome è sbagliato
++
++- **Dove:** in **Oggi**, sezione «Nomi da decidere → Da verificare»; o nel **Dossier** del device.
++- **Cosa significa:** c'è un nome già scelto a mano e una proposta automatica che lo contraddice,
++  oppure il nome attuale è debole e ne esiste uno migliore.
++- **Cosa puoi fare:** dal Dossier confermi a mano il nome giusto. In Oggi puoi adottare la
++  proposta solo se vuoi **sostituire** la scelta manuale.
++- **Cosa succede dopo:** il nome che confermi diventa quello ufficiale; l'altro resta come
++  storico/divergenza, non sparisce.
++- **Cosa non si può sapere:** l'automatismo non decide al posto tuo quando c'è una scelta
++  manuale: la tua scelta ha sempre la precedenza.
++
++## 3. Un apparato con più schede di rete va rinominato
++
++- **Dove:** nel **Dossier**. Un apparato con più interfacce (multi-NIC) è mostrato come **un solo
++  device**; le singole schede compaiono come sue interfacce, non come device separati.
++- **Cosa significa:** rinominando l'apparato, il nome vale per tutto l'insieme, non per la
++  singola scheda.
++- **Cosa puoi fare:** rinomina l'apparato dal suo Dossier.
++- **Cosa succede dopo:** tutte le interfacce di quell'apparato mostrano lo stesso nome.
++- **Cosa non si può sapere:** le singole schede non hanno un nome proprio per scelta di
++  progetto: non cercare di nominarle una per una.
++
++## 4. Una porta non torna / un cavo è cambiato
++
++- **Dove:** in **Impianto** (le porte dei switch) e in **Topologia** (dove è attaccato).
++- **Cosa significa:** l'associazione porta → device può non corrispondere alla realtà attuale.
++- **Cosa puoi fare:** in Impianto correggi patch, ruolo o note della porta.
++- **Cosa succede dopo:** la correzione manuale resta finché non la cambi.
++- **Cosa non si può sapere / ATTENZIONE:** la mappa porte si aggiorna da una fonte che in questo
++  momento **è ferma** (vedi punto 8). Se in cima a Impianto vedi «copertura FDB non aggiornata»,
++  l'occupazione delle porte mostrata può essere **vecchia di giorni**: verifica prima di fidarti.
++
++## 5. Un device è sparito
++
++- **Dove:** in **Inventario**, riquadro «Non visti di recente»; e nel **Dossier** (stato di presenza).
++- **Cosa significa:** non lo vediamo da oltre 24 ore **oppure** la fonte che lo rilevava non è
++  disponibile. «Non visto» non vuol dire per forza «spento».
++- **Cosa puoi fare:** apri il Dossier per vedere l'ultima volta che è stato visto e da quale fonte.
++- **Cosa succede dopo:** se torna a farsi vedere, rientra automaticamente tra gli attivi.
++- **Cosa non si può sapere:** se la fonte di rilevamento è muta, non possiamo distinguere «assente»
++  da «non misurabile»: lo diciamo esplicitamente invece di dare un numero finto.
++
++## 6. C'è un conflitto da verificare
++
++- **Dove:** in **Oggi**, tra i problemi (voce «conflitto»).
++- **Cosa significa:** due informazioni forti si contraddicono (es. due nomi diversi con pari
++  autorevolezza).
++- **Cosa puoi fare:** apri il Dossier e conferma a mano quale valore tenere.
++- **Cosa succede dopo:** il valore che confermi diventa quello corrente; l'altro resta storico.
++- **Cosa non si può sapere:** lo strumento non «indovina» il vincitore: aspetta la tua conferma.
++
++## 7. Il FRITZ!Box non risponde
++
++- **Dove:** banner in cima al portale quando la fonte FRITZ!Box è muta.
++- **Cosa significa:** una delle fonti principali di presenza non sta rispondendo; alcuni device
++  potrebbero risultare «non visti» solo per questo.
++- **Cosa puoi fare:** è una segnalazione informativa; la presenza va letta con cautela finché la
++  fonte non torna.
++- **Cosa succede dopo:** quando la fonte torna, la presenza si riallinea da sola.
++- **Cosa non si può sapere:** durante l'assenza della fonte, la presenza di alcuni device non è
++  misurabile con certezza.
++
++## 8. I dati di porta sono vecchi
++
++- **Dove:** banner in cima a **Impianto** e badge su ogni switch; in **Monitor**, colonne traffico
++  ed errori.
++- **Cosa significa:** la mappa che dice «quale device sta su quale porta» non si aggiorna da un po'.
++  In Impianto è scritto **quando** è stata l'ultima misura (es. «circa 55 ore fa»).
++- **Cosa puoi fare:** usa quei dati come **ultima fotografia nota**, non come stato attuale.
++- **Cosa succede dopo:** quando la fonte tornerà ad aggiornarsi, la mappa si aggiornerà.
++- **Cosa non si può sapere:** per gli switch che non rispondono, **traffico ed errori sono
++  mostrati come «—» (non disponibili)**, non come «0»: uno zero direbbe una cosa falsa.
++
++## 9. Un'inferenza dell'assistente propone un nome
++
++- **Dove:** nel **Dossier** («Proposte nome») e in **Oggi**, dove la proposta porta l'etichetta
++  **«Inferenza AI»** con la percentuale di confidenza.
++- **Cosa significa:** è un'**ipotesi** dell'assistente, non un fatto misurato. È sempre marcata come
++  tale, con la confidenza e le evidenze usate.
++- **Cosa puoi fare:** valuta le evidenze; adotta solo se ti convince. Resta sempre sotto la tua scelta.
++- **Cosa succede dopo:** se adotti, diventa il nome; se non fai nulla, resta solo una proposta.
++- **Cosa non si può sapere:** l'inferenza può sbagliare — per questo non è mai presentata come
++  certezza e non modifica da sola lo stato del device.
++
++## 10. Vista di uno switch senza telemetria (es. GS308EP)
++
++- **Dove:** in **Impianto** (riquadro dello switch e «Ramo GS308EP») e in **Topologia** (ramo).
++- **Cosa significa:** di questo switch sappiamo con certezza nome/modello, che risponde al ping sul
++  suo indirizzo di gestione attuale, la mappa porte inserita a mano, e cosa c'è a valle dedotto dai
++  dati dello switch a monte (con confidenza dichiarata).
++- **Cosa puoi fare:** consultare e correggere la mappa porte manuale in Impianto.
++- **Cosa non si può sapere (dichiarato, non nascosto):** porte interne, contatori, consumo PoE,
++  traffico locale della porta. Non vengono mostrati numeri finti né barre vuote. L'indirizzo storico
++  del passato è marcato come storico, non come attuale.
+diff --git a/observatory/docs/obs-ux3.md b/observatory/docs/obs-ux3.md
+new file mode 100644
+index 0000000..13b6c7c
+--- /dev/null
++++ b/observatory/docs/obs-ux3.md
+@@ -0,0 +1,171 @@
++# obs-ux3 — Ultima ondata correttiva UI/UX (0.10.62 → 0.10.63)
++
++Chiusura dei quattro difetti rinviati, esecuzione di ciò che UX2 non aveva eseguito,
++decisione dell'architettura delle superfici. Metodo: interfaccia **esercitata** (resa reale
++headless Playwright/Chromium = **R**; payload API reale di produzione = **A**). Nessun «OK» da
++lettura di codice.
++
++Base raw canale: `https://raw.githubusercontent.com/Mooflotic/obs-exchange/main/`.
++
++---
++
++## 0. Ondate e assert di produzione
++
++| Ondata | Versione | Contenuto | Assert (una riga) |
++|---|---|---|---|
++| 1 | **0.10.62** | D3 nav mobile · D4 troncamenti Impianto · D7 Topologia mobile | `needs_apply=false · structural=0 (piano1/2/3) · convergenza OK · breaker closed · observations=0 · version=0.10.62 · assets=151 ip_current=101 NP=408(77) FA=261(68) AD=68` |
++| 2 | **0.10.63** | D8 Dashboard→Panoramica · `/`→`/oggi` · architettura superfici (findings/suggestions) | `needs_apply=false · structural=0 (piano1/2/3) · convergenza OK · breaker closed · observations=0 · I6 vuoto · version=0.10.63 · assets=151 ip_current=99 NP=408(77) FA=261(68) AD=68` |
++
++Rollback ammesso: `v0.10.61` (prima dell'ondata), poi `v0.10.62`.
++
++### Delta enumerati per id (non per conteggio)
++- **assets 151 · NP 408 (pending 77) · FA 261 (current 68) · AD 68 · unknown_source 0 · breaker closed**: invariati in entrambe le ondate.
++- **ip_current**: 100 (baseline 0.10.61) → **101** (0.10.62) → **99** (0.10.63). Entrambe le ondate toccano **solo frontend** (bundle web + `/VERSION`): nessun writer SQL/DB toccato → il delta **non è attribuibile al deploy**. È presenza Fritz live.
++  - Baseline enumerabile congelata a 0.10.62 (101 id): `1,3,5,7,9,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43,45,47,49,51,53,55,57,61,65,67,69,73,78,79,81,83,85,87,89,91,93,95,97,99,101,103,105,108,109,111,113,115,117,119,121,123,125,127,129,131,132,134,135,136,137,138,139,140,141,144,145,146,147,149,151,152,153,154,156,157,158,160,161,162,163,164,165,166,167,168,169,170,171,227,853,855,858,859,860,861`.
++  - A 0.10.63 **caduti** (baseline→ora): **ip_id 78** (`192.168.2.101`, asset 43, `source=fritz`) e **ip_id 108** (`192.168.2.195`, asset 58, `source=fritz`), entrambi `is_current=False` con `last_seen 2026-07-27 22:41:16` (stesso ciclo di osservazione Fritz). Nessun id aggiunto. Nuova baseline enumerabile per l'ondata successiva = i 99 id (baseline − {78,108}).
++
++---
++
++## 1. UX3.1 — I quattro aperti, chiusi (non in checklist)
++
++### D3 — Navigazione mobile (sidebar ~280px) → **RIPARATO** (R)
++- **Causa (frontend):** sotto 800px la sidebar diventava una barra a più righe: gli 11 link andavano a capo, occupando ~280px prima del contenuto.
++- **Fix:** `App.vue` + `matrix.css`. Barra mobile compatta (**LAN Observatory · ☰ Menu · admin · Esci**); il menu si apre a comparsa a piena larghezza in colonna, tocco comodo, e si **chiude a ogni cambio rotta**. Desktop invariato. Nessun tocco a auth/ruoli (K10).
++- **Verifica (R):** `obs-ux3-oggi-mobile.png` (barra collassata), `obs-ux3-nav-mobile-open.png` (menu aperto: tutte le voci raggiungibili). Test funzionale: hamburger apre il menu e il link Topologia è visibile (`nav_open_ok=true`).
++
++### D4 — Troncamenti in Impianto → **RIPARATO ALLA RADICE** (R)
++- **Causa condivisa (stessa *classe* di D2):** `white-space:nowrap` + `overflow:hidden` + ellissi su testo che deve andare a capo. In Impianto è testo semplice (non `DenseRow`).
++- **Punti enumerati e corretti** (`Plant.vue`):
++  1. `.fdb-status` — banner copertura FDB: **la data dell'ultima misura non va mai troncata** (F-13) → ora va a capo a **ogni** larghezza (`white-space:normal; overflow:visible`).
++  2. `.switch-role` — ruolo/posizione switch → a capo su mobile.
++  3. `.port-foot .patch` — etichetta patch porta → a capo su mobile.
++- **Verifica (R):** `obs-ux3-plant-mobile.png` — banner integrale visibile: «Copertura FDB non aggiornata: ultima mappatura porte da FDB il **25/07/2026, 16:52:35 (circa 55 h fa)**…» senza ellissi.
++- **Nota (K4):** `DenseRow` in prod è usato solo in `Oggi.vue` (già gestito, D2) e `AssetHabits.vue` (righe singole, nessun troncamento multilinea osservato). Nessun altro punto condivide la causa su contenuto multilinea.
++
++### D7 — Grafo Topologia su mobile → **RIPARATO con rappresentazione alternativa** (R)
++- **Causa (frontend):** il grafo è uno *stage* a coordinate assolute in un contenitore scroll; sotto 800px diventa una finestrella su una mappa grande → inutilizzabile.
++- **Fix:** `Topology.vue` — sotto 800px il grafo è sostituito da una **lista gerarchica per livello** (Radice → Livello 1/2/3) che risponde alla stessa domanda («dove sta un apparato, a cosa è attaccato»). Riusa i nodi già posizionati da `layoutTopology`; per ogni nodo: nome canonico, IP/tipo, «↳ collegato a <padre>»; gli endpoint restano toccabili per isolarne il percorso. I controlli zoom (inerti senza grafo) sono nascosti su mobile.
++- **Verifica (R):** `obs-ux3-topology-mobile.png` — lista con 46 righe, gerarchia con «↳ collegato a FRITZ 5690 Pro». Desktop invariato (`obs-ux3-topology-desktop.png`): grafo presente, lista nascosta (`desktop_graph_visible=true`, `topo_graph_hidden` su mobile=true).
++
++### D8 — Dashboard fuori dalla navigazione → **DECISO CON LA MISURA ED ESEGUITO** (A+R)
++- **Misura (A, `/api/dashboard`):** la Dashboard mostra ciò che **nessun'altra vista** mostra — stato calibrazione osservatorio (giorno **3/14**), **salute Internet** (capacità/traffico FRITZ!Box, speedtest NAS, prossimo test), copertura discovery, salute sensori, KPI device+monitor.
++- **Decisione: (a) utile e distinta → entra in navigazione** come **«Panoramica»** (gruppo RADAR). Coerenza con F-9: `/` non è più la Dashboard ma **reindirizza a `/oggi`** (il cardine è la landing); la Dashboard vive su `/dashboard`.
++- **Verifica (R):** `obs-ux3-dashboard-desktop.png`; smoke: `/`→`/oggi`, nav contiene «Panoramica», Dashboard raggiungibile con la card Internet.
++
++---
++
++## 2. UX3.2 — Architettura delle superfici (dati reali)
++
++Conteggi di produzione (A, 2026-07-28) e decisione. Overlap = se elementi/azioni compaiono anche in Oggi.
++
++| Route | Domanda | Elementi (prod) | Azioni | Overlap Oggi | Decisione |
++|---|---|---|---|---|---|
++| `oggi` | Cosa devo fare adesso | coda problemi (nomi 0/24/39, conflitti, chassis, move) | adotta/verifica/ignora + deep-link | — (è il cardine) | **TIENE** |
++| `dossier/:id` | Tutto su un device | 1 device (identità, connessione, decidi, abitudini, note) | rinomina, note | apribile da Oggi (1 clic) | **TIENE** |
++| `inventory` | Elenco/ricerca device | 113 asset (`/api/assets`) | filtri, apri dossier | no (Oggi è coda, non elenco) | **TIENE** |
++| `plant` | Porte e patch (modifica) | switch + porte | modifica patch/ruolo/note | apribile da Oggi (move FDB) | **TIENE** |
++| `topology` | Dove/come collegati | 46 nodi | seleziona endpoint | apribile da Oggi | **TIENE** |
++| `monitoring` | Salute/reachability | 16 monitor + salute switch | (read-only poll) | apribile da Oggi | **TIENE** |
++| `timeline` | Cronologia eventi | 100 eventi | — (storico) | no | **TIENE** |
++| `actions` | Scansioni/errori discovery autorizzati | 2 richieste + storico scan | approva/esegui scan | no | **TIENE** |
++| `dashboard` | Quadro rete/Internet/calibrazione | KPI + Internet + calibrazione | link a viste | no | **TIENE** (D8: in nav come Panoramica) |
++| `suggestions` | Proposte nome | 2 pending | (via Oggi) | **sì** (redirect `/suggestions`→`/oggi`) | **CONFLUITA** (già) |
++| `findings` | Findings compositi (shadow) | **0** findings, **0** drift | — | no (vuota, in shadow) | **CONFLUISCE (differita)** → tolta dalla nav |
++| `osservatorio` / `come-funziona` | Teaser roadmap datati | 0 (stub) | — | no | **TIENE con riserva** (roadmap, vedi checklist) |
++
++### Esecuzione (cosa spariva, dove ricompare, link aggiornati)
++- **`suggestions`**: già confluita (redirect a `/oggi`). Le 2 proposte pending compaiono in Oggi («Nomi da decidere»). Nessuna voce di nav. Nessun link interno rotto.
++- **`findings`**: **tolta dalla nav primaria** (`App.vue`). La route esiste ancora ed è **raggiungibile** dalla Dashboard (ReadySlot «Findings e severità → Apri Findings (shadow)» e card «Findings (shadow) → Apri») e per URL diretto — verificato R (`findings_still_reachable=true`). **Nessuna funzione operativa irraggiungibile** (UX3.2.4). Debito `DEBT-FINDINGS-OGGI-CONFLUENCE`: quando i findings diventeranno autoritativi (scoring calibrato, M4–M5) i loro elementi devono diventare problemi **dentro Oggi**, non una vista separata (F-9).
++- **`dashboard`**: `/` → `/oggi`; nuova `/dashboard`; nuova voce nav «Panoramica». Nessun link interno a `/` come Dashboard (i KPI puntano a `/inventory`, `/monitoring`, `/incidents`, `/findings`, `/actions`, invariati).
++
++> Route fuori nav non toccate (raggiungibili per URL/drill-down): `incidents` (storico, aperto da Panoramica/Monitor «Da gestire»), `runbook`, `ai` (percorso AI **non esercitato**: consuma API a pagamento — STOP legittimo).
++
++---
++
++## 3. UX3.3 — Ciò che UX2.4 non aveva eseguito (misurato su asset reali)
++
++### 3.1 «Dossier: visualizza dati» (asset 3, 109, 4, 1) — **operativo, non un dump** (R)
++Cosa mostra realmente (resa reale):
++- **Asset 3 — LGS310C** (`obs-ux3-dossier-3.png`): «Presente ora · 192.168.1.7 · Vendor Switch Linksys · Tipo infrastruttura · **OS non rilevato · Hostname nessuno annunciato · Servizi nessuno osservato**». Nome **LGS310C** (manuale, F-1); **nessuna proposta OUI** su chassis 24 (F-1). Ignoti **dichiarati**, non inventati (I2).
++- **Asset 109 — LGS328C** (`obs-ux3-dossier-109.png`): «Visto solo dal FRITZ!Box · **interfaccia di LGS328C** · Hostname Switch Centrale · Proposte nome (AI) «Switch Centrale» **INFERENZA AI · Confidenza 90% · Evidenze usate: vendor Linksys, stable attachment, infrastructure category · Può sbagliare — verifica**». F-5 (membro come interfaccia), F-2 (LGS328C non confermato, mostrato come inferenza non manuale), F-10/I1 (marcata, confidenza+evidenze).
++- **Asset 4 — GS308EP** (`obs-ux3-dossier-4.png`): «Ramo GS308EP — **FATTO / Da confermare / inferenze etichettate**. Capacità switch: **SNMP no, FDB no**, poll manual_upstream. **IP gestione corrente 192.168.1.8 (fatto)**. In DB c'è anche 192.168.3.2[0]…». F-11 (`.1.8` corrente, `.3.20` storico), I7 (nessuna telemetria inventata).
++- **Asset 1 — FRITZ!Box** (`obs-ux3-dossier-1.png`): «Vendor FRITZ!Box · OS Linux 4.15–5.19 · scelta manuale · Servizi DNS/HTTP/HTTPS/SIP · Presente ora».
++
++**Conclusione:** il Dossier è **informazione operativa strutturata** (identità osservata, connessione, decidi, abitudini, note), non un dump grezzo. Caso d'uso: «tutto su un device, con ignoti dichiarati e inferenze marcate». **Nulla da rimuovere.**
++
++### 3.2 Vista switch e strutture legacy — **modello coerente, nessuna vista legacy** (A+R)
++Tre superfici sullo stesso oggetto `Switch`, ciascuna con domanda distinta e coerente:
++- **Impianto = modifica** (porte, patch, ruoli).
++- **Topologia = dove** (collegamenti/rami).
++- **Monitor = salute** (reachability, poll SNMP read-only, «Switch · salute porte»).
++Non esiste una route/vista switch **autonoma** superata (nessun `/switches` nel router). Nessun elemento duplicato da rimuovere; i tre insistono sullo stesso oggetto ma con funzioni disgiunte.
++
++### 3.3 Dati grezzi senza valore operativo — **enumerati, nessuno di gravità operativa** (R)
++- Dossier: nessun dump grezzo (vedi 3.1).
++- Dashboard `ReadySlot` («Presenza», «Findings e severità», «Coda attenzione»): in calibrazione dichiarano **«Disponibile dopo la calibrazione»** — attesa onesta (I2), **non** dati inventati né barre mute. Annotati in `DEBT-DASHBOARD-READY-SLOTS`, non rimossi (slot di roadmap M3–M5).
++- `Actions` mostra il valore grezzo di un hint scan (`source · value · confidence`): è diagnostica su una superficie da operatore, non nel flusso principale — lasciata.
++
++---
++
++## 4. UX3.4 — Rapidità (conteggio interazioni da `/oggi`, una volta)
++
++Da `/oggi`, per la domanda tipica di ogni vista che TIENE:
++
++| Vista | Domanda tipica | Sequenza da `/oggi` | Passi |
++|---|---|---|---|
++| Oggi | Cosa devo fare adesso | (sei già qui) — prima card = prima azione | **0** |
++| Dossier(device) | Tutto su questo device | card Oggi → **apri Dossier** (`openDossier`) | **1** |
++| Impianto(device) | Dove sta questa porta | card Oggi → **Impianto** (`openPlant ?asset=`) | **1** |
++| Topologia(device) | A cosa è attaccato | card Oggi → **Topologia** (`openTopology ?asset_id=`) | **1** |
++| Monitor(device) | È in linea? | card Oggi → **Monitor** (`openMonitor ?monitor=`) | **1** |
++| Panoramica | Come sta la rete/Internet | nav → **Panoramica** | **1** |
++| Inventario | Elenco/ricerca device | nav → **Inventario** | **1** |
++| Timeline | Cosa è successo | nav → **Timeline** | **1** |
++| Azioni | Scansioni/errori | nav → **Azioni** | **1** |
++| Dossier(device non in Oggi) | Tutto su un device qualsiasi | nav → **Dossier** → cerca → apri | **3** |
++
++Tutte ≤ 3 passi; le viste device-centriche sono a **1 clic** grazie ai deep-link già presenti nelle card di Oggi (`openDossier/openPlant/openTopology/openMonitor`, con `?from=oggi`). Nessuna riduzione ulteriore necessaria.
++
++**UX3.4.3 (Oggi senza scroll esplorativo, tutti i breakpoint):** verificato R — la **prima card è la prima azione** su desktop (`obs-ux3-oggi-desktop.png`), tablet (`obs-ux3-oggi-tablet.png`) e mobile (`obs-ux3-oggi-mobile.png`). Su mobile la riga densa impila (label sopra, valore sotto, azioni sotto), niente troncamenti.
++
++---
++
++## 5. UX3.5 — Regressione e coerenza (resa reale)
++
++- **D1 (Oggi mobile)**: risolto — `obs-ux3-oggi-mobile.png` (impila, nome/MAC non troncati).
++- **D2 (Oggi tablet)**: risolto — `obs-ux3-oggi-tablet.png` (Causa/Impatto/Azione/Certezza/Esito a capo, leggibili).
++- **D5 (copertura FDB Impianto)**: banner corretto con data — `obs-ux3-plant-mobile.png` / `-desktop.png`.
++- **D6 (Monitor telemetria)**: `obs-ux3-monitoring-desktop.png` — LGS/GS308EP mostrano Traffico/Errori **«—»** e poll «non riuscito»/«—», nessun `0` inventato (I2/I7).
++- **AI marcata (F-10/I1)**: «nome migliore», «MDNS · 60%», «fonte dns · confidenza 60%» in Oggi; «INFERENZA AI · Confidenza 90% · Evidenze usate» nel Dossier.
++- **Caso LGS (F-1/F-2/F-3/F-5)**: chassis 23 = LGS328C con membri come interfacce (asset 109 «interfaccia di LGS328C»); chassis 24 = LGS310C manuale, **nessuna proposta OUI**; chassis non fusi.
++- **GS308EP (F-11)**: `.1.8` corrente, `.3.20` storico, telemetria assente dichiarata.
++- **Banner FDB (F-13)**: presente e corretto; nessun dato di porta presentato come corrente.
++- **Nessuna card alta priorità senza azione**; nessun controllo mostrato se non eseguibile (verificato R su Oggi).
++- **I6**: `rg 'scoreSpecificity|specificity' api/` → **vuoto** (mostrato in ondata 2).
++
++---
++
++## 6. UX3.6 — Lista di controlli per Michele (solo gusto / impossibilità materiale)
++
++Nessun difetto funzionale (K11): sono già tutti riparati. Restano scelte di gusto e priorità percepita.
++
++1. **Oggi**: la **prima card** in cima è davvero quella su cui agiresti per prima? (priorità percepita)
++2. **«Panoramica»** come nome della ex-Dashboard in nav ti è chiaro, o preferisci «Dashboard»/«Rete»? (gusto)
++3. **Osservatorio** e **«Come funziona»** sono teaser datati (radar ~30/07, guida ~agosto): tenerli in nav come conto alla rovescia o nasconderli finché non escono? (gusto/roadmap)
++4. **Topologia mobile**: la lista gerarchica ti basta, o vuoi anche il pinch-zoom sul grafo? (gusto)
++5. **Findings** tolta dalla nav (0 elementi, in shadow, raggiungibile da Panoramica): d'accordo o la rivuoi in nav? (priorità percepita)
++6. **Densità/spaziatura** delle card di Oggi su desktop: troppa aria o giusta? (gusto)
++7. **Badge inferenza AI** («nome migliore» / confidenza): abbastanza distinto dai fatti misurati a colpo d'occhio? (gusto)
++8. **Raggruppamento nav** (RADAR / MAPPA) e ordine delle voci: ti convince? (gusto)
++
++---
++
++## 7. Debiti registrati / invariati
++- **`DEBT-FINDINGS-OGGI-CONFLUENCE`** (nuovo): confluenza autoritativa findings in Oggi rinviata a calibrazione/scoring; route raggiungibile nel frattempo.
++- **`DEBT-DASHBOARD-READY-SLOTS`** (nuovo): slot roadmap M3–M5 con etichetta d'attesa (I2), non rumore.
++- **`DEBT-FDB-POLL-STALE`**, **`DEBT-PRESENCE-SOURCE-OUTAGE`**, **`DEBT-MAC-IP-POLICY-WIRE`**: invariati, aperti.
++
++## 8. Vincoli rispettati
++F-1..F-14 · I1..I7 · K1..K11. Nessun secondo autore di stato (F-7); policy MAC↔IP resta consultiva (F-12); I5/F-8 immutati; favicon A (F-6); nessuna logica di identità/currency nel frontend; nessun hub separato (F-9); auth/ruoli/CSRF non toccati (K10); venv Playwright non committato.
++
++**STOP.** Dopo la review arriva **W8** (enforcement).
+diff --git a/observatory/web/package.json b/observatory/web/package.json
+index 1de1bf7..ac1bebf 100644
+--- a/observatory/web/package.json
++++ b/observatory/web/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "lan-observatory-web",
+   "private": true,
+-  "version": "0.10.43",
++  "version": "0.10.63",
+   "type": "module",
+   "scripts": {
+     "dev": "vite",
+diff --git a/observatory/web/src/App.vue b/observatory/web/src/App.vue
+index 10594d3..60d920c 100644
+--- a/observatory/web/src/App.vue
++++ b/observatory/web/src/App.vue
+@@ -14,6 +14,8 @@ const user = auth.user;
+ const authChecking = auth.checking;
+ const dash = ref(null);
+ const authRetryBusy = ref(false);
++/** Mobile nav collapsed by default; opened via hamburger (D3). */
++const navOpen = ref(false);
+ /** Sidebar nav visible by default; fullscreen is opt-in on Topology. */
+ const topologyFullscreen = ref(false);
+ const topologySidebarVisible = computed(() => !topologyFullscreen.value);
+@@ -86,6 +88,11 @@ watch(
+   { immediate: true },
+ );
+ 
++// Chiudi il menu mobile a ogni cambio rotta.
++watch(() => route.path, () => {
++  navOpen.value = false;
++});
++
+ onMounted(() => {
+   refreshRuntimeVersion();
+ });
+@@ -105,18 +112,33 @@ onMounted(() => {
+     :class="{ 'topology-full': onTopology && !topologySidebarVisible }"
+     data-testid="app-shell"
+   >
+-    <aside v-show="!onTopology || topologySidebarVisible" class="sidebar">
++    <aside
++      v-show="!onTopology || topologySidebarVisible"
++      class="sidebar"
++      :class="{ 'nav-open': navOpen }"
++    >
+       <div class="brand">
+         LAN Observatory
+         <span class="brand-version">{{ versionLabel }}</span>
+       </div>
++      <button
++        v-if="user"
++        type="button"
++        class="nav-toggle"
++        :aria-expanded="navOpen ? 'true' : 'false'"
++        aria-controls="app-nav"
++        @click="navOpen = !navOpen"
++      >
++        <span aria-hidden="true">{{ navOpen ? "✕" : "☰" }}</span> Menu
++      </button>
+       <div class="calibration-chrome">
+         <CalibrationBadge v-if="user" :payload="dash" />
+       </div>
+-      <nav class="nav">
++      <nav id="app-nav" class="nav">
+         <div class="nav-group">
+           <div class="nav-label">RADAR</div>
+-          <router-link to="/oggi" title="Panoramica del giorno">Oggi</router-link>
++          <router-link to="/oggi" title="Cosa fare adesso">Oggi</router-link>
++          <router-link to="/dashboard" title="Panoramica rete, Internet e calibrazione">Panoramica</router-link>
+           <router-link to="/osservatorio" title="Radar traffico">Osservatorio</router-link>
+           <router-link to="/dossier" title="Approfondisci un device">Dossier</router-link>
+           <router-link to="/come-funziona" title="Guida leggera">Come funziona</router-link>
+@@ -128,7 +150,6 @@ onMounted(() => {
+           <router-link to="/topology" title="Come sono collegati">Topologia</router-link>
+           <router-link to="/monitoring">Monitor</router-link>
+           <router-link to="/timeline">Timeline</router-link>
+-          <router-link to="/findings">Findings</router-link>
+           <router-link to="/actions">Azioni</router-link>
+         </div>
+       </nav>
+diff --git a/observatory/web/src/assets/matrix.css b/observatory/web/src/assets/matrix.css
+index 2db90f5..73907c8 100644
+--- a/observatory/web/src/assets/matrix.css
++++ b/observatory/web/src/assets/matrix.css
+@@ -154,6 +154,19 @@ button.primary {
+   line-height: 1.35;
+   max-width: 100%;
+ }
++.nav-toggle {
++  display: none;
++  align-items: center;
++  gap: 0.4rem;
++  border: 0.5px solid var(--border);
++  background: var(--bg-1);
++  color: var(--text-1);
++  border-radius: var(--radius);
++  padding: 0.4rem 0.7rem;
++  font: inherit;
++  font-size: 0.9rem;
++  cursor: pointer;
++}
+ .nav-group {
+   margin-top: 0.3rem;
+   padding-top: 0.3rem;
+@@ -760,6 +773,7 @@ button.primary {
+ 
+ @media (max-width: 800px) {
+   .app-shell { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
++  /* D3: barra compatta (brand + hamburger + utente); il menu si apre a comparsa. */
+   .sidebar {
+     flex-direction: row;
+     flex-wrap: wrap;
+@@ -767,37 +781,57 @@ button.primary {
+     border-right: none;
+     border-bottom: 1px solid var(--line);
+     padding: 0.6rem;
++    gap: 0.5rem;
+   }
+   .brand {
+     padding: 0.25rem 0.5rem;
+-    max-width: min(100%, 12rem);
++    max-width: min(100%, 14rem);
+     min-width: 0;
++    flex: 0 1 auto;
+   }
+-  .calibration-chrome {
+-    flex: 1 1 auto;
+-    min-width: 0;
+-    max-width: 11rem;
++  .nav-toggle {
++    display: inline-flex;
++    order: 1;
+   }
++  /* Collassati per default: compaiono solo a menu aperto, a piena larghezza. */
++  .calibration-chrome,
+   .nav {
++    display: none;
++  }
++  .sidebar-foot {
++    margin: 0 0 0 auto;
++    border: none;
++    padding: 0;
+     display: flex;
+-    flex-wrap: wrap;
+-    gap: 0.2rem;
++    align-items: center;
++    gap: 0.5rem;
++    order: 2;
++  }
++  .sidebar.nav-open .calibration-chrome {
++    display: block;
++    order: 3;
++    flex: 1 1 100%;
++    max-width: 100%;
+     min-width: 0;
+-    flex: 1 1 auto;
++    padding: 0.2rem 0.2rem 0;
++  }
++  .sidebar.nav-open .nav {
++    display: flex;
++    flex-direction: column;
++    order: 4;
++    flex: 1 1 100%;
++    gap: 0.35rem;
+     overflow: visible;
++    margin-top: 0.2rem;
+   }
+-  .nav-group {
++  .sidebar.nav-open .nav-group {
+     margin: 0;
+-    padding: 0 0 0 0.25rem;
+-    border-top: 0;
+-    border-left: 2px solid color-mix(in srgb, var(--accent) 25%, transparent);
+-    display: flex;
+-    flex-wrap: wrap;
+-    gap: 0.15rem;
++    padding-top: 0.35rem;
++  }
++  .sidebar.nav-open .nav a {
++    margin: 0;
++    padding: 0.6rem 0.7rem;
+   }
+-  .nav-label { display: none; }
+-  .nav a { margin: 0; }
+-  .sidebar-foot { margin: 0; border: none; padding: 0; display: flex; align-items: center; gap: 0.5rem; margin-left: auto; }
+   .workspace { min-width: 0; min-height: 0; }
+ }
+ 
+diff --git a/observatory/web/src/router.js b/observatory/web/src/router.js
+index 499c99d..b543a69 100644
+--- a/observatory/web/src/router.js
++++ b/observatory/web/src/router.js
+@@ -19,8 +19,10 @@ import { auth } from "./auth";
+ 
+ const routes = [
+   { path: "/login", component: Login, meta: { public: true } },
+-  { path: "/", component: Dashboard },
++  // F-9: Oggi è il cardine → è la landing. Dashboard (Panoramica) è distinta e in nav.
++  { path: "/", redirect: "/oggi" },
+   { path: "/oggi", component: Oggi },
++  { path: "/dashboard", component: Dashboard },
+   {
+     path: "/osservatorio",
+     component: RadarStub,
+diff --git a/observatory/web/src/views/Plant.vue b/observatory/web/src/views/Plant.vue
+index a595934..cc1e319 100644
+--- a/observatory/web/src/views/Plant.vue
++++ b/observatory/web/src/views/Plant.vue
+@@ -1,5 +1,6 @@
+ <script setup>
+-import { computed, onMounted, ref } from "vue";
++import { computed, nextTick, onMounted, ref, watch } from "vue";
++import { useRoute } from "vue-router";
+ import { api } from "../api";
+ import PageHeader from "../components/PageHeader.vue";
+ import Branch308Card from "../components/Branch308Card.vue";
+@@ -12,11 +13,13 @@ import {
+   rolePresentation,
+ } from "../portPresentation";
+ import {
++  fdbCoverageStatus,
+   gs308epIpDivergenceNote,
+   isGs308epSwitch,
+ } from "../observatoryUx";
+ import { formatDateTime } from "../formatTime";
+ 
++const route = useRoute();
+ const switches = ref([]);
+ const selected = ref(null);
+ const form = ref({});
+@@ -43,11 +46,23 @@ const plantPartial = computed(() => {
+   return "";
+ });
+ 
++/** F-13 / UX2.2.4 — copertura FDB non aggiornata: dichiara la data reale (I2/I3). */
++const fdbCoverage = computed(() => fdbCoverageStatus(switches.value || []));
++const fdbCoverageMessage = computed(() => {
++  const c = fdbCoverage.value;
++  if (!c || !c.stale) return "";
++  if (!c.newestAt) {
++    return "Copertura FDB non disponibile: nessuna mappatura porte da FDB e ultimo rilevamento non riuscito. La collocazione delle porte può non essere corrente.";
++  }
++  return `Copertura FDB non aggiornata: ultima mappatura porte da FDB il ${fmtWhen(c.newestAt)} (circa ${c.hoursAgo} h fa). La collocazione delle porte mostrata può non essere corrente.`;
++});
++
+ async function load() {
+   loading.value = true;
+   error.value = "";
+   try {
+     switches.value = await api.switches();
++    await applyAssetDeepLink();
+   } catch (e) {
+     error.value = e.message || "Caricamento impianto fallito";
+   } finally {
+@@ -55,6 +70,32 @@ async function load() {
+   }
+ }
+ 
++/** Deep-link ?asset= / ?asset_id= → apri porta associata (F2.1). */
++async function applyAssetDeepLink() {
++  const raw = route.query.asset ?? route.query.asset_id;
++  if (raw == null || raw === "") return;
++  const id = Number(Array.isArray(raw) ? raw[0] : raw);
++  if (!Number.isFinite(id) || id <= 0) return;
++  for (const sw of switches.value || []) {
++    const port = (sw.ports || []).find((p) => Number(p.asset_id) === id);
++    if (port) {
++      pick(sw, port);
++      await nextTick();
++      document
++        .querySelector(`[data-port-id="${port.id}"]`)
++        ?.scrollIntoView({ behavior: "smooth", block: "center" });
++      return;
++    }
++  }
++}
++
++watch(
++  () => [route.query.asset, route.query.asset_id],
++  () => {
++    if (switches.value.length) applyAssetDeepLink();
++  },
++);
++
+ function pick(sw, port) {
+   selected.value = { sw, port };
+   form.value = {
+@@ -67,6 +108,11 @@ function pick(sw, port) {
+   msg.value = "";
+ }
+ 
++/** SNMP oper_status: se lo switch non lo espone, non mostrare un pallino grigio mute. */
++function snmpLiveSupported(sw) {
++  return sw?.capabilities?.snmp_supported !== false;
++}
++
+ async function save() {
+   const payload = { ...form.value };
+   const currentOverride = selected.value.port.role_override
+@@ -122,12 +168,22 @@ function sourceChip(sw) {
+   return "";
+ }
+ 
+-/** Badge freschezza a livello switch: fdb_poll.at, snmp_poll.at, o edit manuale. */
++/**
++ * Badge freschezza a livello switch (F-13).
++ * Un poll FALLITO (`fdb_poll.ok===false`) NON è freschezza: in quel caso la vera
++ * data dei dati di porta è l'ultima mappatura FDB riuscita (`port.last_fdb_at`),
++ * marcata «non aggiornata» se oltre la finestra. Mai spacciare l'ora del tentativo.
++ */
+ function switchFreshness(sw) {
+-  const fdbAt = sw.fdb_poll?.at;
+-  if (fdbAt) return { text: `dati al ${fmtWhen(fdbAt)}`, kind: "ok" };
+-  const snmpAt = sw.snmp_poll?.at;
+-  if (snmpAt) return { text: `dati al ${fmtWhen(snmpAt)}`, kind: "ok" };
++  const poll = sw.fdb_poll || {};
++  if (poll.at && poll.ok) return { text: `dati al ${fmtWhen(poll.at)}`, kind: "ok" };
++  const cov = fdbCoverageStatus([sw]);
++  if (cov && cov.newestAt) {
++    return {
++      text: `mappa porte da FDB del ${fmtWhen(cov.newestAt)}${cov.stale ? " — non aggiornata" : ""}`,
++      kind: cov.stale ? "warn" : "muted",
++    };
++  }
+   const manualAt = sw.field_sources?.updated_at || sw.meta?.manual_edit_at;
+   if (manualAt) return { text: `dati al ${fmtWhen(manualAt)} (manuale)`, kind: "muted" };
+   if (sw.capabilities?.fdb_supported === false) {
+@@ -227,7 +283,10 @@ onMounted(load);
+   <ViewStateBanner v-else-if="loading" kind="loading" />
+   <template v-else>
+   <ViewStateBanner v-if="!switches.length" kind="empty" message="Nessuno switch configurato." />
+-  <ViewStateBanner v-else-if="plantPartial" kind="partial" :message="plantPartial" />
++  <template v-else>
++    <ViewStateBanner v-if="plantPartial" kind="partial" :message="plantPartial" />
++    <ViewStateBanner v-if="fdbCoverageMessage" kind="stale" :message="fdbCoverageMessage" />
++  </template>
+   <div v-if="switches.length" class="switch-board">
+     <div class="plant-filter">
+       <ToggleSwitch v-model="showUnreachable" label="Mostra dispositivi non raggiungibili" />
+@@ -298,6 +357,7 @@ onMounted(load);
+           v-for="p in sw.ports"
+           :key="p.id"
+           class="port"
++          :data-port-id="p.id"
+           :class="{
+             active: selected?.port?.id === p.id,
+             warn: !!p.warn,
+@@ -315,11 +375,18 @@ onMounted(load);
+           <div class="port-head">
+             <span class="port-number">P{{ p.number }}</span>
+             <span
++              v-if="snmpLiveSupported(sw)"
+               class="dot"
+               :class="p.snmp?.oper_status"
+               :title="statusLabel(p.snmp?.oper_status)"
+               :aria-label="`Stato: ${statusLabel(p.snmp?.oper_status)}`"
+             ></span>
++            <span
++              v-else
++              class="dot-na"
++              title="Link SNMP non misurabile su questo switch"
++              aria-label="Link SNMP non misurabile"
++            >—</span>
+           </div>
+           <div class="dev">
+             <span :class="{ free: portCellPresentation(p).free }">
+@@ -647,9 +714,11 @@ onMounted(load);
+ }
+ .fdb-status {
+   min-width: 0;
+-  overflow: hidden;
+-  text-overflow: ellipsis;
+-  white-space: nowrap;
++  /* F-13: la data dell'ultima misura FDB non va mai troncata, a nessuna larghezza. */
++  overflow: visible;
++  text-overflow: clip;
++  white-space: normal;
++  overflow-wrap: anywhere;
+ }
+ .fdb-status::before {
+   content: "";
+@@ -779,6 +848,14 @@ onMounted(load);
+   border-radius: 50%;
+   background: #777;
+ }
++.dot-na {
++  display: inline-block;
++  flex: 0 0 auto;
++  font-size: 0.65rem;
++  line-height: 1;
++  color: var(--text-3);
++  font-family: var(--font-mono);
++}
+ .dot.up {
+   background: #47b36b;
+ }
+@@ -805,6 +882,14 @@ onMounted(load);
+   .switch-status {
+     flex-wrap: wrap;
+   }
++  /* D4: su mobile il testo informativo va a capo invece di troncarsi con ellissi. */
++  .switch-role,
++  .port-foot .patch {
++    overflow: visible;
++    text-overflow: clip;
++    white-space: normal;
++    overflow-wrap: anywhere;
++  }
+   .ports {
+     grid-template-columns: repeat(4, minmax(0, 1fr));
+   }
+diff --git a/observatory/web/src/views/Topology.vue b/observatory/web/src/views/Topology.vue
+index e3fec0e..cecb80b 100644
+--- a/observatory/web/src/views/Topology.vue
++++ b/observatory/web/src/views/Topology.vue
+@@ -98,6 +98,39 @@ const canvasStyle = computed(() => ({
+   height: `${topologyLayout.value.height * treeScale.value}px`,
+ }));
+ 
++/**
++ * D7: rappresentazione alternativa per schermi stretti. Risponde alla stessa
++ * domanda del grafo («dove sta questo apparato, a cosa è attaccato») come lista
++ * gerarchica per livello, riusando i nodi già posizionati dal layout.
++ */
++const topologyListGroups = computed(() => {
++  const nodes = topologyLayout.value.nodes || [];
++  const byId = Object.fromEntries(nodes.map((n) => [n.id, n]));
++  const groups = new Map();
++  for (const node of nodes) {
++    if (node.virtual) continue;
++    const depth = node.depth ?? 0;
++    if (!groups.has(depth)) groups.set(depth, []);
++    const edge = edgesByTarget.value[node.id];
++    const parent = edge && edge.source !== "internet" ? byId[edge.source] : null;
++    groups.get(depth).push({ node, parentLabel: parent ? compactNodeLabel(parent.label) : "" });
++  }
++  return [...groups.entries()]
++    .sort((a, b) => a[0] - b[0])
++    .map(([depth, items]) => ({
++      depth,
++      label: depth === 0 ? "Radice" : `Livello ${depth}`,
++      items,
++    }));
++});
++
++function listNodeClickable(node) {
++  return (
++    (["endpoint", "ap", "router"].includes(node.kind) && !node.virtual) ||
++    isGs308epTopologyNode(node)
++  );
++}
++
+ const topologyStale = computed(() => {
+   if (loading.value || !data.value.last_observation_at) return false;
+   const ms = parseSeenMs(data.value.last_observation_at);
+@@ -201,7 +234,7 @@ function edgeTooltip(edge) {
+     edge.evidence_conflict ? `Conflitto risolto: ${edge.evidence_conflict}` : "",
+     `Confidenza: ${edge.confidence_badge || "sconosciuta"}${edge.confidence != null ? ` (${Math.round(edge.confidence * 100)}%)` : ""}`,
+     `Osservato: ${observed}`,
+-    `Freshness: ${edge.freshness || (edge.stale ? "stale" : "corrente")}${edge.stale ? " — dato oltre la finestra di aggiornamento" : ""}`,
++    `Freschezza: ${edge.freshness || (edge.stale ? "non recente" : "corrente")}${edge.stale ? " — dato oltre la finestra di aggiornamento" : ""}`,
+   ];
+   if (/porta interna non (rilevabile|osservabile)/i.test(`${edge.label} ${edge.physical_port_label}`)) {
+     details.splice(2, 0, "Porta interna sconosciuta: il GS308EP non espone la porta fisica.");
+@@ -214,7 +247,7 @@ function nodeTooltip(node) {
+   return [
+     node.parent_id === "internet" ? "Upstream: ◎ Internet" : "",
+     `Nome: ${node.label}`,
+-    `Stato: ${isOffline(node) ? "offline / stale" : node.status || "non disponibile"}`,
++    `Stato: ${isOffline(node) ? "offline / non recente" : node.status || "non disponibile"}`,
+     node.ip ? `IP: ${node.ip}` : "IP: non disponibile",
+     node.role ? `Ruolo: ${node.role}` : "",
+     node.category ? `Categoria: ${node.category}` : "",
+@@ -318,14 +351,14 @@ function visibilityChanged() {
+ }
+ 
+ async function applyRouteFocus() {
+-  const q = route.query.asset_id;
++  const q = route.query.asset_id ?? route.query.highlight ?? route.query.asset;
+   if (q == null || q === "") return;
+   const id = String(Array.isArray(q) ? q[0] : q);
+   if (id && assetId.value !== id) await selectAsset(id);
+ }
+ 
+ watch(
+-  () => route.query.asset_id,
++  () => [route.query.asset_id, route.query.highlight, route.query.asset],
+   () => {
+     applyRouteFocus();
+   },
+@@ -366,9 +399,11 @@ onUnmounted(() => {
+       </select>
+       <button class="ghost" @click="selectAsset('')">Pulisci</button>
+       <button @click="load" :disabled="selecting">{{ selecting ? "…" : "Aggiorna" }}</button>
+-      <button class="ghost" aria-label="Riduci topologia" @click="zoom(-0.1)">−</button>
+-      <button class="ghost" aria-label="Adatta topologia alla larghezza" @click="fitTopology">Adatta</button>
+-      <button class="ghost" aria-label="Ingrandisci topologia" @click="zoom(0.1)">+</button>
++      <span class="topology-zoom">
++        <button class="ghost" aria-label="Riduci topologia" @click="zoom(-0.1)">−</button>
++        <button class="ghost" aria-label="Adatta topologia alla larghezza" @click="fitTopology">Adatta</button>
++        <button class="ghost" aria-label="Ingrandisci topologia" @click="zoom(0.1)">+</button>
++      </span>
+       <ToggleSwitch v-model="paused" label="Pausa aggiornamento" />
+       <span class="refresh-state">
+         <template v-if="loading">Caricamento…</template>
+@@ -496,6 +531,48 @@ onUnmounted(() => {
+       </div>
+     </div>
+ 
++    <div v-if="!loading" class="topology-list" data-testid="topology-list">
++      <p class="topology-list__hint muted">
++        Vista compatta: gerarchia dei collegamenti (dove sta un apparato e a cosa è
++        attaccato). Tocca un endpoint per isolarne il percorso.
++      </p>
++      <section
++        v-for="group in topologyListGroups"
++        :key="group.depth"
++        class="topology-list__group"
++      >
++        <h4>{{ group.label }}</h4>
++        <ul>
++          <li
++            v-for="entry in group.items"
++            :key="entry.node.id"
++            class="topology-list__row"
++            :class="{
++              offline: entry.node._offline,
++              'on-path': entry.node.on_path,
++              clickable: listNodeClickable(entry.node),
++            }"
++            :tabindex="listNodeClickable(entry.node) ? 0 : undefined"
++            :role="listNodeClickable(entry.node) ? 'button' : undefined"
++            @click="listNodeClickable(entry.node) && clickEndpoint(entry.node)"
++            @keydown.enter.prevent="listNodeClickable(entry.node) && clickEndpoint(entry.node)"
++          >
++            <span class="node-icon" aria-hidden="true">{{ icon(entry.node) }}</span>
++            <span class="topology-list__copy">
++              <strong>{{ compactNodeLabel(entry.node.label) }}</strong>
++              <small>{{ entry.node.ip || (entry.node.kind === "switch" ? "Switch gestito" : entry.node.media || "IP non disponibile") }}</small>
++              <small v-if="entry.parentLabel" class="topology-list__parent">↳ collegato a {{ entry.parentLabel }}</small>
++            </span>
++            <span
++              class="status-dot"
++              :class="{ offline: entry.node._offline }"
++              aria-hidden="true"
++            ></span>
++          </li>
++        </ul>
++      </section>
++    </div>
++
+     <Branch308Card
+       v-if="showBranch308Card"
+       :topology-edges="data.edges"
+@@ -631,6 +708,71 @@ onUnmounted(() => {
+   position: relative;
+   min-width: 100%;
+ }
++/* D7: la lista gerarchica sostituisce il grafo solo su schermi stretti. */
++.topology-list {
++  display: none;
++}
++.topology-list__hint {
++  margin: 0.75rem 0 0.5rem;
++  font-size: 0.8rem;
++}
++.topology-list__group {
++  margin-bottom: 1rem;
++}
++.topology-list__group h4 {
++  margin: 0 0 0.4rem;
++  font-size: 0.72rem;
++  letter-spacing: 0.04em;
++  color: var(--text-3);
++  text-transform: uppercase;
++}
++.topology-list__group ul {
++  list-style: none;
++  margin: 0;
++  padding: 0;
++  display: flex;
++  flex-direction: column;
++  gap: 0.35rem;
++}
++.topology-list__row {
++  display: flex;
++  align-items: center;
++  gap: 0.6rem;
++  padding: 0.6rem 0.7rem;
++  border: 0.5px solid var(--border);
++  border-radius: var(--radius);
++  background: var(--bg-1);
++  min-width: 0;
++}
++.topology-list__row.clickable {
++  cursor: pointer;
++}
++.topology-list__row.on-path {
++  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
++  background: color-mix(in srgb, var(--accent) 10%, var(--bg-1));
++}
++.topology-list__row.offline {
++  opacity: 0.6;
++}
++.topology-list__copy {
++  display: flex;
++  flex-direction: column;
++  gap: 0.1rem;
++  min-width: 0;
++  flex: 1 1 auto;
++}
++.topology-list__copy strong {
++  font-size: 0.9rem;
++  overflow-wrap: anywhere;
++}
++.topology-list__copy small {
++  color: var(--text-3);
++  font-size: 0.75rem;
++  overflow-wrap: anywhere;
++}
++.topology-list__parent {
++  color: var(--text-2);
++}
+ .topology-stage {
+   position: absolute;
+   top: 0;
+@@ -879,6 +1021,13 @@ onUnmounted(() => {
+ .wifi-step strong {
+   color: var(--accent);
+ }
++@media (max-width: 800px) {
++  /* D7: sotto 800px il grafo a coordinate assolute è inusabile: mostra la lista. */
++  .topology-scroll { display: none; }
++  .topology-list { display: block; }
++  /* Controlli zoom inerti quando il grafo è nascosto. */
++  .topology-zoom { display: none; }
++}
+ @media (max-width: 700px) {
+   .topology-scroll { min-height: 65vh; }
+ }

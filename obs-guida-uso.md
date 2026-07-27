@@ -3,9 +3,14 @@
 Scritta per l'operatore. Per ogni situazione reale: **dove si vede**, **cosa significa**,
 **cosa puoi fare**, **cosa succede dopo**, **cosa non si può sapere**. Niente termini tecnici interni.
 
-Il punto di partenza è sempre **Oggi**: è la coda unica di cose da decidere. Le altre schermate
+Aprendo il portale sei **sempre su Oggi**: è la coda unica di cose da decidere. Le altre schermate
 servono ad approfondire (Dossier), vedere le porte (Impianto), come sono collegati i device
-(Topologia) e la salute (Monitor).
+(Topologia) e la salute (Monitor). La **Panoramica** dà il quadro d'insieme (stato Internet,
+calibrazione, copertura). Da una card di Oggi apri il Dossier, l'Impianto, la Topologia o il
+Monitor del device con **un solo clic**.
+
+Su schermo piccolo la navigazione è dietro il pulsante **☰ Menu** in alto; la Topologia mostra
+una **lista gerarchica** (chi è attaccato a cosa) al posto del grafo.
 
 ---
 
