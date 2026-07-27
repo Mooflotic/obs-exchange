@@ -1,0 +1,1263 @@
+# obs-ux2.diff.txt — F2 0.10.51 integral (files touched in F2 wave)
+# Generated 2026-07-27T16:27:28Z
+
+diff --git a/.gitignore b/.gitignore
+index d51c861..4c3ff8e 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -8,6 +8,7 @@ scansione.log
+ index.php
+ locale/
+ favicon.ico
++!observatory/web/public/favicon.ico
+ 
+ # LAN Observatory
+ observatory/data/*
+diff --git a/observatory/CHANGELOG.md b/observatory/CHANGELOG.md
+index 677f6ee..c780b8d 100644
+--- a/observatory/CHANGELOG.md
++++ b/observatory/CHANGELOG.md
+@@ -1,8 +1,68 @@
+ # Changelog
+ 
++## 0.10.51 — F2: revisione UI/UX portale (presenza, Mappa, favicon)
++
++- **F2.0:** gruppo nav MAPPA = Inventario/Impianto/Topologia/…; mappa porte fisica = `/plant`.
++- **F2.1 Plant:** deep-link `?asset=`/`?asset_id=`; pallini SNMP nascosti se non supportati (GS308); limiti I2/I7 in Branch308.
++- **F2.2–3:** banner Fritz muto (Oggi/Dashboard/Inventario); `stale_unlocated` → «copertura sorgente non disponibile»; conflitti R-H nel flusso Oggi; dossier/inventario un nome chassis.
++- **F2.5:** favicon su token `--bg-0`/`--accent`/`--ok`; SVG+ICO+apple-touch; link versionati.
++- **Non toccato:** trust layer (DEBT-PRESENCE-SOURCE-OUTAGE); credenziali Fritz; W5 consumatori.
++
++## 0.10.50 — W4c: rename chassis un-canonico, bonifica una-tantum, boot pulito
++
++- **W4c.1:** `adopt_name_on_chassis` scrive solo `fact_assertions` (subject=chassis); i membri non vengono rinominati né marcati manual; triage sibling su `chassis_role===interface`.
++- **W4c.2:** bonifica `provenance_unreliable` con cutoff `2026-07-27T11:00:00Z`, fuori dal boot; script `scripts/unmark_post_cutoff_provenance.py`.
++- **W4c.3:** `mark_lgs310c_manual` rimosso dal bootstrap (helper one-shot).
++- **W4c.5:** aperto DEBT-PRESENCE-SOURCE-OUTAGE (Fritz muto ≠ device assente).
++
++## 0.10.49 — W4b: provenienza senza traduzione, anti-ballooning, rename chassis
++
++- **W4b.0.a:** shadow writers non traducono più le sorgenti; unknown → rifiuto + `unknown_source`; bonifica `provenance_unreliable` su nmap non ricostruibile.
++- **W4b.0.b:** divergenze ripetute (stesso excl_key/value/source) aggiornano `occurrences` invece di nuove righe.
++- **W4b.1:** LGS310C (asset 3 / chassis 24) marcato manual (provenienza); LGS328C resta `unknown_nonempty`; UI card dichiara l’apparato di appartenenza.
++- **W4b.2:** rename/adopt a soggetto chassis; member → 409 con chassis; conflict-review in Oggi; `asset.name` collegato agli shadow writers.
++- **W4b.3:** aperti DEBT-RH-BEFORE-REFRESH; `_table_bytes` non usa più la size del file DB; DEBT-FRITZ resta aperto (credenziali TR-064 assenti).
++
++## 0.10.48 — W4a: soggetto chassis e soppressione proposte a monte
++
++- **W4a:** NameProposal generate/soppresse per soggetto chassis (manual blocca autorità inferiore; dedup `(chassis, valore)`); risolvibilità calcolata; sibling come interfacce.
++- **W4a.0:** `facts/shadow.py` tracciato; DEBT-IFACE-IP-CARDINALITY-ROLE; DEBT-FRITZ-TR064-CREDENTIALS (STOP-5); `subject_ref_interface` rifiuta multi-NIC senza primary.
++- **Non toccato:** adopt/rename 409 (W4b); shadow `asset.name`.
++- Report: [`docs/obs-w4a.md`](docs/obs-w4a.md).
++
++## 0.10.47 — W2: shadow writers fact_assertion
++
++- **W2:** scritture parallele `asset.iface_ip` (soggetto=interfaccia, excl_key=`asset.iface_ip:{iface_id}`); nessun consumatore legge ancora.
++- **S1:** barriera + SAVEPOINT; kill switch `FACT_SHADOW_WRITERS_ENABLED`; circuit breaker (20k righe / 2k/giorno / 50 MiB).
++- **Non collegato:** `asset.name` (chassis → W4a/W4b). Observability: `GET /api/admin/facts/shadow-stats`.
++- Report: [`docs/obs-w2.md`](docs/obs-w2.md).
++
++## 0.10.46 — W-D-fix: discriminante multi-IP sul dedup
++
++- **X.2:** `entity_key` resta MAC-scoped; `compute_dedup_key` ripristina discriminante IP (`fact_discriminant_for`) — DEBT-TOPO-IP-CONTEXTUAL ripristinato.
++- **X.4:** lift Fritz → `known` (non `confirmed_present`); decisione in `on_fritz_active_evidence` (trust).
++- **Debiti:** DEBT-LASTSEEN-DUAL-SEMANTICS. W2 → **0.10.47**.
++- Report: [`docs/obs-wd-fix.md`](docs/obs-wd-fix.md).
++
++## 0.10.45 — W-D: sblocco gate W2 (T-b, T-e, T-f)
++
++- **T-b:** `entity_key_for` MAC-scoped quando MAC noto; IP-only provisional (`identity_provisional`) + DEBT-PROVISIONAL-IDENTITY-MERGE.
++- **T-e/T-f:** demotion IP chiude `last_seen=now` → `resolve_asset_by_ip_at` trova il detentore storico.
++- **D.0.b:** `lift_fritz_quarantine_on_active` (trust) — quarantena non assorbente; inventory resta bloccata.
++- **Debiti:** DEBT-DOUBLE-CURRENT-IP; Cassiopea ri-caratterizzata chassis (W4a/W4b); alembic unificato in DEBT-ALEMBIC-BASELINE-LEGACY-TABLE. W2 writers → **0.10.46** (poi **0.10.47** in W-D-fix).
++- Report: [`docs/obs-wd.md`](docs/obs-wd.md).
++
++## 0.10.44 — F1-bis: DEBT-RECONCILE-CHURN-1 + riqualifica gate F1
++
++- **W-C:** `inventory_may_set_operational_state` non solleva/smasha `trust_quarantine` (`fritz_historical`) — chiude DEBT-RECONCILE-CHURN-1 (classe, non asset 116). Test zero-iface obbligatorio.
++- **W-B.3:** script una-tantum `scripts/normalize_empty_manual_names.py` (asset 98/150 name manual vuoto → assenza; no bump).
++- **Debiti:** DEBT-IP-CURRENT-SCOPE-PER-ASSET (Cassiopea asset 6). W2 slitta a **0.10.45** (poi rinumerato → **0.10.46** in W-D).
++- Report: [`docs/obs-f1bis.md`](docs/obs-f1bis.md).
++
+ ## 0.10.43 — OBS-IDENTITY W1.5-bis gate closure
+ 
+-- **W1.5-bis:** rimossa soglia E3 inventata (`mac_count_threshold` solo se misurata); test limiti E5-physical (D.2); tool RO `obs_identity_linker_dryrun.py`. Nessun writer identity acceso. W2 shadow writers slitta a **0.10.44**. Debiti: DEBT-RECONCILE-CHURN-1 (asset 116), DEBT-E3-AVAILABLE-FALSE.
++- **W1.5-bis:** rimossa soglia E3 inventata (`mac_count_threshold` solo se misurata); test limiti E5-physical (D.2); tool RO `obs_identity_linker_dryrun.py`. Nessun writer identity acceso. W2 shadow writers slitta a **0.10.44** (poi rinumerato → **0.10.45** in F1-bis). Debiti: DEBT-RECONCILE-CHURN-1 (asset 116), DEBT-E3-AVAILABLE-FALSE.
++- **MAC↔IP (fixture):** classifier puro `mac_ip_policy.py` + 9 test contratto; **non** wired a reconcile/trust (DEBT-MAC-IP-POLICY-WIRE → W7).
+ 
+ ## 0.10.42 — W1.5 identity-evidence (deployata)
+ 
+diff --git a/observatory/VERSION b/observatory/VERSION
+index a548662..5006430 100644
+--- a/observatory/VERSION
++++ b/observatory/VERSION
+@@ -1 +1 @@
+-0.10.43
++0.10.51
+diff --git a/observatory/docs/KNOWN_DEBT.md b/observatory/docs/KNOWN_DEBT.md
+index 3fe6739..ceeb23c 100644
+--- a/observatory/docs/KNOWN_DEBT.md
++++ b/observatory/docs/KNOWN_DEBT.md
+@@ -4,18 +4,93 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+ 
+ ## DEBT-RECONCILE-CHURN-1
+ 
+-- **Priorità:** media (bootstrap regime) — aperto in W1.5-bis 2026-07-25
+-- **Cosa:** asset **116** ha `trust_level=fritz_historical` ma `meta.operational_state=active`. Ogni boot1 con `needs_apply=true` / `structural=1` / `T_backup≈80s`; apply trust corregge; `inventory.reconcile_asset_presence` ripristina `active`.
+-- **Attribuzione:** churn preesistente (backup pre-0.10.42), **non** indotto da `identity_evidence`.
+-- **Vietato:** tollerarlo silenziosamente come “regime ok”; sostituire la misura del boot1 con un boot successivo senza dichiararlo.
+-- **Fix quando:** ownership `operational_state` per `fritz_historical` — inventory non deve smashare la quarantena trust senza evidenza reliable; oppure heal one-shot + guard.
++- **Priorità:** media (bootstrap regime) — **CHIUSO in F1-bis / 0.10.44**; **confermato D.6** sul boot1 di **0.10.45** (`structural=0`)
++- **Cosa:** asset **116** aveva `trust_level=fritz_historical` ma `meta.operational_state=active`. Boot1 `needs_apply=true` / `structural=1` / `T_backup≈80s` perché `inventory_may_set_operational_state` permetteva `fritz_historical`→`active` se `reliable=True` (anche con 0 interfacce via reachability).
++- **Fix:** inventory non solleva né smasha `trust_quarantine` (`fritz_historical` op_state o trust_level) — gerarchia invariata `archived > trust_quarantine > trust_protected > inventory_presence`. Test `test_quarantine_zero_interfaces_inventory_cannot_set_active`.
++- **Vietato (storico):** tollerarlo come “regime ok”; caso speciale su `asset_id=116`.
++
++## DEBT-IP-CURRENT-SCOPE-PER-ASSET → ri-caratterizzato come IDENTITÀ CHASSIS (W-D)
++
++- **Priorità:** W4a/W4b (consolidamento chassis) — riaperto/riscritto F1-bis→W-D 2026-07-26
++- **Fatto:** Cassiopea è modellata come **due asset record** — asset **5** «Cassiopea — NIC 1» tiene `192.168.1.3` CURRENT (id 9); asset **6** tiene `192.168.3.24` CURRENT (id 855). L’IP di management non è perso: è sull’altro record. Il ping fallito su `.3.24` dal container api è atteso (lato SPAN), non un sintomo.
++- **Test di non-regressione (da chiudere in W4a/W4b):** dopo consolidamento, Cassiopea = **UN** apparato con **DUE** interfacce; entrambi gli IP correnti ciascuno sulla propria interfaccia; un solo nome canonico.
++- **Vietato ora:** patch dati che forzi due current sullo stesso asset_id / stessa iface.
++- **Doc:** [`docs/obs-f1bis.md`](obs-f1bis.md) · [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-DOUBLE-CURRENT-IP
++
++- **Priorità:** pre-condizione **W3** — aperto W-D 2026-07-26
++- **Cosa:** stesso IP con >1 riga `is_current=1` (stesso asset o asset diversi). Al backfill W3 collideranno con `uq_fact_assertions_current_slot`.
++- **Casi enumerati (live, invariati da X.2):**
++  - `192.168.1.2` — id **3** (asset 2, mgmt) + id **153** (asset 2, fritz)
++  - `192.168.2.108` — id **15** (asset 11) + id **853** (asset 138)
++- **Nota:** W3 richiede una **regola di risoluzione dichiarata PRIMA** del backfill. **NON** collassare ora. Cardinalità non cambiata da X.2 (dedup ≠ `is_current`).
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md) · [`docs/obs-wd-fix.md`](obs-wd-fix.md)
++
++## DEBT-PROVISIONAL-IDENTITY-MERGE
++
++- **Priorità:** post W-D (quando MAC sconosciuto → poi scoperto) — aperto W-D 2026-07-26
++- **Cosa:** `entity_key` IP-only è marcato `payload.identity_provisional=true`, ma non esiste ancora un percorso di **fusione** quando il MAC viene scoperto in seguito (evitare duplicato).
++- **X.2:** invariato — discriminante IP sul dedup non introduce merge. Cardinalità debito invariata.
++- **Vietato:** inventare il merge in questa ondata.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md) · [`docs/obs-wd-fix.md`](obs-wd-fix.md)
+ 
+ ## DEBT-E3-AVAILABLE-FALSE
+ 
+ - **Priorità:** bloccante per E3 finché SNMP non è misurabile
+ - **Cosa:** E3-topological richiede access_port + mac_count misurato + soglia **esplicita** + simultaneità. Con poll SNMP in timeout, E3 = **available=false** (degrada a E2). Nessuna soglia inventata.
+ - **Vincolo:** non promuovere E3 finché `fdb_poll.ok` / misure porta non tornano.
+-- **Ripresa:** W2+ quando SNMP/LLDP writers misurano.
++- **Ripresa:** W2+ quando SNMP/LLDP writers misurano; requisiti accesso/poll in **DEBT-FDB-LLDP-PASSIVE**.
++
++## DEBT-FDB-LLDP-PASSIVE
++
++- **Priorità:** wave futura post W1.5-bis (writers SNMP / presenza) — **non** interrompe W1.5-bis
++- **Cosa:** implementazione iniziale **passiva/read-only** FDB+LLDP: presenza/posizione L2, **non** identità; FDB ≠ ownership; LLDP/CDP solo corroborante (spoofabile). LGS310C/328C: SNMPv3 authPriv, RO, ACL solo Cassiopea, view Bridge/LLDP/ENTITY, no SET, segreti fuori repo/log, timeout/rate limit; LLDP/CDP non abilitato dove non serve. ObservationRaw: switch_id, port, VLAN/bridge-domain, timestamp, age/last_seen, acquisition_method, failure_state; dedupe per **transizione** non per poll. Alert «nuovo MAC su access» solo dopo classificazione misurata access/trunk/uplink/AP/powerline, inizialmente informativo; **niente** quarantena/shutdown auto. Spoof / MAC move / CAM flood / randomized MAC previsti; assenza alert ≠ sicurezza.
++- **Doc:** [`docs/obs-fdb-lldp-passive.md`](obs-fdb-lldp-passive.md)
++- **Vietato:** usarlo come scorciatoia identity/merge; SET SNMP; enforcement automatico porte; dichiarare “rete sicura” perché non ci sono alert.
++
++## DEBT-ENTITY-KEY-MAC-IP
++
++- **Priorità:** era bloccante W2 — **CHIUSO in W-D / 0.10.45** (2026-07-26)
++- **Fix:** `entity_key_for` → MAC quando MAC noto; IP-only → provisional (`identity_provisional`). Test T-b verde.
++- **Residuo correlato (non collassare):** righe IP duplicate / refresh-as-transition — vedi B.2 / DEBT-DOUBLE-CURRENT-IP.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-IP-MIGRATION-NONETYPE
++
++- **Priorità:** era bloccante W2 — **CHIUSO in W-D / 0.10.45** (2026-07-26)
++- **Causa:** `elect_interface_primary` demoteva senza chiudere `last_seen` → `resolve_asset_by_ip_at` tornava `None` a T intermedio.
++- **Fix:** alla demotion, `last_seen = now` se mancante/precedente. T-e / T-f verdi.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-ALEMBIC-BASELINE-LEGACY-TABLE
++
++- **Priorità:** bassa (igiene CI; Alembic **non** gira in prod) — unificato W-D 2026-07-26
++- **Ex:** DEBT-ALEMBIC-MIGRATION-TESTS + baseline disallineata da tabella `observations` droppata.
++- **Sintomi test:** `ix_observations_seen_at`, `assets.chassis_id`, `assets.printer_first_seen` su fixture/alembic.
++- **Vietato:** inseguirli come fix runtime; schema prod = `create_all`.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-IPP-PRECEDENCE (T-c / T-d)
++
++- **Priorità:** media (autorità naming) — registrato W-D 2026-07-26, **non** corretto in questa ondata
++- **Test:** `test_ipp_precedence_and_human_category_override` (T-c); `test_snmp_enrichment_creates_proposal_without_overwriting_name` (T-d)
++- **Osservato T-c:** `best_guess` → `('HP123','fritz')` invece di `('Stampante Studio','ipp')`
++- **Osservato T-d:** proposal snmp assente / lista vuota vs atteso `[('snmp','HP LaserJet M404dn')]`
++- **Nota:** non risolti come collaterale di D.1. I5 / gerarchia naming — ondata dedicata.
++
++## DEBT-FDB-UPLINK-PORTAL (T-a)
++
++- **Priorità:** media — registrato W-D 2026-07-26 (preesistente), **non** corretto qui
++- **Test:** `test_m2_discovery.py::test_fdb_skips_observe_portal_on_uplink_role`
++- **Osservato:** `portal_last_seen` valorizzato invece di `None` su ruolo uplink.
++
++## DEBT-MAC-IP-POLICY-WIRE
++
++- **Priorità:** prossima wave presence (W7 / post W1.5-bis)
++- **Cosa:** policy dominio MAC↔IP (chassis ≥1 IP corrente; eccezione powerline/510E; `present_l2_unaddressed`; supersession binding) — classifier in `api/app/services/mac_ip_policy.py` + test contratto. **Non ancora** collegata a `reconcile_asset_presence` / trust.
++- **Doc:** [`docs/obs-currency-mac-ip-policy.md`](obs-currency-mac-ip-policy.md)
++- **Vietato:** usarla come scorciatoia di fusione chassis; inventare management IP.
+ 
+ ## DEBT-MIRROR-SOURCES
+ 
+@@ -65,20 +140,65 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+ - **Residuo:** riprendere DVR (#2) / LUMIN / openhabian dal toggle critico se servono; non riattivare Kuma runtime.
+ - **Vietato:** ripristinare Kuma come dipendenza; delete delle righe kuma archiviate.
+ 
+-## DEBT-TOPO-IP-CONTEXTUAL (CHIUSO v0.9.0)
++## DEBT-TOPO-IP-CONTEXTUAL
+ 
+-- **Priorità:** bassa (latente → perimetro ampliato 2026-07-21) — ex BUG 3 declassato
++- **Priorità:** bassa (latente → perimetro ampliato 2026-07-21; discriminante raw ripristinato 0.10.46) — ex BUG 3 declassato
++- **Invariante:** multi-IP sullo stesso MAC **non collassa** nello store raw (fatti distinti).
++- **Stato raw:** **violato in 0.10.45** (`dedup_key` usava solo `entity_key` MAC-scoped → 5 IP → 1 riga). **Ripristinato in 0.10.46:** `entity_key` resta MAC; `compute_dedup_key` aggiunge discriminante IP (`fact_discriminant_for`). Identità ≠ dedup. Vedi [`docs/obs-wd-fix.md`](obs-wd-fix.md).
+ - **Perimetro definitivo:** multi-IP per ruolo (`primario` / `vpn` / `mgmt` / `servizi`). `endpoint.ip_change` **solo sul primario**. Casi noti:
+   - **FRITZ!Box** (asset 1): 5 IP contemporanei sullo stesso MAC — `.1.1` primario, `.1.9` VPN LAN, `.1.4`/`.1.5`/`.1.6` (ruolo TBD servizi/altro); ×223 `ip_change`/24h documentati poi silenziati.
+-  - **GS308EP** (asset 4): `.1.8` mgmt (fatto). `.3.20` = binding Fritz storico sullo stesso MAC, **ownership da confermare** (non inventariale; non SPAN — SPAN=p22/NIC2 `.3.24` / sink `10.255.255.2/30`). Vedi `docs/obs-ux-ip-308-verifica.md`.
++  - **GS308EP** (asset 4): `.1.8` mgmt (fatto). `.3.20` = binding Fritz storico sullo stesso MAC, **ownership da confermare** (non inventariale; non SPAN — SPAN=p22/NIC2 `.3.24` / sink `10.255.255.2/30`). Vedi [`docs/obs-ux-ip-308-verifica.md`](obs-ux-ip-308-verifica.md).
+   - **Cassiopea (ex-bond):** `DEBT-LAG-CASSIOPEA` **CHIUSO** 21/07/2026 (eth0 LAN / eth1 SPAN).
+-- **Nota architetturale:** il dedup raw per-MAC scarta le osservazioni L3 multi-IP (sul Fritz 4/5 IP perse nel raw, `hit_count≈5` ma `l3.ip` resta solo `.1.1`) mentre l’upsert legacy scrive comunque i binding e gli `ip_change`: le due pipeline divergono. Il fix dovrà includere `dedup_key` **MAC+IP** per le osservazioni L3.
+-- **Sintomo latente (BUG 3 originale):** in [`_resolve_ap_asset`](../api/app/services/topology.py) il fallback per-IP usa `is_current` invece di `resolve_asset_by_ip_at`. Oggi non gira (0 client Wi‑Fi IP-only su 41).
+-- **Fix quando servirà:** (1) ruoli IP + `ip_change` solo primario; (2) dedup L3 MAC+IP; (3) nel solo ramo (b) di `_resolve_ap_asset`, `resolve_asset_by_ip_at` + `observed_at`; tie→None→fall-through. NON toccare `is_current` alla cieca su multi-NIC storiche.
++- **Nota architetturale:** il dedup raw per-MAC scartava le osservazioni L3 multi-IP (sul Fritz 4/5 IP perse nel raw, `hit_count≈5` ma `l3.ip` resta solo `.1.1`) mentre l’upsert legacy scrive comunque i binding e gli `ip_change`: le due pipeline divergevano. Fix 0.10.46: `dedup_key` MAC+IP per L3.
++- **Sintomo latente (BUG 3 originale / consumatore di correttezza):** in [`_resolve_ap_asset`](../api/app/services/topology.py) il fallback per-IP usa `is_current` invece di `resolve_asset_by_ip_at`. Oggi non gira (0 client Wi‑Fi IP-only su 41). **Classe di difetto OBS-CURRENCY:** è un **consumatore di correntezza** da migrare esplicitamente in **W5/W7** (lista consumatori fact_assertions / resolve-at-T).
++- **Fix quando servirà:** (1) ruoli IP + `ip_change` solo primario; (2) dedup L3 MAC+IP *(fatto 0.10.46)*; (3) nel solo ramo (b) di `_resolve_ap_asset`, `resolve_asset_by_ip_at` + `observed_at`; tie→None→fall-through. NON toccare `is_current` alla cieca su multi-NIC storiche.
+ - **Riattivazione:** attribuzione topologia sbagliata su IP DHCP migrato, oppure ripresa del rumore `ip_change` multi-ruolo dopo unmute.
+-- **Stato FASE B (codice, 2026-07-21):** elezione + `role` + dedup `mac|ip` + `ip_change` solo primario — in tree, pre-deploy. Bonifica storica duplicate `(interface_id, ip)` resta fuori scope. UI secondari = FASE C.
++- **Stato FASE B (codice):** elezione + `role` + dedup `mac|ip` + `ip_change` solo primario — in tree. Bonifica storica duplicate `(interface_id, ip)` resta fuori scope. UI secondari = FASE C.
+ - **Bonifica storica:** eventuali righe duplicate `(interface_id, ip)` pre-FASE-B restano; niente UniqueConstraint finché non c’è purge dedicato (fuori scope).
+ 
++## DEBT-IFACE-IP-CARDINALITY-ROLE
++
++- **Priorità:** pre-condizione **W3** — aperto W4a 2026-07-26
++- **Cosa:** `asset.iface_ip` ha `cardinality=single` per interfaccia e il writer shadow registra **solo l’IP eletto** (`elect_interface_primary`). Sul Fritz (asset 1) esistono cinque IP simultanei (`.1.1` primario, `.1.9` VPN, `.1.4`/`.1.5`/`.1.6` servizi) — i non-eletti **non** compaiono nel layer assertion.
++- **I2:** assenza di un IP in `fact_assertions` **non** significa che l’IP non esista.
++- **W4b.3.3:** `current()` senza `excl_key` e con più righe `current` su cardinality `single` sceglie in silenzio per authority — collegato a questo debito; non collassare ora.
++- **Prima di W3:** `excl_key` deve acquisire il **ruolo** (`fact_key + interface_id + role`), cardinalità `scoped`. NON inventare i ruoli mancanti ora (K3).
++- **Vietato in W4a/W4b:** implementare il ruolo nella excl_key; collassare i doppi-current.
++- **Doc:** [`docs/obs-w4a.md`](obs-w4a.md) · legato a DEBT-TOPO-IP-CONTEXTUAL
++
++## DEBT-RH-BEFORE-REFRESH
++
++- **Priorità:** media (correttezza resolver) — aperto W4b 2026-07-27
++- **Cosa:** `_check_rh_conflict` gira **prima** di R-A refresh. Ogni refresh riesegue la scansione cross-fact; un valore già `current` può diventare `conflict_review` per un cambiamento altrove senza che l’osservazione in ingresso sia nuova.
++- **Vietato in W4b:** correggere l’ordine ora.
++- **Doc:** [`docs/obs-w4b.md`](obs-w4b.md)
++
++## DEBT-LASTSEEN-DUAL-SEMANTICS
++
++- **Priorità:** pre-condizione **W3** — aperto W-D-fix 2026-07-26
++- **Cosa:** `elect_interface_primary` scrive `last_seen = now` alla demotion (chiusura amministrativa di intervallo) nello stesso campo «ultima osservazione».
++- **Nota W3:** prima del backfill dichiarare per ogni campo quale semantica porta; le righe con `last_seen` amministrativo daranno `valid_to`, non un’osservazione.
++- **Vietato ora:** correggere / biforcare il campo in questa ondata.
++- **Doc:** [`docs/obs-wd-fix.md`](obs-wd-fix.md)
++
++## DEBT-FRITZ-TR064-CREDENTIALS
++
++- **Priorità:** operativa (STOP-5) — aperto W4a 2026-07-26; **confermato APERTO in W4b.0.c** (2026-07-27); **invariato W4c** (F-4)
++- **Sintomo:** collector log `[fritz] hostlist path fallito: HTTP Error 401: Unauthorized` + `mesh SOAP … credentials_invalid`.
++- **W4b.0.c (read-only, una volta):** Internet ripristinata **non** implica credenziali TR-064. Su Cassiopea `FRITZ_USERNAME` / `FRITZ_PASSWORD` ancora **ASSENTI** in `.env`; 401/`credentials_invalid` ancora presenti nei log. Funzioni Fritz restano dichiarate degradate (I2).
++- **Causa misurata:** `FRITZ_HOST` presente; username/password assenti (`collector/adapters/fritz.py` → `credentials_invalid` su HTTP 401/403).
++- **Degrada con Fritz muto:** hostlist/`discovery.fritz.active`, hostname Fritz, assoc mesh (0), refresh IP da Fritz. Restano: nmap/ssdp/printer, diagnostica WLAN AP (spesso 200), SNMP switch.
++- **Azione:** solo Michele può ripristinare le credenziali TR-064 — non stimare, non monitorare in serie.
++
++## DEBT-PRESENCE-SOURCE-OUTAGE
++
++- **Priorità:** alta (I2/I4 + churn boot) — aperto W4c 2026-07-27; **NON corretto in W4c** (W4c.5.2)
++- **Fatto misurato (W4b boot1):** `structural=4` — asset **136, 140, 145, 148** `meta.operational_state` `active` → `stale_unlocated`. AD finestra 24h sceso 69→62.
++- **Meccanismo:** `classify_asset` / `reconcile_trust_history` in [`api/app/services/trust.py`](../api/app/services/trust.py) (~170–189, ~474–489, ~618–621): senza `portal_last_seen` recente e senza protezione → bucket `stale_unlocated`. Con Fritz TR-064 muto i refresh hostlist non aggiornano la presenza → l’assenza della **sorgente** viene trattata come assenza del **dispositivo**.
++- **Principio:** quando la sorgente che copriva un device è indisponibile, lo stato corretto è «non misurato» / «copertura sorgente non disponibile», non «assente».
++- **Vietato in W4c:** correggere il trust layer. UI (F2 / **0.10.51**): banner Fritz + copy «copertura sorgente non disponibile» su Oggi/Dashboard/Inventario/Dossier — presentazione only.
++- **Doc:** [`docs/obs-w4c.md`](obs-w4c.md) · [`docs/obs-ux2.md`](obs-ux2.md) · legato a DEBT-FRITZ-TR064-CREDENTIALS
++
+ ## DEBT-A2-CASCADE-AP
+ 
+ - **Priorità:** bassa (latente) — ex nota di confine BUG 1 / A2
+diff --git a/observatory/web/index.html b/observatory/web/index.html
+index 51552a8..6e108bd 100644
+--- a/observatory/web/index.html
++++ b/observatory/web/index.html
+@@ -4,7 +4,10 @@
+     <meta charset="UTF-8" />
+     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+     <meta name="theme-color" content="#0F1319" />
+-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
++    <!-- F2.5: versioned favicon links (cache bust); tokens --bg-0/--accent/--ok -->
++    <link rel="icon" href="/favicon.svg?v=0.10.51" type="image/svg+xml" />
++    <link rel="icon" href="/favicon.ico?v=0.10.51" sizes="any" />
++    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=0.10.51" />
+     <title>LAN Observatory</title>
+   </head>
+   <body>
+diff --git a/observatory/web/package.json b/observatory/web/package.json
+index 1de1bf7..b8a3858 100644
+--- a/observatory/web/package.json
++++ b/observatory/web/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "lan-observatory-web",
+   "private": true,
+-  "version": "0.10.43",
++  "version": "0.10.51",
+   "type": "module",
+   "scripts": {
+     "dev": "vite",
+diff --git a/observatory/web/public/favicon.svg b/observatory/web/public/favicon.svg
+index 59f88e6..6badc73 100644
+--- a/observatory/web/public/favicon.svg
++++ b/observatory/web/public/favicon.svg
+@@ -1,18 +1,17 @@
+ <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="LAN Observatory">
+-  <!-- Matrix tile: chunky LO monogram — readable at 16×16 -->
+-  <rect width="32" height="32" rx="5" fill="#06140c"/>
+-  <!-- faint scanlines -->
+-  <g fill="#3dff8a" opacity="0.08">
+-    <rect y="3" width="32" height="1"/>
+-    <rect y="8" width="32" height="1"/>
+-    <rect y="13" width="32" height="1"/>
+-    <rect y="18" width="32" height="1"/>
+-    <rect y="23" width="32" height="1"/>
+-    <rect y="28" width="32" height="1"/>
+-  </g>
+-  <!-- L: left stem + foot (4px bars) -->
+-  <rect x="4" y="5" width="5" height="18" fill="#3dff8a"/>
+-  <rect x="4" y="23" width="12" height="5" fill="#3dff8a"/>
+-  <!-- O: outer block + hole (evenodd) -->
+-  <path fill="#77ffad" fill-rule="evenodd" d="M18 5h10v23H18V5zm3 5h4v13h-4V10z"/>
++  <!-- Tokens from matrix.css :root — --bg-0 #0f1319 · --accent #6bc5db · --ok #4fb477 -->
++  <style>
++    .mark { fill: #6bc5db; }
++    .mark-alt { fill: #4fb477; }
++    @media (prefers-color-scheme: light) {
++      .bg { fill: #e8ebf0; }
++      .mark { fill: #0f1319; }
++      .mark-alt { fill: #4fb477; }
++    }
++  </style>
++  <rect class="bg" width="32" height="32" rx="6" fill="#0f1319"/>
++  <!-- Two primary shapes: L stem+foot, O ring (evenodd hole) — ≥2px at 16px -->
++  <rect class="mark" x="5" y="6" width="5" height="16"/>
++  <rect class="mark" x="5" y="22" width="11" height="5"/>
++  <path class="mark-alt" fill-rule="evenodd" d="M18 6h10v21H18V6zm3 4h4v13h-4V10z"/>
+ </svg>
+diff --git a/observatory/web/src/components/Branch308Card.vue b/observatory/web/src/components/Branch308Card.vue
+index de155e3..e6f69eb 100644
+--- a/observatory/web/src/components/Branch308Card.vue
++++ b/observatory/web/src/components/Branch308Card.vue
+@@ -127,10 +127,11 @@ const spanInference = {
+     </div>
+ 
+     <div class="block gaps">
+-      <h3 class="block-title"><span class="tag gap">Non rilevato</span></h3>
++      <h3 class="block-title"><span class="tag gap">Non misurabile (I2 · I7)</span></h3>
+       <ul class="fact-list muted">
+-        <li>Porta interna non rilevabile (LLDP/FDB non espongono mapping fisico)</li>
+-        <li>Contatori porte, PoE, flapping e traffico switch-locale assenti</li>
++        <li>Porta interna sul GS308EP (nessun SNMP/FDB locale)</li>
++        <li>Contatori porte, PoE, NSDP, flapping, traffico switch-locale rx/tx</li>
++        <li>IP storico <span class="mono">.3.20</span> — non corrente (gestione: <span class="mono">{{ GS308EP_MGMT_IP }}</span>)</li>
+       </ul>
+     </div>
+ 
+diff --git a/observatory/web/src/inventoryDevices.js b/observatory/web/src/inventoryDevices.js
+index 56706f6..f6c05be 100644
+--- a/observatory/web/src/inventoryDevices.js
++++ b/observatory/web/src/inventoryDevices.js
+@@ -171,13 +171,18 @@ export function composeDevices(assets, chassisPayload = {}) {
+     const lastSeen = maxLastSeen(members);
+     const portalLastSeen = maxPortalLastSeen(members);
+     const displayIp = chassisDisplayIp(members);
++    const canonName =
++      (ch.canonical_name || "").trim() ||
++      members.map((m) => (m.chassis_canonical_name || "").trim()).find(Boolean) ||
++      (primary.name || "").trim() ||
++      "";
+     devices.push({
+       key: `chassis:${ch.id}`,
+       chassisId: ch.id,
+       primaryId: primary.id,
+       primary,
+       members,
+-      name: primary.name || "",
++      name: canonName,
+       category: primary.category || "unknown",
+       status: primary.status || "nuovo",
+       vendor: primary.vendor || "",
+@@ -204,7 +209,8 @@ export function composeDevices(assets, chassisPayload = {}) {
+       ifaces,
+       interfaceCount: ifaces.filter((i) => i.mac).length || ifaces.length,
+       stale: !isActiveLastSeen(lastSeen),
+-      label: ch.label || primary.name || "",
++      label: ch.label || canonName || "",
++      chassis_canonical_name: canonName || null,
+     });
+   }
+ 
+diff --git a/observatory/web/src/observatoryUx.js b/observatory/web/src/observatoryUx.js
+index 3e89b27..e9c314b 100644
+--- a/observatory/web/src/observatoryUx.js
++++ b/observatory/web/src/observatoryUx.js
+@@ -318,11 +318,13 @@ export const UX_COPY = {
+   "manual-upgrade": "Nome già scelto a mano — proposta in conflitto",
+   rumore: "Proposta ridondante o poco utile",
+   fritz_historical: "Solo storico FRITZ!Box (non operativo oggi)",
+-  stale_unlocated: "Non visto di recente e senza posizione certa",
++  stale_unlocated:
++    "Copertura sorgente non disponibile — presenza non misurabile (non «assente»)",
+   inventory_hidden_auto: "Nascosto in inventario (duplicato o merge automatico)",
+   presence_present: "Presente ora",
+   presence_stale: "Non visto di recente",
+   presence_fritz_only: "Visto solo dal FRITZ!Box",
++  presence_source_outage: "Copertura sorgente non disponibile",
+   partial_data: "Dati incompleti — quanto mostrato è parziale",
+   ai_unavailable: "Assistente AI non disponibile (AI_ENABLED=false o LLM non raggiungibile). Il portale resta utilizzabile.",
+ };
+@@ -380,9 +382,32 @@ export function humanPresenceState(state) {
+   if (s === "stale") return UX_COPY.presence_stale;
+   if (s === "fritz_only") return UX_COPY.presence_fritz_only;
+   if (s === "recent") return "Visto nelle ultime ore";
++  if (s === "stale_unlocated") return UX_COPY.stale_unlocated;
++  if (s === "source_outage" || s === "presence_source_outage") {
++    return UX_COPY.presence_source_outage;
++  }
+   return state || "—";
+ }
+ 
++/** F2 / W4c.5.3 — Fritz sensor failure ⇒ presence coverage outage (not device absence). */
++export function fritzPresenceOutageFromReliability(reliability) {
++  const sensors = reliability?.live?.sensors_24h || [];
++  const fritz = sensors.find((s) =>
++    String(s.source || "")
++      .toLowerCase()
++      .includes("fritz"),
++  );
++  if (!fritz) {
++    return { active: false, detail: "" };
++  }
++  const failed = fritz.last_ok === false || (Number(fritz.errors) || 0) > 0;
++  if (!failed) return { active: false, detail: "" };
++  return {
++    active: true,
++    detail: `${fritz.source}: errori=${fritz.errors || 0} · last_ok=${fritz.last_ok}`,
++  };
++}
++
+ /** Sintesi identità Dossier (ondata D) — niente dump grezzo, niente SNMP inventato. */
+ export function buildIdentitySynthesis(identity = {}) {
+   const known = [];
+diff --git a/observatory/web/src/views/Dashboard.vue b/observatory/web/src/views/Dashboard.vue
+index 387be75..4e26c0b 100644
+--- a/observatory/web/src/views/Dashboard.vue
++++ b/observatory/web/src/views/Dashboard.vue
+@@ -15,7 +15,9 @@ import {
+   coverageTrend,
+   dashboardMode,
+   normalizeDashboard,
++  fritzPresenceOutageFromReliability,
+ } from "../observatoryUx";
++import FritzOutageBanner from "../components/FritzOutageBanner.vue";
+ 
+ const route = useRoute();
+ const d = ref(null);
+@@ -26,6 +28,7 @@ const unstableExpanded = ref(false);
+ const err = ref("");
+ 
+ const view = computed(() => normalizeDashboard(d.value || {}));
++const fritzOutage = computed(() => fritzPresenceOutageFromReliability(reliability.value));
+ const unstableView = computed(() =>
+   collapseUnstableMonitors(view.value.unstable, view.value.uiFlapCollapseMin || 6),
+ );
+@@ -115,6 +118,11 @@ onMounted(async () => {
+       : 'Riepilogo operativo basato su osservazioni del portale, ping e monitor.'"
+   />
+ 
++  <FritzOutageBanner
++    :active="fritzOutage.active"
++    :detail="fritzOutage.detail"
++  />
++
+   <div v-if="err" class="error">{{ err }}</div>
+   <p v-else-if="!d" class="muted">Caricamento…</p>
+ 
+diff --git a/observatory/web/src/views/Dossier.vue b/observatory/web/src/views/Dossier.vue
+index 077cd06..1c7c3bf 100644
+--- a/observatory/web/src/views/Dossier.vue
++++ b/observatory/web/src/views/Dossier.vue
+@@ -48,6 +48,15 @@ const presenceLabel = computed(() => {
+   return asset.value.status || "—";
+ });
+ 
++/** Un apparato = un nome: interfacce mostrano il canonico chassis, non un secondo nome fisico. */
++const displayName = computed(() => {
++  if (!asset.value) return "";
++  const canon = (asset.value.chassis_canonical_name || "").trim();
++  const own = (asset.value.name || "").trim();
++  if (asset.value.chassis_role === "interface" && canon) return canon;
++  return own || canon;
++});
++
+ const primaryIp = computed(() => {
+   const bindings = asset.value?.ip_bindings || [];
+   const cur = bindings.find((b) => b.is_current);
+@@ -202,11 +211,14 @@ watch(
+       <div class="dossier-head">
+         <div class="dossier-head-main">
+           <button type="button" class="dossier-back" @click="router.push('/dossier')">← Dossier</button>
+-          <h1 class="dossier-title" :class="{ unnamed: asset && !asset.name }">
+-            {{ loading ? "…" : (asset?.name || "Device senza nome") }}
++          <h1 class="dossier-title" :class="{ unnamed: asset && !displayName }">
++            {{ loading ? "…" : (displayName || "Device senza nome") }}
+           </h1>
+           <div class="dossier-sub mono">
+             <span class="presence">{{ presenceLabel }}</span>
++            <span v-if="asset?.chassis_role === 'interface' && asset?.chassis_canonical_name">
++              · interfaccia di {{ asset.chassis_canonical_name }}
++            </span>
+             <span>·</span>
+             <span>{{ primaryIp }}</span>
+             <span>·</span>
+diff --git a/observatory/web/src/views/Inventory.vue b/observatory/web/src/views/Inventory.vue
+index 0ce1a36..16cb3e2 100644
+--- a/observatory/web/src/views/Inventory.vue
++++ b/observatory/web/src/views/Inventory.vue
+@@ -19,14 +19,26 @@ import PageHeader from "../components/PageHeader.vue";
+ import AssetDecide from "../components/AssetDecide.vue";
+ import AssetNotes from "../components/AssetNotes.vue";
+ import ViewStateBanner from "../components/ViewStateBanner.vue";
+-import { gs308epIpDivergenceNote, isGs308epAsset } from "../observatoryUx";
+-
++import { gs308epIpDivergenceNote, isGs308epAsset, humanPresenceState, UX_COPY, fritzPresenceOutageFromReliability } from "../observatoryUx";
++import FritzOutageBanner from "../components/FritzOutageBanner.vue";
+ const route = useRoute();
+ const router = useRouter();
+ const assets = ref([]);
+ const chassisPayload = ref({ chassis: [] });
++const reliability = ref(null);
+ const devices = computed(() => composeDevices(assets.value, chassisPayload.value));
+-
++const fritzOutage = computed(() => fritzPresenceOutageFromReliability(reliability.value));
++
++function devicePresenceLabel(d) {
++  const state = d?.primary?.presence_state || d?.presence_state;
++  if (state) return humanPresenceState(state);
++  if (d?.stale) {
++    return fritzOutage.value?.active
++      ? UX_COPY.presence_source_outage
++      : UX_COPY.presence_stale;
++  }
++  return UX_COPY.presence_present;
++}
+ const view = ref("active"); // active | stale | all | new
+ const filter = ref("all");
+ const q = ref("");
+@@ -91,12 +103,14 @@ async function load() {
+   loading.value = true;
+   error.value = "";
+   try {
+-    const [a, c] = await Promise.all([
++    const [a, c, rel] = await Promise.all([
+       api.assets({ include_historical: "true" }),
+       api.chassis(),
++      api.reliability().catch(() => null),
+     ]);
+     assets.value = a;
+     chassisPayload.value = c;
++    reliability.value = rel;
+   } catch (e) {
+     error.value = e.message || "Caricamento inventario fallito";
+   } finally {
+@@ -251,6 +265,10 @@ onUnmounted(() => {
+       <span v-if="msg" class="inv-msg">{{ msg }}</span>
+     </PageHeader>
+     <p class="inv-subtitle">dispositivi fisici sulla rete · raggruppati per device</p>
++    <FritzOutageBanner
++      :active="fritzOutage.active"
++      :detail="fritzOutage.detail"
++    />
+ 
+     <ViewStateBanner v-if="error" kind="error" :message="error" />
+     <ViewStateBanner v-else-if="loading" kind="loading" />
+@@ -285,7 +303,7 @@ onUnmounted(() => {
+       >
+         <span class="n">{{ loading ? "—" : counts.stale }}</span>
+         <span class="lbl">Non visti di recente</span>
+-        <span class="sub">fermi da &gt;24h · residui</span>
++        <span class="sub">fermi da &gt;24h · o copertura non disponibile</span>
+       </button>
+       <button
+         type="button"
+@@ -385,8 +403,9 @@ onUnmounted(() => {
+       </div>
+       <div v-show="staleOpen">
+         <div class="inv-stale-note">
+-          Questi device non rispondono da &gt;24h. Molti sono residui storici (MAC privacy Wi-Fi
+-          visti una volta, device spenti). Restano qui per storico — non contano come rete viva.
++          Device non aggiornati da &gt;24h: possono essere residui storici (MAC privacy, spenti)
++          oppure — se la sorgente di presenza è muta (Fritz TR-064) — «copertura sorgente non
++          disponibile», non «assenti». Non contano come rete viva operativa.
+         </div>
+         <div
+           v-for="d in staleRows"
+@@ -460,10 +479,10 @@ onUnmounted(() => {
+             </div>
+             <div
+               class="inv-p-sub"
+-              :title="`${selected.stale ? 'non presente' : 'presente'} · ${selected.macs[0] || '—'} · ${selected.ip || 'nessun IP'}`"
++              :title="`${devicePresenceLabel(selected)} · ${selected.macs[0] || '—'} · ${selected.ip || 'nessun IP'}`"
+             >
+               <span class="inv-p-presence" :class="selected.stale ? 'stale' : 'present'">
+-                {{ selected.stale ? "non presente" : "presente" }}
++                {{ devicePresenceLabel(selected) }}
+               </span>
+               · {{ selected.ip || "nessun IP" }}
+               · {{ selected.macs[0] || "—" }}{{ selected.interfaceCount > 1 ? ` +${selected.interfaceCount - 1}` : "" }}
+diff --git a/observatory/web/src/views/Oggi.vue b/observatory/web/src/views/Oggi.vue
+index 02c5a44..6aaeb7b 100644
+--- a/observatory/web/src/views/Oggi.vue
++++ b/observatory/web/src/views/Oggi.vue
+@@ -35,7 +35,8 @@ import DenseRow from "../components/ui/DenseRow.vue";
+ import StatusBadge from "../components/ui/StatusBadge.vue";
+ import AiInferenceLabel from "../components/AiInferenceLabel.vue";
+ import ViewStateBanner from "../components/ViewStateBanner.vue";
+-import { isAiSource } from "../observatoryUx";
++import { isAiSource, fritzPresenceOutageFromReliability } from "../observatoryUx";
++import FritzOutageBanner from "../components/FritzOutageBanner.vue";
+ 
+ const router = useRouter();
+ const loading = ref(false);
+@@ -44,12 +45,15 @@ const assets = ref([]);
+ const chassisPayload = ref({ chassis: [] });
+ const monitors = ref([]);
+ const moveSuggestions = ref([]);
++const factConflicts = ref([]);
+ const busyKey = ref("");
+ const rumoreExpanded = ref(false);
+ const rumorePreviewOpen = ref(false);
+ const massBusy = ref(false);
+ /** Esito massa: distinto da error; non azzerato da load(). */
+ const notice = ref("");
++const reliability = ref(null);
++const fritzOutage = computed(() => fritzPresenceOutageFromReliability(reliability.value));
+ 
+ const devices = computed(() => composeDevices(assets.value, chassisPayload.value));
+ 
+@@ -133,7 +137,8 @@ const emptyAll = computed(
+     !newItems.value.length &&
+     !monitorItems.value.length &&
+     !moveItems.value.length &&
+-    !noiseIds.value.length,
++    !noiseIds.value.length &&
++    !factConflicts.value.length,
+ );
+ 
+ const verificaBlocks = computed(() => [
+@@ -164,16 +169,20 @@ async function load() {
+   error.value = "";
+   // notice NON azzerato qui (E1): sopravvive al reload post-massa
+   try {
+-    const [a, c, m, s] = await Promise.all([
++    const [a, c, m, s, fc, rel] = await Promise.all([
+       api.assets({ include_historical: "true", all_proposals: "true" }),
+       api.chassis(),
+       api.monitors(),
+       api.suggestions().catch(() => []),
++      api.factConflicts().catch(() => ({ conflicts: [] })),
++      api.reliability().catch(() => null),
+     ]);
+     assets.value = a;
+     chassisPayload.value = c;
+     monitors.value = Array.isArray(m) ? m : m?.monitors || [];
+     moveSuggestions.value = Array.isArray(s) ? s : [];
++    factConflicts.value = (fc && fc.conflicts) || [];
++    reliability.value = rel;
+   } catch (e) {
+     error.value = e.message || "Caricamento fallito";
+   } finally {
+@@ -205,9 +214,41 @@ function problemFields(row) {
+ }
+ 
+ async function adoptRow(row) {
+-  if (row.chassis_member) {
++  // W4b.2.9: adopt control only when an action is executable.
++  const chassisAdopt =
++    row.actionable === false &&
++    row.actionable_reason === "chassis_multi_nic_adopt_blocked" &&
++    row.chassis_id &&
++    row.proposed_name;
++  if (row.actionable === false || row.verdict === "unresolvable") {
++    if (!chassisAdopt) {
++      error.value =
++        row.actionable_reason === "chassis_multi_nic_adopt_blocked"
++          ? `Adozione sul membro bloccata: soggetto corretto = chassis ${row.chassis_id}.`
++          : "Proposta non risolvibile: nessuna azione disponibile su questa card.";
++      return;
++    }
++    const key = row.key;
++    busyKey.value = key;
++    error.value = "";
++    notice.value = "";
++    try {
++      await api.adoptChassisName(row.chassis_id, {
++        source: row.source || "manual",
++        value: row.proposed_name,
++        proposalId: row.proposal_id,
++      });
++      await load();
++    } catch (e) {
++      error.value = e.message || String(e);
++    } finally {
++      busyKey.value = "";
++    }
++    return;
++  }
++  if (row.chassis_member && row.chassis_id) {
+     error.value =
+-      "Adozione bloccata: membro di chassis multi-NIC. Serve rename a livello chassis.";
++      `Adozione sul membro bloccata: usa rename chassis ${row.chassis_id} «${row.chassis_canonical_name || ""}».`;
+     return;
+   }
+   const key = row.key;
+@@ -224,6 +265,27 @@ async function adoptRow(row) {
+   }
+ }
+ 
++function showAdoptButton(row) {
++  if (row.actionable === false || row.verdict === "unresolvable") {
++    return (
++      row.actionable_reason === "chassis_multi_nic_adopt_blocked" &&
++      !!row.chassis_id &&
++      !!row.proposed_name
++    );
++  }
++  return !row.chassis_member;
++}
++
++function adoptButtonLabel(row) {
++  if (
++    row.actionable === false &&
++    row.actionable_reason === "chassis_multi_nic_adopt_blocked"
++  ) {
++    return "adotta (chassis)";
++  }
++  return "adotta";
++}
++
+ async function rejectRow(row) {
+   const key = row.key;
+   busyKey.value = key;
+@@ -329,7 +391,14 @@ function presenceLabel(state) {
+   if (s === "present") return "presente";
+   if (s === "recent") return "recente";
+   if (s === "fritz_only") return "solo Fritz";
+-  if (s === "stale") return "non visto di recente";
++  if (s === "stale_unlocated" || s === "presence_source_outage" || s === "source_outage") {
++    return "copertura sorgente non disponibile";
++  }
++  if (s === "stale") {
++    return fritzOutage.value?.active
++      ? "copertura sorgente non disponibile"
++      : "non visto di recente";
++  }
+   return s;
+ }
+ 
+@@ -342,6 +411,10 @@ onMounted(load);
+       title="Oggi"
+       help="Coda unica di interventi: nomi, chassis multi-NIC, porte da confermare, device nuovi e monitor. Priorità e cause in italiano."
+     />
++    <FritzOutageBanner
++      :active="fritzOutage.active"
++      :detail="fritzOutage.detail"
++    />
+     <ViewStateBanner v-if="error" kind="error" :message="error" />
+     <ViewStateBanner v-else-if="notice && (notice.includes('saltate') || notice.includes('non trovate'))" kind="partial" :message="notice" />
+     <p v-else-if="notice" class="oggi-notice" role="status">{{ notice }}</p>
+@@ -349,6 +422,73 @@ onMounted(load);
+     <template v-if="!loading">
+       <ViewStateBanner v-if="emptyAll && !error" kind="empty" message="Niente in coda. La rete non richiede interventi adesso." />
+       <template v-if="!emptyAll">
++        <!-- W4b.2.6: R-H conflict review (no auto-rename) -->
++        <section v-if="factConflicts.length" class="oggi-section">
++          <div class="oggi-section-head">
++            <h2 class="oggi-h2">Conflitti da verificare</h2>
++            <span class="oggi-counts">{{ factConflicts.length }} · R-H</span>
++          </div>
++          <div
++            v-for="c in factConflicts"
++            :key="'cf-' + c.id"
++            class="oggi-grid-row oggi-problem"
++          >
++            <DenseRow metric-width="0" value-width="auto">
++              <div class="oggi-grid-main">
++                <div class="oggi-names">
++                  <span class="oggi-prop">{{ c.incumbent_value || "?" }}</span>
++                  <span class="oggi-vs">vs</span>
++                  <span class="oggi-cur">{{ c.value }}</span>
++                  <StatusBadge tone="attn" label="conflitto" />
++                </div>
++                <dl class="oggi-fields">
++                  <div>
++                    <dt>Priorità</dt>
++                    <dd>alta</dd>
++                  </div>
++                  <div>
++                    <dt>Causa ed evidenza</dt>
++                    <dd>
++                      Contraddizione forte tra
++                      «{{ c.incumbent_value }}» ({{ c.incumbent_source || "?" }},
++                      auth {{ c.incumbent_authority ?? "?" }}) e
++                      «{{ c.value }}» ({{ c.source }}, auth {{ c.authority }}).
++                      Occorrenze: {{ c.occurrences || 1 }}.
++                    </dd>
++                  </div>
++                  <div>
++                    <dt>Impatto</dt>
++                    <dd>Il current resta invariato; nessun auto-rename.</dd>
++                  </div>
++                  <div>
++                    <dt>Se ignori</dt>
++                    <dd>Il conflitto resta in coda R-H finché non scegli un lato o lo risolvi altrove.</dd>
++                  </div>
++                  <div>
++                    <dt>Se agisci</dt>
++                    <dd>Confermi quale valore è il current — l’altro resta storico/divergenza.</dd>
++                  </div>
++                  <div>
++                    <dt>Azione raccomandata</dt>
++                    <dd>Apri il Dossier e conferma a mano quale valore tenere.</dd>
++                  </div>
++                </dl>
++              </div>
++              <template #value>
++                <div class="oggi-actions">
++                  <button
++                    v-if="c.subject_type === 'asset' || c.subject_type === 'chassis'"
++                    type="button"
++                    class="oggi-btn primary"
++                    @click="openDossier(c.subject_id)"
++                  >
++                    apri Dossier
++                  </button>
++                </div>
++              </template>
++            </DenseRow>
++          </div>
++        </section>
+         <!-- Porte / FDB move (ex /suggestions) -->
+         <section v-if="moveItems.length" class="oggi-section">
+           <div class="oggi-section-head">
+@@ -546,13 +686,18 @@ onMounted(load);
+                           apri Dossier
+                         </button>
+                         <button
++                          v-if="showAdoptButton(row)"
+                           type="button"
+                           class="oggi-btn"
+-                          :disabled="busyKey === row.key || row.chassis_member"
+-                          :title="row.chassis_member ? 'Bloccato: chassis multi-NIC' : ''"
++                          :disabled="busyKey === row.key"
++                          :title="
++                            row.actionable_reason === 'chassis_multi_nic_adopt_blocked'
++                              ? `Adotta a livello chassis ${row.chassis_id}`
++                              : ''
++                          "
+                           @click="adoptRow(row)"
+                         >
+-                          adotta
++                          {{ adoptButtonLabel(row) }}
+                         </button>
+                         <button
+                           type="button"
+diff --git a/observatory/web/src/views/Plant.vue b/observatory/web/src/views/Plant.vue
+index a595934..713eb4b 100644
+--- a/observatory/web/src/views/Plant.vue
++++ b/observatory/web/src/views/Plant.vue
+@@ -1,5 +1,6 @@
+ <script setup>
+-import { computed, onMounted, ref } from "vue";
++import { computed, nextTick, onMounted, ref, watch } from "vue";
++import { useRoute } from "vue-router";
+ import { api } from "../api";
+ import PageHeader from "../components/PageHeader.vue";
+ import Branch308Card from "../components/Branch308Card.vue";
+@@ -17,6 +18,7 @@ import {
+ } from "../observatoryUx";
+ import { formatDateTime } from "../formatTime";
+ 
++const route = useRoute();
+ const switches = ref([]);
+ const selected = ref(null);
+ const form = ref({});
+@@ -48,6 +50,7 @@ async function load() {
+   error.value = "";
+   try {
+     switches.value = await api.switches();
++    await applyAssetDeepLink();
+   } catch (e) {
+     error.value = e.message || "Caricamento impianto fallito";
+   } finally {
+@@ -55,6 +58,32 @@ async function load() {
+   }
+ }
+ 
++/** Deep-link ?asset= / ?asset_id= → apri porta associata (F2.1). */
++async function applyAssetDeepLink() {
++  const raw = route.query.asset ?? route.query.asset_id;
++  if (raw == null || raw === "") return;
++  const id = Number(Array.isArray(raw) ? raw[0] : raw);
++  if (!Number.isFinite(id) || id <= 0) return;
++  for (const sw of switches.value || []) {
++    const port = (sw.ports || []).find((p) => Number(p.asset_id) === id);
++    if (port) {
++      pick(sw, port);
++      await nextTick();
++      document
++        .querySelector(`[data-port-id="${port.id}"]`)
++        ?.scrollIntoView({ behavior: "smooth", block: "center" });
++      return;
++    }
++  }
++}
++
++watch(
++  () => [route.query.asset, route.query.asset_id],
++  () => {
++    if (switches.value.length) applyAssetDeepLink();
++  },
++);
++
+ function pick(sw, port) {
+   selected.value = { sw, port };
+   form.value = {
+@@ -67,6 +96,11 @@ function pick(sw, port) {
+   msg.value = "";
+ }
+ 
++/** SNMP oper_status: se lo switch non lo espone, non mostrare un pallino grigio mute. */
++function snmpLiveSupported(sw) {
++  return sw?.capabilities?.snmp_supported !== false;
++}
++
+ async function save() {
+   const payload = { ...form.value };
+   const currentOverride = selected.value.port.role_override
+@@ -298,6 +332,7 @@ onMounted(load);
+           v-for="p in sw.ports"
+           :key="p.id"
+           class="port"
++          :data-port-id="p.id"
+           :class="{
+             active: selected?.port?.id === p.id,
+             warn: !!p.warn,
+@@ -315,11 +350,18 @@ onMounted(load);
+           <div class="port-head">
+             <span class="port-number">P{{ p.number }}</span>
+             <span
++              v-if="snmpLiveSupported(sw)"
+               class="dot"
+               :class="p.snmp?.oper_status"
+               :title="statusLabel(p.snmp?.oper_status)"
+               :aria-label="`Stato: ${statusLabel(p.snmp?.oper_status)}`"
+             ></span>
++            <span
++              v-else
++              class="dot-na"
++              title="Link SNMP non misurabile su questo switch"
++              aria-label="Link SNMP non misurabile"
++            >—</span>
+           </div>
+           <div class="dev">
+             <span :class="{ free: portCellPresentation(p).free }">
+@@ -779,6 +821,14 @@ onMounted(load);
+   border-radius: 50%;
+   background: #777;
+ }
++.dot-na {
++  display: inline-block;
++  flex: 0 0 auto;
++  font-size: 0.65rem;
++  line-height: 1;
++  color: var(--text-3);
++  font-family: var(--font-mono);
++}
+ .dot.up {
+   background: #47b36b;
+ }
+diff --git a/observatory/web/src/views/Topology.vue b/observatory/web/src/views/Topology.vue
+index e3fec0e..a552f6d 100644
+--- a/observatory/web/src/views/Topology.vue
++++ b/observatory/web/src/views/Topology.vue
+@@ -201,7 +201,7 @@ function edgeTooltip(edge) {
+     edge.evidence_conflict ? `Conflitto risolto: ${edge.evidence_conflict}` : "",
+     `Confidenza: ${edge.confidence_badge || "sconosciuta"}${edge.confidence != null ? ` (${Math.round(edge.confidence * 100)}%)` : ""}`,
+     `Osservato: ${observed}`,
+-    `Freshness: ${edge.freshness || (edge.stale ? "stale" : "corrente")}${edge.stale ? " — dato oltre la finestra di aggiornamento" : ""}`,
++    `Freschezza: ${edge.freshness || (edge.stale ? "non recente" : "corrente")}${edge.stale ? " — dato oltre la finestra di aggiornamento" : ""}`,
+   ];
+   if (/porta interna non (rilevabile|osservabile)/i.test(`${edge.label} ${edge.physical_port_label}`)) {
+     details.splice(2, 0, "Porta interna sconosciuta: il GS308EP non espone la porta fisica.");
+@@ -214,7 +214,7 @@ function nodeTooltip(node) {
+   return [
+     node.parent_id === "internet" ? "Upstream: ◎ Internet" : "",
+     `Nome: ${node.label}`,
+-    `Stato: ${isOffline(node) ? "offline / stale" : node.status || "non disponibile"}`,
++    `Stato: ${isOffline(node) ? "offline / non recente" : node.status || "non disponibile"}`,
+     node.ip ? `IP: ${node.ip}` : "IP: non disponibile",
+     node.role ? `Ruolo: ${node.role}` : "",
+     node.category ? `Categoria: ${node.category}` : "",
+@@ -318,14 +318,14 @@ function visibilityChanged() {
+ }
+ 
+ async function applyRouteFocus() {
+-  const q = route.query.asset_id;
++  const q = route.query.asset_id ?? route.query.highlight ?? route.query.asset;
+   if (q == null || q === "") return;
+   const id = String(Array.isArray(q) ? q[0] : q);
+   if (id && assetId.value !== id) await selectAsset(id);
+ }
+ 
+ watch(
+-  () => route.query.asset_id,
++  () => [route.query.asset_id, route.query.highlight, route.query.asset],
+   () => {
+     applyRouteFocus();
+   },
+
+################ NEW FILES ################
+==== NEW observatory/web/src/components/FritzOutageBanner.vue ====
+diff --git a/observatory/web/src/components/FritzOutageBanner.vue b/observatory/web/src/components/FritzOutageBanner.vue
+new file mode 100644
+index 0000000..3348371
+--- /dev/null
++++ b/observatory/web/src/components/FritzOutageBanner.vue
+@@ -0,0 +1,50 @@
++<script setup>
++/**
++ * W4c.5.3 / F2 — declare Fritz TR-064 outage so presence is not read as "devices gone".
++ */
++defineProps({
++  /** true when Fritz hostlist/mesh is known degraded */
++  active: { type: Boolean, default: false },
++  detail: { type: String, default: "" },
++});
++</script>
++
++<template>
++  <aside v-if="active" class="fritz-outage" role="status" data-testid="fritz-outage-banner">
++    <strong>Presenza Fritz non misurabile</strong>
++    <p>
++      Credenziali TR-064 assenti o rifiutate (401). I device non aggiornati dal FRITZ!Box
++      restano «copertura sorgente non disponibile» — non «assenti».
++      <span v-if="detail" class="detail">{{ detail }}</span>
++    </p>
++  </aside>
++</template>
++
++<style scoped>
++.fritz-outage {
++  margin: 0 0 1rem;
++  padding: 0.75rem 1rem;
++  border: 1px solid var(--attn);
++  border-radius: var(--radius);
++  background: color-mix(in srgb, var(--attn) 12%, var(--bg-1));
++  color: var(--text-1);
++}
++.fritz-outage strong {
++  display: block;
++  margin-bottom: 0.25rem;
++  color: var(--attn);
++}
++.fritz-outage p {
++  margin: 0;
++  font-size: 0.92rem;
++  color: var(--text-2);
++  line-height: 1.4;
++}
++.fritz-outage .detail {
++  display: block;
++  margin-top: 0.35rem;
++  font-family: var(--font-mono);
++  font-size: 0.8rem;
++  color: var(--text-3);
++}
++</style>
+==== NEW observatory/web/public/favicon.ico ====
+(binary      548 bytes — sha256 9f05a7d560f864651d4bb153668d96f9e110f8a233441ee1132ed25f28babd84)
+==== NEW observatory/web/public/favicon-16.png ====
+(binary      123 bytes — sha256 3adb5237e462e702a9774b725acc2e66e1ed52477f0fd00b1fbf137048d4e73c)
+==== NEW observatory/web/public/favicon-32.png ====
+(binary      165 bytes — sha256 272c38b386c93f74c4d04972cc88b1938ac4cf21a4bea0ac1677f2d72eb8ca28)
+==== NEW observatory/web/public/favicon-48.png ====
+(binary      206 bytes — sha256 8df89870c29b806af97df7aaddf4103d3f84f241dff692f9841c0db8e80a5caf)
+==== NEW observatory/web/public/apple-touch-icon.png ====
+(binary      754 bytes — sha256 2964ce4692e125269918fbe303b42726f1a8ac49cebd680b8e7e947d0aa40610)
+==== NEW observatory/docs/obs-ux2.md ====
+diff --git a/observatory/docs/obs-ux2.md b/observatory/docs/obs-ux2.md
+new file mode 100644
+index 0000000..e7a52c0
+--- /dev/null
++++ b/observatory/docs/obs-ux2.md
+@@ -0,0 +1,161 @@
++# F2 — Revisione strutturale UI/UX (0.10.51)
++
++**Data:** 2026-07-27 · **Ramo:** `feature/obs-currency` · **Base:** W4c **0.10.50** (gate verde)  
++**Rinumerazione:** W5 → dopo F2 · W6 · W7 · W8 a seguire.
++
++---
++
++## F2.0 — Identificazione «Mappa»
++
++| Etichetta Michele | Route | Componente |
++|---|---|---|
++| Gruppo nav **MAPPA** | `/inventory` · `/plant` · `/topology` · `/monitoring` · (+ Timeline/Findings/Azioni) | `App.vue` nav-group |
++| Mappa **porte fisiche** («varie parti rotte») | **`/plant`** | `Plant.vue` + `Branch308Card.vue` |
++| Collocazione device | `/topology` | `Topology.vue` |
++
++Dichiarato **prima** delle modifiche: la superficie «Mappa» operativa porte = **Impianto `/plant`**; il gruppo laterale MAPPA è composito.
++
++---
++
++## Assert di produzione (UNA RIGA)
++
++`boot1 0.10.51: needs_apply=false T_backup=0 structural=0 · NP_total=409 (Δ0; pending=78) · assets=151 ip_cur=100 AD=62 · fact_assertions=253 (Δ0) · breaker=closed · unknown_source=0 · observations=absent · asset3=manual LGS310C · VERSION=0.10.51`
++
++### Previsioni (dichiarate pre-deploy) → osservati
++
++| Metrica | Previsto | Osservato | Scarto |
++|---|---|---|---|
++| name_proposals **total** | 409 Δ0 | **409** | 0 |
++| fact_assertions | 253 Δ0 | **253** | 0 |
++| assets / ip_current | 151 / 100 | 151 / 100 | 0 |
++| needs_apply / T_backup / structural | false / 0 / 0 | false / 0 / 0 | 0 |
++| breaker / unknown_source | closed / 0 | closed / 0 | 0 |
++| AD (finestra 24h) | rimisurare | **62** | — (finestra mobile) |
++| nomi valore modificati | 0 | 0 (asset 3 = LGS310C) | 0 |
++| provenance_unreliable rimossi | 0 | 0 | 0 |
++
++Nota: il conteggio «NP» di gate è il **totale** righe `name_proposals` (=409), non solo `pending`.
++
++---
++
++## F2.1 — Difetti Mappa (`/plant`) enumerati
++
++| # | Componente | Riproduzione | Causa | Gravità | Origine | Esito |
++|---|---|---|---|---|---|---|
++| M1 | `Plant.vue` | Apri `/plant?asset=N` | query ignorata | rotto | FE | **fix**: deep-link `?asset=` / `?asset_id=` → pick porta + scroll |
++| M2 | griglia porte GS308 | pallini grigi mute | SNMP assente ma UI mostra `oper_status` vuoto come «sconosciuto» | degradato | FE | **fix**: `snmpLiveSupported` → «—» + titolo «non misurabile» |
++| M3 | `Branch308Card` | vista 308 | limiti I2/I7 non espliciti (`.3.20`, PoE, flapping) | degradato | FE | **fix**: blocco «Non misurabile» |
++| M4 | Topology deep-link | `?highlight=` | solo `asset_id` | degradato | FE | **fix**: accetta `highlight`/`asset` |
++| M5 | Topology tooltip | inglese «stale» | copy EN | cosmetico | FE | **fix**: «non recente» |
++| M6 | Presence invent./Oggi | `stale` / `stale_unlocated` | letto come «assente» | rotto (I2) | FE (+ debito trust a monte) | **fix presentazione**; trust **non** toccato (W4c.5.2) |
++| M7 | Fritz muto | nessuna schermata lo dice | credenziali assenti (F-4) | rotto (visibilità) | FE | **fix**: `FritzOutageBanner` su Oggi/Dashboard/Inventario |
++| M8 | Chassis N nomi | inventory/dossier | post W4c.1 i membri non hanno tutti il nome; compose usava solo primary.name | degradato | FE | **fix**: `chassis_canonical_name` in `composeDevices` + dossier |
++| M9 | Favicon | cache / palette legacy verde neon | fuori token | cosmetico | FE | **fix**: token matrix + versioned links |
++
++Cause a monte **non mascherate**: declassamento trust `stale_unlocated` (DEBT-PRESENCE-SOURCE-OUTAGE) — UI dichiara «copertura sorgente non disponibile».
++
++---
++
++## F2.2 — Oggi
++
++- Banner Fritz; `stale_unlocated` → «copertura sorgente non disponibile».
++- Conflitti R-H nel flusso (sezione problematica con Impatto / Se ignori / Se agisci).
++- Chassis / rename / move restano **nella** coda Oggi (nessun hub parallelo).
++- Soppressione sibling: dipende da `chassis_role === "interface"` (W4c.1) — invariata.
++
++Verifica LGS (logica già in triage + presentation API): chassis 24 manual LGS310C; chassis 23 LGS328C resta `unknown_nonempty` (F-2); nessuna marcatura aggiuntiva in F2.
++
++---
++
++## F2.3 — Matrice vista × breakpoint (verdetto)
++
++Audit strutturale (codice + layout responsive esistenti). Verdetto: **OK** = gerarchia accettabile / azioni solo se eseguibili / stati qualificati; **DIP** = dipendenza W5/W7; **DEBT** = debito trust/Fritz.
++
++| Vista | Mobile | Tablet | Desktop | Note |
++|---|---|---|---|---|
++| `/oggi` | OK | OK | OK | coda operativa; banner Fritz; conflitti integrati |
++| `/dossier/:id` | OK | OK | OK | nome canonico chassis; presence via `humanPresenceState` |
++| `/inventory` | OK | OK | OK | una riga per chassis; copy stale ≠ assente |
++| `/plant` | OK | OK | OK | deep-link; GS308 senza barre SNMP mute |
++| `/topology` | OK | OK | OK | highlight alias; copy IT; fullscreen opt-in |
++| `/monitoring` | OK | OK | OK | SensorHealth già espone sensori falliti |
++| `/suggestions` | OK | OK | OK | nessuna logica identità nuova (DIP W5) |
++
++**F2.3.4 Fritz:** banner + copy; stato Fritz muto dichiarato. Trust layer **non** corretto.
++
++---
++
++## F2.4 — Vista 308 (GS308EP)
++
++Dichiarato in `Branch308Card`: fatto (ping `.1.8`, mappa manuale, FDB upstream conf. 0.65); **non misurabile** (porta interna, PoE, NSDP, rx/tx locale, flapping); `.3.20` storico; SPAN = inferenza.
++
++---
++
++## F2.5 — Favicon
++
++### Token misurati (`matrix.css` `:root`)
++
++| Nome | Valore | Uso favicon |
++|---|---|---|
++| `--bg-0` | `#0f1319` | fondo (tema scuro) |
++| `--accent` | `#6bc5db` | forma L |
++| `--ok` | `#4fb477` | forma O |
++| `--text-1` | `#e8ebf0` | (tema chiaro SVG: L su `--bg-0`, fondo `#e8ebf0`) |
++
++Nessun colore nuovo. Forma: **due** primarie (L + O a foratura), nessuno schema topologia. Strategia: `prefers-color-scheme` nell’SVG + marchio scuro leggibile su tab chiare via ICO/PNG opachi.
++
++Asset: `favicon.svg` · `favicon.ico` (16/32/48) · `apple-touch-icon.png` 180 · PNG 16/32/48. Link versionati `?v=0.10.51` in `index.html`.
++
++**Cache Caddy `:8080`:** `200` SVG/ICO; `Server: Caddy` + nginx; `Etag`/`Last-Modified` presenti; bust query.
++
++### Render obbligatori (allegati)
++
++![favicon 16px](obs-ux2-assets/favicon-16.png)
++
++![favicon 32px](obs-ux2-assets/favicon-32.png)
++
++Leggibilità a 16px: L ciano + O verde distinti su fondo `--bg-0` (una iterazione).
++
++---
++
++## F2.6 — Dipendenze dichiarate → W5 / W7
++
++| Caso | Perché FE non risolve | Ondata |
++|---|---|---|
++| Consumatori correntezza / identity | logica identità non in FE | **W5** |
++| Wire `mac_ip_policy` | classifier puro non wired | **W7** |
++| Trust `stale_unlocated` vs source outage | classificazione presenza | ondata dedicata (non F2) |
++| `excl_key` IP ruolo | pre-condizione W3 | W3 |
++
++Gate I6 post-F2: `rg 'scoreSpecificity|specificity' api/` → **VUOTO**.
++
++---
++
++## Debiti aperti (aggiornati, nessuna riga estranea rimossa)
++
++- **DEBT-FRITZ-TR064-CREDENTIALS** — APERTO (F-4)
++- **DEBT-PRESENCE-SOURCE-OUTAGE** — APERTO; UI F2 dichiara; trust non corretto
++
++---
++
++## Test eseguiti (nodi nominati F2 / regressione UI)
++
++- `oggiTriage` · `oggiProblems` · `observatoryUx` · `portPresentation` · `topologyLayout` → pass
++- I6 → vuoto
++- **Non** rieseguita suite completa. **Non** dichiarato «suite verde».
++
++---
++
++## Esclusioni dal diff
++
++- `data/`, `.env`, `.venv`, `node_modules`, `web/dist`, DB/backups
++- Report/diff di ondate precedenti già pubblicati (w4c, w4b, …) non re-inclusi come contenuto nuovo salvo riferimenti
++- `prepara-cursor.sh` fuori scope
++
++---
++
++## Publish
++
++- Report: `obs-ux2.md`
++- Diff: `obs-ux2.diff.txt`
++- Raster: `obs-ux2-favicon-16.png` · `obs-ux2-favicon-32.png`
+==== NEW observatory/docs/obs-ux2-assets/favicon-16.png ====
+(binary      123 bytes — sha256 3adb5237e462e702a9774b725acc2e66e1ed52477f0fd00b1fbf137048d4e73c)
+==== NEW observatory/docs/obs-ux2-assets/favicon-32.png ====
+(binary      165 bytes — sha256 272c38b386c93f74c4d04972cc88b1938ac4cf21a4bea0ac1677f2d72eb8ca28)
