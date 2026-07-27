@@ -245,19 +245,25 @@ Runner ripristinato: rimossi eventuali container `pytest` orfani; contesto Docke
 (`observatory-api` healthy, collector attivo). Ripetuta l'esecuzione del nodo con fixture
 `tests/test_w7_consumers.py` con l'immagine usa-e-getta `observatory-api --entrypoint python3`.
 
-**Esito:** il **primo nodo resta bloccato oltre il timeout anche dopo la pulizia degli orfani**.
-L'import di `app.services.inventory` è sano (misurato: **1.87 s**), quindi non è un difetto di
-import né del codice cambiato. Per direttiva: **registrato come BLOCCO INFRASTRUTTURALE (K4)**,
-**non** interpretato come test rosso. Non ulteriormente diagnosticato (taglio richiesto).
+**Esito iniziale:** l'esecuzione dell'**intero file** `test_w7_consumers.py` (8 nodi) supera il
+timeout. L'import di `app.services.inventory` è sano (misurato: **1.87 s**): non è un loop né un
+difetto del codice, ma **lentezza I/O del mount NAS** (~26 s/test → 8 nodi > timeout).
 
-**Copertura effettiva del codice cambiato (runtime, su dati reali):** il percorso
-`_l2_only_exception_class` (fix K9), `mac_ip_policy_consultation` (W7C.5) e il wire tri-stato
-(W7C.3) sono stati **esercitati a runtime su tutti i 151 asset** da `scripts/w7c_measure.py` e
-dal **blast** `scripts/w7_macip_blast.py` (nessun hang: ~3–4 s ciascuno). Il classifier puro
-`test_mac_ip_policy` (11 nodi, incl. tri-stato W7C.3) resta **ESERCITATO**. I tre nodi fixture
-W7C.2 (`test_w7c23_*`, `test_w7c22_*`) restano **NON esercitati (K4)**: il fix K9 è però provato
-su dati reali dalla misura sopra (`exception_class_changed=0` enumerato, powerline id=7
-riconosciuto sia da vecchio sia da nuovo codice).
+**Esito definitivo (verde):** selezionando **solo i 3 nodi W7C.2** (`-k w7c`) il runner completa:
+
+`tests/test_w7_consumers.py ... — 3 passed, 5 deselected, 25 warnings in 79.38s` (exit 0).
+
+Quindi i tre nodi fixture W7C.2 (`test_w7c23_powerline_chassis_member_empty_name_recognized_via_oui`,
+`test_w7c23_powerline_chassis_member_recognized_via_canonical_name`,
+`test_w7c22_exception_absent_when_no_measured_attribute`) sono **ESERCITATI e VERDI** — il fix K9
+è provato a runtime end-to-end (OUI dell'interfaccia, nome canonico del chassis, e classe assente
+`None` quando nessun attributo riconosce). Nessun nodo rosso. Gli **altri 5 nodi** del file (non
+W7C) restano **NON esercitati per lentezza mount (K4)**, non per rosso.
+
+**Copertura ulteriore del codice cambiato (runtime, dati reali):** `_l2_only_exception_class`,
+`mac_ip_policy_consultation` e il wire tri-stato sono stati esercitati anche su tutti i **151
+asset** da `scripts/w7c_measure.py` e dal blast (~3–4 s, nessun hang). Il classifier puro
+`test_mac_ip_policy` (11 nodi, incl. tri-stato W7C.3) resta **ESERCITATO**.
 
 ## W7C-FIX.3 — Delta disaccordi 52 (W7) → 53 (W7-CLOSE): spiegazione misurata
 
@@ -278,4 +284,4 @@ causa di codice — la prova decisiva è l'accordo dei due strumenti a 53.)*
 
 ## Assert W7C-FIX (UNA RIGA)
 
-`0.10.59 (invariato): code_prod_changed=NO · w7c_measure fdb_fresh=REAL · narrow wire hits(REAL)=0 · fdb_fresh_ports_24h=0/46 (newest 2026-07-25 14:52) · reliable impact=0 (additivo-inerte, misurato+strutturale) · test_w7_consumers=K4 blocco infrastrutturale (non rosso) · test_mac_ip_policy=11 esercitati · blast(immutato)=53 == consultation=53 ⇒ 52→53 deriva dati (non codice) · total=151`
+`0.10.59 (invariato): code_prod_changed=NO · w7c_measure fdb_fresh=REAL · narrow wire hits(REAL)=0 · fdb_fresh_ports_24h=0/46 (newest 2026-07-25 14:52) · reliable impact=0 (additivo-inerte, misurato+strutturale) · test_w7_consumers W7C.2=3 passed (79.38s, esercitati; altri 5 nodi K4 lentezza mount) · test_mac_ip_policy=11 esercitati · blast(immutato)=53 == consultation=53 ⇒ 52→53 deriva dati (non codice) · total=151`
