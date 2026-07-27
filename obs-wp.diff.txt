@@ -1,0 +1,968 @@
+--- a/api/app/services/trust.py
++++ b/api/app/services/trust.py
+@@ -123,39 +123,44 @@
+ 
+ 
+ def lift_fritz_quarantine_on_active(asset: Asset, *, at: datetime | None = None) -> bool:
+-    """Trust-layer exit from fritz_historical when Fritz reports active again (D.0.b).
++    """Record a fresh fritz-active edge and RE-DERIVE state (W-P.2.1).
+ 
+-    Level is proportional to Fritz authority (I5 0.90): ``known``, never
+-    ``confirmed_present`` (portal-recent apex). Inventory must not lift
+-    (``inventory_may_set`` blocks it). Reversibility: without portal, the next
+-    trust plan reclassifies to ``fritz_historical`` via ``classify_asset``.
++    W-P principle — the evidence is written, the state is derived: the
++    authoritative evidence already lives in ``meta.discovery.fritz`` (written by
++    ``update_fritz_evidence``); here we only append the edge to the trust audit
++    trail and then re-run the SINGLE derivation (``classify_asset``). No level is
++    written imperatively, so ``_build_trust_plan`` stays convergent (one owner of
++    ``trust_level`` / ``operational_state`` — the cause of the 109 oscillation was
++    a second author of the same field).
++
++    Scope: only auto-hidden records (``fritz_historical`` / ``stale_unlocated``);
++    portal-confirmed/known assets are untouched. Level is bounded by Fritz
++    authority (I5 0.90): fresh fritz-active derives ``known``, never
++    ``confirmed_present`` (portal apex). Reversibility: once the edge ages out of
++    the window ``classify_asset`` returns ``fritz_historical`` / ``stale_unlocated``
++    again (no oscillation). Inventory cannot reach this path (W-C).
+     """
+-    meta = dict(asset.meta or {})
+-    in_quarantine = meta.get("operational_state") == "fritz_historical" or (
++    now = at or _utc_now()
++    meta = asset.meta or {}
++    op = meta.get("operational_state")
++    in_scope = op in {"fritz_historical", "stale_unlocated"} or (
+         asset.trust_level or ""
+-    ) == "fritz_historical"
+-    if not in_quarantine:
++    ) in {"fritz_historical", "stale_unlocated"}
++    if not in_scope:
+         return False
+-    now = at or _utc_now()
+-    asset.trust_level = "known"
+-    meta.update(
+-        {
+-            "operational_state": "active",
+-            "inventory_hidden": False,
+-            "inventory_hidden_auto": False,
+-            "inventory_hidden_reason": "",
+-        }
+-    )
+-    trust = dict(meta.get("trust") or {})
+-    trust["level"] = "known"
++    m = dict(meta)
++    trust = dict(m.get("trust") or {})
+     evidence = list(trust.get("evidence") or [])
+     evidence.append(
+         {"kind": "fritz_active", "at": now.isoformat() + "Z", "confidence": 0.9}
+     )
+     trust["evidence"] = evidence[-30:]
+-    meta["trust"] = trust
+-    asset.meta = meta
+-    return True
++    m["trust"] = trust
++    asset.meta = m
++    before = (asset.trust_level, op)
++    level = classify_asset(asset, now=now)
++    _write_trust_state(asset, level, now=now)
++    return before != (asset.trust_level, (asset.meta or {}).get("operational_state"))
+ 
+ 
+ def on_fritz_active_evidence(
+@@ -167,6 +172,26 @@
+     return False
+ 
+ 
++def _has_fresh_fritz_active(
++    asset: Asset, *, now: datetime, stale_hours: int = 24
++) -> bool:
++    """Fritz-active EVIDENCE, fresh within the staleness window (W-P.2.1).
++
++    The evidence lives in ``meta.discovery.fritz`` (written by
++    ``update_fritz_evidence``). ``classify_asset`` reads it so the trust level is
++    DERIVED from evidence — no imperative second author of state. Freshness makes
++    ``fritz_historical`` non-absorbing (D.0.b) and reversible: once the edge ages
++    past the window the derivation drops back without oscillation.
++    """
++    fritz = dict(dict((asset.meta or {}).get("discovery") or {}).get("fritz") or {})
++    if fritz.get("active") is not True:
++        return False
++    seen = _parse_presence_ts(fritz.get("last_observed_at"))
++    if seen is None:
++        return False
++    return seen >= now - timedelta(hours=max(1, stale_hours))
++
++
+ def classify_asset(asset: Asset, *, now: datetime | None = None, stale_hours: int = 24) -> str:
+     now = now or _utc_now()
+     protected = bool(
+@@ -184,6 +209,11 @@
+         return "confirmed_present"
+     if protected:
+         return "known"
++    # Fritz authority (I5 0.90): fresh fritz-active → known, never confirmed_present
++    # (portal apex). Placed before the portal-stale branch so a fritz-alive device
++    # is not reported as stale (DEBT-PRESENCE-SOURCE-OUTAGE facet: source alive).
++    if _has_fresh_fritz_active(asset, now=now, stale_hours=stale_hours):
++        return "known"
+     if asset.portal_last_seen:
+         return "stale_unlocated"
+     return "fritz_historical"
+@@ -559,6 +589,61 @@
+     }
+ 
+ 
++def _apply_level_meta(asset: Asset, level: str) -> None:
++    """Single mapping ``level`` → trust meta + operational_state + hide flags.
++
++    W-P.2.1: shared by ``_apply_trust_plan`` and the fritz lift so the derived
++    state has exactly ONE writer logic. Callers set ``trust_level`` /
++    ``presence_state`` around this (or via ``_write_trust_state``).
++    """
++    meta = dict(asset.meta or {})
++    trust = dict(meta.get("trust") or {})
++    trust["level"] = level
++    trust.setdefault(
++        "confidence", 1.0 if level in {"confirmed_present", "known"} else 0.2
++    )
++    meta["trust"] = trust
++    if level == "fritz_historical":
++        meta.update(
++            {
++                "operational_state": "fritz_historical",
++                "inventory_hidden": True,
++                "inventory_hidden_auto": True,
++                "inventory_hidden_reason": (
++                    "Record storico FRITZ!Box senza osservazioni attive del portale"
++                ),
++            }
++        )
++    elif level == "stale_unlocated":
++        meta.update(
++            {
++                "operational_state": "stale_unlocated",
++                "inventory_hidden": True,
++                "inventory_hidden_auto": True,
++                "inventory_hidden_reason": (
++                    "Precedentemente confermato, senza evidenze recenti"
++                ),
++            }
++        )
++    elif meta.get("inventory_hidden_auto") and level in {"confirmed_present", "known"}:
++        meta.update(
++            {
++                "operational_state": "active",
++                "inventory_hidden": False,
++                "inventory_hidden_auto": False,
++                "inventory_hidden_reason": "",
++            }
++        )
++    asset.meta = meta
++
++
++def _write_trust_state(asset: Asset, level: str, *, now: datetime) -> None:
++    """Derived-state writer: trust_level + presence_state + operational meta."""
++    asset.trust_level = level
++    asset.presence_state = presence_state(asset, now=now)
++    _apply_level_meta(asset, level)
++
++
+ def _apply_trust_plan(db: Session, plan: dict, *, now: datetime) -> dict[str, int]:
+     """Apply a previously built plan (no observation re-scan)."""
+     actions = plan.get("actions") or []
+@@ -595,47 +680,7 @@
+             asset.portal_first_seen = asset.portal_first_seen or derived_last
+             if not asset.portal_last_seen or derived_last > asset.portal_last_seen:
+                 asset.portal_last_seen = derived_last
+-        asset.trust_level = level
+-        asset.presence_state = presence_state(asset, now=now)
+-        meta = dict(asset.meta or {})
+-        trust = dict(meta.get("trust") or {})
+-        trust["level"] = level
+-        trust.setdefault(
+-            "confidence", 1.0 if level in {"confirmed_present", "known"} else 0.2
+-        )
+-        meta["trust"] = trust
+-        if level == "fritz_historical":
+-            meta.update(
+-                {
+-                    "operational_state": "fritz_historical",
+-                    "inventory_hidden": True,
+-                    "inventory_hidden_auto": True,
+-                    "inventory_hidden_reason": (
+-                        "Record storico FRITZ!Box senza osservazioni attive del portale"
+-                    ),
+-                }
+-            )
+-        elif level == "stale_unlocated":
+-            meta.update(
+-                {
+-                    "operational_state": "stale_unlocated",
+-                    "inventory_hidden": True,
+-                    "inventory_hidden_auto": True,
+-                    "inventory_hidden_reason": (
+-                        "Precedentemente confermato, senza evidenze recenti"
+-                    ),
+-                }
+-            )
+-        elif meta.get("inventory_hidden_auto") and level in {"confirmed_present", "known"}:
+-            meta.update(
+-                {
+-                    "operational_state": "active",
+-                    "inventory_hidden": False,
+-                    "inventory_hidden_auto": False,
+-                    "inventory_hidden_reason": "",
+-                }
+-            )
+-        asset.meta = meta
++        _write_trust_state(asset, level, now=now)
+         for pid in action.get("archive_proposal_ids") or []:
+             proposal = proposals.get(pid)
+             if proposal is None:
+--- a/VERSION
++++ b/VERSION
+@@ -1 +1 @@
+-0.10.52
++0.10.53
+--- a/web/package.json
++++ b/web/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "lan-observatory-web",
+   "private": true,
+-  "version": "0.10.52",
++  "version": "0.10.53",
+   "type": "module",
+   "scripts": {
+     "dev": "vite",
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,4 +1,12 @@
+ # Changelog
++
++## 0.10.53 — W-P: presenza con un solo proprietario, stato derivato
++
++- **W-P.1 (misurato):** ipotesi A — Fritz VEDE l'asset 109 (`discovery.fritz.active=True` fresh, MAC `D8:EC:5E:CC:1C:01`). Il lift era legittimo; il difetto era che `classify_asset` non consumava l'evidenza fritz → riderivava `fritz_historical` ≠ stato memorizzato → `structural=1` permanente. Divergenti reali: solo 109.
++- **W-P.2:** l'evidenza si scrive, lo stato si deriva. `classify_asset` ora legge l'evidenza fritz-active fresca (`meta.discovery.fritz`, finestra staleness) e deriva `known` (autorità fritz I5 0.90, MAI `confirmed_present`). `lift_fritz_quarantine_on_active` non scrive più lo stato: registra l'evidenza e ri-esegue la derivazione unica. Mapping `livello→stato` estratto in `_apply_level_meta` (un solo writer, condiviso con `_apply_trust_plan`).
++- **W-P.3:** round-trip a writer fermi (due piani consecutivi `structural==[]`); fixture 109-like con/senza evidenza fritz; D.0.b (fresh→known, mai confirmed_present) + reversibilità; W-C invariata (inventory non solleva né smasha la quarantena). Gate I6 vuoto.
++- **fritz_historical NON assorbente:** un'evidenza fritz-active fresca solleva la quarantena via derivazione; scaduta l'evidenza il piano riporta a `fritz_historical`/`stale_unlocated` senza oscillare.
++- **DEBT-PRESENCE-SOURCE-OUTAGE:** migliorato (fritz vivo → `known`, non stale), ma NON chiuso: manca ancora la distinzione «sorgente non disponibile» vs «dispositivo assente» (richiede segnale di copertura sorgente). Resta APERTO.
+ 
+ ## 0.10.52 — W4d: census Asset.name, una scrittura rename, UX truth
+ 
+--- a/docs/KNOWN_DEBT.md
++++ b/docs/KNOWN_DEBT.md
+@@ -195,7 +195,8 @@
+ - **Principio:** quando la sorgente che copriva un device è indisponibile, lo stato corretto è «non misurato» / «copertura sorgente non disponibile», non «assente».
+ - **F0 (Fritz vivo):** evidenza Fritz corrente su 88 asset; lift live solo **109** → `known` (non `confirmed_present`). **136** ha `discovery.fritz.active=True` ma resta `stale_unlocated` perché `lift_fritz_quarantine_on_active` esce solo da `fritz_historical`. Trust layer non corretto in F0/W4d.
+ - **Vietato in W4c/F0:** correggere il trust layer. UI (F2 / **0.10.51**): banner Fritz + copy «copertura sorgente non disponibile».
+-- **Doc:** [`docs/obs-w4c.md`](obs-w4c.md) · [`docs/obs-ux2.md`](obs-ux2.md) · [`docs/obs-fritz-restore.md`](obs-fritz-restore.md)
++- **W-P (0.10.53) — trust layer corretto, debito NON chiuso:** `classify_asset` ora legge l'evidenza fritz-active fresca e deriva `known` (autorità fritz, mai `confirmed_present`); il lift non scrive più lo stato (evidenza→derivazione). Effetto misurato: 109 converge (fine oscillazione), 136 sollevato a `known`. Questo distingue «fritz vivo→known» da «fritz stale→stale/historical», MA **non** distingue ancora «sorgente non disponibile» (outage TR-064) da «dispositivo assente»: durante un'outage l'evidenza invecchia oltre la finestra e l'asset ridiscende. Serve un segnale di **copertura sorgente** (sensor_run/coverage) per chiudere. **RESTA APERTO** (non chiuso per prossimità, W-P.2.7).
++- **Doc:** [`docs/obs-w4c.md`](obs-w4c.md) · [`docs/obs-ux2.md`](obs-ux2.md) · [`docs/obs-fritz-restore.md`](obs-fritz-restore.md) · [`docs/obs-wp.md`](obs-wp.md)
+ 
+ ## DEBT-A2-CASCADE-AP
+ 
+--- a/tests/test_wp_presence.py
++++ b/tests/test_wp_presence.py
+@@ -0,0 +1,206 @@
++"""W-P — un solo proprietario, stato derivato. Test di COMPORTAMENTO (non stringhe).
++
++Gate: partendo dallo stato divergente (come asset 109 in prod), l'evidenza
++fritz-active fresca è LETTA dalla derivazione (`classify_asset`); il lift non
++scrive più lo stato. Due costruzioni consecutive del piano a writer fermi devono
++dare `structural == []` (nessuna oscillazione).
++"""
++from __future__ import annotations
++
++import sys
++import uuid
++from datetime import datetime, timedelta
++from pathlib import Path
++
++import pytest
++from sqlalchemy import create_engine
++from sqlalchemy.orm import sessionmaker
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
++
++from app.db import Base
++from app.models import Asset, Chassis, Interface
++from app.services.trust import (
++    _apply_trust_plan,
++    _build_trust_plan,
++    classify_asset,
++    on_fritz_active_evidence,
++)
++
++
++@pytest.fixture()
++def db(tmp_path):
++    engine = create_engine(f"sqlite:///{tmp_path / 'wp.db'}")
++    Base.metadata.create_all(engine)
++    session = sessionmaker(bind=engine)()
++    yield session
++    session.close()
++
++
++def _fritz_member(
++    db,
++    *,
++    fritz_active,
++    seen,
++    name="",
++    trust_level="fritz_historical",
++    op_state="fritz_historical",
++    portal_last_seen=None,
++):
++    """NIC membro di chassis, senza nome, senza IP — come l'asset 109."""
++    chassis = Chassis()
++    db.add(chassis)
++    db.flush()
++    fritz = None
++    if fritz_active is not None:
++        fritz = {
++            "active": fritz_active,
++            "hostname": "PC-D8-EC-5E-CC-1C-01",
++            "last_observed_at": seen.isoformat() + "Z",
++        }
++    asset = Asset(
++        uid=str(uuid.uuid4()),
++        name=name,
++        status="nuovo",
++        trust_level=trust_level,
++        chassis_id=chassis.id,
++        portal_last_seen=portal_last_seen,
++        meta={
++            "operational_state": op_state,
++            "inventory_hidden": True,
++            "inventory_hidden_auto": True,
++            **({"discovery": {"fritz": fritz}} if fritz is not None else {}),
++        },
++    )
++    db.add(asset)
++    db.flush()
++    db.add(Interface(asset_id=asset.id, mac=f"D8:EC:5E:CC:1C:{asset.id % 256:02x}"))
++    db.flush()
++    db.refresh(asset)
++    return asset
++
++
++def _structural_for(plan, asset_id):
++    return [a for a in plan["actions"] if a.get("structural") and a["asset_id"] == asset_id]
++
++
++def test_wp31_roundtrip_two_consecutive_clean_plans(db):
++    """W-P.3.1 — dallo stato divergente: apply → build → [] → build → []."""
++    now = datetime.utcnow()
++    asset = _fritz_member(db, fritz_active=True, seen=now)
++    # Stato divergente iniziale come 109 in prod: trust fritz_historical, op active.
++    asset.trust_level = "fritz_historical"
++    meta = dict(asset.meta)
++    meta["operational_state"] = "active"
++    asset.meta = meta
++    db.flush()
++
++    plan1 = _build_trust_plan(db, now=now, use_prefetch=True)
++    assert _structural_for(plan1, asset.id)  # boot1 applica una volta
++    _apply_trust_plan(db, plan1, now=now)
++    db.flush()
++
++    plan2 = _build_trust_plan(db, now=now, use_prefetch=True)
++    assert _structural_for(plan2, asset.id) == []
++    plan3 = _build_trust_plan(db, now=now, use_prefetch=True)
++    assert _structural_for(plan3, asset.id) == []
++
++    # Stato derivato stabile: known/active (autorità fritz), MAI confirmed_present.
++    assert asset.trust_level == "known"
++    assert asset.meta["operational_state"] == "active"
++
++
++def test_wp32_asset109_like_stable_derived(db):
++    """W-P.3.2 — NIC membro senza nome/IP, fritz-active fresca → stabile, derivato."""
++    now = datetime.utcnow()
++    asset = _fritz_member(db, fritz_active=True, seen=now)
++    assert asset.chassis_id is not None
++    assert list(asset.interfaces)[0].addresses == []  # zero IP correnti
++
++    assert classify_asset(asset, now=now) == "known"
++    plan = _build_trust_plan(db, now=now, use_prefetch=True)
++    _apply_trust_plan(db, plan, now=now)
++    db.flush()
++    assert asset.trust_level == "known"
++    assert asset.meta["operational_state"] == "active"
++    # nessuna oscillazione al giro successivo
++    assert _structural_for(_build_trust_plan(db, now=now, use_prefetch=True), asset.id) == []
++
++
++def test_wp33_no_fritz_evidence_lift_does_not_fire(db):
++    """W-P.3.3 — ipotesi B: senza evidenza fritz-active il lift NON spara."""
++    now = datetime.utcnow()
++    asset = _fritz_member(db, fritz_active=False, seen=now)
++
++    changed = on_fritz_active_evidence(asset, active=False, at=now)
++    assert changed is False
++    assert classify_asset(asset, now=now) == "fritz_historical"
++    # stored fritz_historical/fritz_historical == derivato → nessuna structural
++    assert _structural_for(_build_trust_plan(db, now=now, use_prefetch=True), asset.id) == []
++
++
++def test_wp34_dotb_fresh_lifts_known_not_confirmed_reversible(db):
++    """W-P.3.4 — D.0.b: fresh → known (mai confirmed_present); poi reversibile."""
++    now = datetime.utcnow()
++    asset = _fritz_member(db, fritz_active=True, seen=now)
++
++    lifted = on_fritz_active_evidence(asset, active=True, at=now)
++    assert lifted is True
++    assert asset.trust_level == "known"
++    assert asset.trust_level != "confirmed_present"
++    assert asset.meta["operational_state"] == "active"
++    assert asset.meta.get("inventory_hidden") is False
++
++    # Evidenza non più fresca → la derivazione torna a fritz_historical, senza oscillare.
++    meta = dict(asset.meta)
++    disc = dict(meta["discovery"])
++    fritz = dict(disc["fritz"])
++    fritz["last_observed_at"] = (now - timedelta(hours=48)).isoformat() + "Z"
++    disc["fritz"] = fritz
++    meta["discovery"] = disc
++    asset.meta = meta
++    db.flush()
++
++    plan = _build_trust_plan(db, now=now, use_prefetch=True)
++    action = next(a for a in plan["actions"] if a["asset_id"] == asset.id)
++    assert action["level"] == "fritz_historical"
++    _apply_trust_plan(db, plan, now=now)
++    db.flush()
++    assert asset.trust_level == "fritz_historical"
++    assert _structural_for(_build_trust_plan(db, now=now, use_prefetch=True), asset.id) == []
++
++
++def test_wp34b_stale_unlocated_with_fresh_fritz_lifts_to_known(db):
++    """W-P.1.5 (136): stale_unlocated + fritz-active fresca → known (fonte viva)."""
++    now = datetime.utcnow()
++    asset = _fritz_member(
++        db,
++        fritz_active=True,
++        seen=now,
++        trust_level="stale_unlocated",
++        op_state="stale_unlocated",
++        portal_last_seen=now - timedelta(days=2),
++    )
++    assert classify_asset(asset, now=now) == "known"
++    plan = _build_trust_plan(db, now=now, use_prefetch=True)
++    assert _structural_for(plan, asset.id)
++    _apply_trust_plan(db, plan, now=now)
++    db.flush()
++    assert asset.trust_level == "known"
++    assert asset.meta["operational_state"] == "active"
++    assert _structural_for(_build_trust_plan(db, now=now, use_prefetch=True), asset.id) == []
++
++
++def test_wp35_stale_fritz_evidence_stays_stale(db):
++    """W-P — fritz-active NON fresca (come 140/145/148): resta stale_unlocated."""
++    now = datetime.utcnow()
++    asset = _fritz_member(
++        db,
++        fritz_active=True,
++        seen=now - timedelta(hours=48),
++        trust_level="stale_unlocated",
++        op_state="stale_unlocated",
++        portal_last_seen=now - timedelta(days=2),
++    )
++    assert classify_asset(asset, now=now) == "stale_unlocated"
++    assert _structural_for(_build_trust_plan(db, now=now, use_prefetch=True), asset.id) == []
+--- a/scripts/wp_diagnose.py
++++ b/scripts/wp_diagnose.py
+@@ -0,0 +1,295 @@
++#!/usr/bin/env python3
++"""W-P diagnosi MISURATA (read-only) — W-P.0 delta + W-P.1 presenza asset 109/classe.
++
++Non scrive nulla: nessun commit, rollback finale. Run in prod (api container):
++
++  sudo docker compose exec -T api python3 - < scripts/wp_diagnose.py
++  # opzionale diff esatto contro una baseline:
++  sudo docker compose exec -T api python3 - < scripts/wp_diagnose.py /data/backups/<file>.db
++
++Legge SQLITE_PATH dall'ambiente (in container: /data/db/observatory.db).
++"""
++
++from __future__ import annotations
++
++import json
++import os
++import sys
++from datetime import datetime, timedelta
++from pathlib import Path
++
++API = Path("/app") if Path("/app/app").exists() else Path(__file__).resolve().parents[1] / "api"
++if str(API) not in sys.path:
++    sys.path.insert(0, str(API))
++
++from sqlalchemy import create_engine, func, select  # noqa: E402
++from sqlalchemy.orm import sessionmaker  # noqa: E402
++
++from app.config import get_settings  # noqa: E402
++from app.models import Asset, FactAssertion, Interface, IpAddress, NameProposal  # noqa: E402
++from app.services.chassis_grouping import device_counters  # noqa: E402
++from app.services.trust import classify_asset, reconcile_trust_history  # noqa: E402
++
++TARGET_109_MAC = "D8:EC:5E:CC:1C:01"
++CLASS_IDS = [109, 116, 136, 140, 145, 148]
++
++
++def _open(path: str):
++    engine = create_engine(f"sqlite:///{path}")
++    return sessionmaker(bind=engine)()
++
++
++def _now():
++    return datetime.utcnow()
++
++
++def _ip_current_count(db) -> int:
++    return int(db.scalar(select(func.count()).select_from(IpAddress).where(IpAddress.is_current == True)) or 0)  # noqa: E712
++
++
++def _asset_current_ips(asset: Asset) -> list[tuple[str, str, str]]:
++    out = []
++    for iface in asset.interfaces or []:
++        for addr in iface.addresses or []:
++            if addr.is_current:
++                out.append((iface.mac, addr.ip, addr.source))
++    return out
++
++
++def _fritz(asset: Asset) -> dict:
++    return dict(dict((asset.meta or {}).get("discovery") or {}).get("fritz") or {})
++
++
++def _fresh(iso: str | None, now: datetime, hours: int = 24) -> bool:
++    if not iso:
++        return False
++    try:
++        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
++    except ValueError:
++        return False
++    dt = dt.replace(tzinfo=None) if dt.tzinfo else dt
++    return dt >= now - timedelta(hours=hours)
++
++
++def dump_asset(db, asset: Asset, now: datetime) -> dict:
++    meta = asset.meta or {}
++    fritz = _fritz(asset)
++    return {
++        "id": asset.id,
++        "name": asset.name or "",
++        "status": asset.status,
++        "trust_level": asset.trust_level,
++        "operational_state": meta.get("operational_state"),
++        "derived_classify": classify_asset(asset, now=now),
++        "portal_last_seen": asset.portal_last_seen.isoformat() if asset.portal_last_seen else None,
++        "fritz_last_seen": asset.fritz_last_seen.isoformat() if asset.fritz_last_seen else None,
++        "last_seen": asset.last_seen.isoformat() if asset.last_seen else None,
++        "presence_state": asset.presence_state,
++        "chassis_id": asset.chassis_id,
++        "n_interfaces": len(asset.interfaces or []),
++        "macs": [i.mac for i in (asset.interfaces or [])],
++        "n_current_ips": len(_asset_current_ips(asset)),
++        "current_ips": _asset_current_ips(asset),
++        "discovery.fritz": {
++            "active": fritz.get("active"),
++            "hostname": fritz.get("hostname"),
++            "last_observed_at": fritz.get("last_observed_at"),
++            "fresh_24h": _fresh(fritz.get("last_observed_at"), now),
++        },
++        "is_critical": asset.is_critical,
++        "manual_overrides": bool(meta.get("manual_overrides")),
++        "infrastructure_identity": bool(meta.get("infrastructure_identity")),
++    }
++
++
++def section(title: str):
++    print("\n" + "=" * 78)
++    print(title)
++    print("=" * 78)
++
++
++def main() -> int:
++    settings = get_settings()
++    db = _open(settings.sqlite_path)
++    now = _now()
++    baseline_path = sys.argv[1] if len(sys.argv) > 1 else None
++
++    try:
++        section("GATE METRICS (now)")
++        assets_total = int(db.scalar(select(func.count()).select_from(Asset)) or 0)
++        ipc = _ip_current_count(db)
++        np_total = int(db.scalar(select(func.count()).select_from(NameProposal)) or 0)
++        np_by_status = dict(
++            db.execute(select(NameProposal.status, func.count()).group_by(NameProposal.status)).all()
++        )
++        fa_total = int(db.scalar(select(func.count()).select_from(FactAssertion)) or 0)
++        fa_by_state = dict(
++            db.execute(select(FactAssertion.state, func.count()).group_by(FactAssertion.state)).all()
++        )
++        dc = device_counters(db, now=now)
++        try:
++            from app.facts.shadow import evaluate_circuit_breaker
++
++            breaker_open, breaker_reason = evaluate_circuit_breaker(db)
++        except Exception as exc:  # noqa: BLE001
++            breaker_open, breaker_reason = ("?", f"err:{exc}")
++        print(f"assets_total     = {assets_total}")
++        print(f"ip_current       = {ipc}")
++        print(f"name_proposals   = {np_total}  by_status={np_by_status}")
++        print(f"fact_assertions  = {fa_total}  by_state={fa_by_state}")
++        print(f"AD_devices_active= {dc.get('devices_active')}  (total={dc.get('devices_total')} stale={dc.get('devices_stale')})")
++        print(f"breaker(open,reason) = {breaker_open}, {breaker_reason!r}  (nota: latch in-memory dell'api, qui ricalcolato da DB)")
++
++        section("W-P.1.1 — ASSET 109 (discriminante Fritz)")
++        a109 = db.get(Asset, 109)
++        if a109 is None:
++            print("asset 109 ASSENTE")
++        else:
++            print(json.dumps(dump_asset(db, a109, now), indent=2, ensure_ascii=False))
++        # MAC target: a quale asset risolve e discovery.fritz.active
++        iface = db.scalars(select(Interface).where(Interface.mac == TARGET_109_MAC)).first()
++        if iface is None:
++            # prova case-insensitive
++            iface = db.scalars(
++                select(Interface).where(func.upper(Interface.mac) == TARGET_109_MAC.upper())
++            ).first()
++        if iface is None:
++            print(f"\nMAC {TARGET_109_MAC}: NESSUNA interface trovata")
++        else:
++            owner = db.get(Asset, iface.asset_id)
++            fr = _fritz(owner)
++            print(f"\nMAC {TARGET_109_MAC} -> interface {iface.id} asset {iface.asset_id}")
++            print(f"  discovery.fritz.active={fr.get('active')} last_observed_at={fr.get('last_observed_at')} fresh_24h={_fresh(fr.get('last_observed_at'), now)}")
++
++        section("W-P.1.5 — DIVERGENZA trust_level vs operational_state (classe)")
++        # Enumerazione COMPLETA dei divergenti: derived (classify) != trust_level
++        # oppure operational_state incoerente col derived.
++        divergent = []
++        for asset in db.scalars(select(Asset)).all():
++            meta = asset.meta or {}
++            derived = classify_asset(asset, now=now)
++            op = meta.get("operational_state", "active")
++            expected_op = (
++                "fritz_historical" if derived == "fritz_historical"
++                else "stale_unlocated" if derived == "stale_unlocated"
++                else "active"
++            )
++            if asset.trust_level != derived or op != expected_op:
++                fr = _fritz(asset)
++                divergent.append(
++                    {
++                        "id": asset.id,
++                        "trust_level": asset.trust_level,
++                        "derived": derived,
++                        "op_state": op,
++                        "expected_op": expected_op,
++                        "chassis_id": asset.chassis_id,
++                        "n_iface": len(asset.interfaces or []),
++                        "n_cur_ip": len(_asset_current_ips(asset)),
++                        "fritz_active": fr.get("active"),
++                        "fritz_fresh": _fresh(fr.get("last_observed_at"), now),
++                        "portal_last_seen": bool(asset.portal_last_seen),
++                    }
++                )
++        print(f"divergenti (trust_level != derived OR op_state incoerente): {len(divergent)}")
++        for d in sorted(divergent, key=lambda x: x["id"]):
++            print("  " + json.dumps(d, ensure_ascii=False))
++        print(f"\n  di cui membri di chassis: {sum(1 for d in divergent if d['chassis_id'])}")
++        print(f"  di cui 0 interfacce:      {sum(1 for d in divergent if d['n_iface'] == 0)}")
++        print(f"  di cui 0 IP correnti:     {sum(1 for d in divergent if d['n_cur_ip'] == 0)}")
++
++        section("W-P.1.5 — DUMP asset nominati (109/116/136/140/145/148)")
++        for aid in CLASS_IDS:
++            asset = db.get(Asset, aid)
++            if asset is None:
++                print(f"asset {aid}: ASSENTE")
++                continue
++            print(json.dumps(dump_asset(db, asset, now), indent=2, ensure_ascii=False))
++
++        section("W-P (gate baseline) — structural corrente da reconcile dry_run")
++        preview = reconcile_trust_history(db, dry_run=True)
++        plan = preview.get("plan") or {}
++        actions = plan.get("actions") or []
++        struct = [a for a in actions if a.get("structural")]
++        ts = [a for a in actions if a.get("timestamp_refresh")]
++        print(f"structural={len(struct)}  timestamp_refresh={len(ts)}")
++        print(f"needs_apply(report changed/proposals/ts) changed_assets={preview.get('changed_assets')} proposals_archived={preview.get('proposals_archived')} timestamp_refreshes={preview.get('timestamp_refreshes')}")
++        print("structural asset ids con dettaglio:")
++        for a in sorted(struct, key=lambda x: x["asset_id"]):
++            asset = db.get(Asset, a["asset_id"])
++            print(f"  id={a['asset_id']} level(plan)={a['level']} expected_state={a['expected_state']} stored_trust={asset.trust_level} stored_op={(asset.meta or {}).get('operational_state')}")
++
++        section("W-P.0.1 — ip_current: righe NON correnti recenti (candidate al calo)")
++        rows = db.scalars(
++            select(IpAddress).where(IpAddress.is_current == False).order_by(IpAddress.last_seen.desc()).limit(15)  # noqa: E712
++        ).all()
++        for addr in rows:
++            iface = db.get(Interface, addr.interface_id)
++            aid = iface.asset_id if iface else None
++            print(f"  ip={addr.ip} src={addr.source} last_seen={addr.last_seen} iface={addr.interface_id} asset={aid} role={addr.role!r}")
++
++        section("W-P.0.2 — fact_assertions: ultime 15 per id (candidate al +7)")
++        rows = db.scalars(select(FactAssertion).order_by(FactAssertion.id.desc()).limit(15)).all()
++        for fa in rows:
++            print(
++                f"  id={fa.id} key={fa.fact_key} subj={fa.subject_type}:{fa.subject_id} "
++                f"src={fa.source} state={fa.state} reason={fa.reason!r} created={fa.created_at} "
++                f"val={fa.value_norm[:40]!r}"
++            )
++
++        section("W-P.0.3 — AD: membership devices_active (ids con last_seen<=24h)")
++        active_ids = []
++        for asset in db.scalars(select(Asset)).all():
++            if (asset.status or "") == "ignorato":
++                continue
++            ls = asset.last_seen
++            if ls and (now - ls) <= timedelta(hours=24):
++                active_ids.append((asset.id, asset.chassis_id, ls.isoformat(), _fritz(asset).get("active")))
++        print(f"asset con last_seen<=24h (non ignorati): {len(active_ids)}")
++        for aid, ch, ls, fa in sorted(active_ids):
++            print(f"  id={aid} chassis={ch} last_seen={ls} fritz_active={fa}")
++
++        if baseline_path and Path(baseline_path).exists():
++            section(f"W-P.0 DIFF ESATTO vs baseline {baseline_path}")
++            bdb = _open(baseline_path)
++            try:
++                # ip_current diff
++                def _ipset(s):
++                    return {
++                        (r.interface_id, r.ip)
++                        for r in s.scalars(select(IpAddress).where(IpAddress.is_current == True)).all()  # noqa: E712
++                    }
++                cur, base = _ipset(db), _ipset(bdb)
++                print(f"ip_current base={len(base)} now={len(cur)}")
++                print(f"  persi (base\\now): {sorted(base - cur)}")
++                print(f"  nuovi (now\\base): {sorted(cur - base)}")
++                # FA diff per id
++                cur_fa = {r[0] for r in db.execute(select(FactAssertion.id)).all()}
++                base_fa = {r[0] for r in bdb.execute(select(FactAssertion.id)).all()}
++                print(f"fact_assertions base={len(base_fa)} now={len(cur_fa)}")
++                new_fa = sorted(cur_fa - base_fa)
++                print(f"  nuovi id: {new_fa}")
++                for fid in new_fa:
++                    fa = db.get(FactAssertion, fid)
++                    print(f"    id={fid} key={fa.fact_key} subj={fa.subject_type}:{fa.subject_id} src={fa.source} state={fa.state} reason={fa.reason!r} val={fa.value_norm[:40]!r}")
++            finally:
++                bdb.rollback()
++                bdb.close()
++        else:
++            section("BACKUP DISPONIBILI (per diff baseline W-P.0)")
++            bdir = Path("/data/backups")
++            if bdir.exists():
++                for f in sorted(bdir.glob("*.db")):
++                    print(f"  {f}  ({f.stat().st_size} bytes)")
++            else:
++                print("  /data/backups assente")
++
++        db.rollback()
++        return 0
++    finally:
++        db.rollback()
++        db.close()
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+--- a/scripts/wp_predict.py
++++ b/scripts/wp_predict.py
+@@ -0,0 +1,109 @@
++#!/usr/bin/env python3
++"""W-P.4 previsione boot1 (read-only): enumera gli asset che la NUOVA classify
++(che legge l'evidenza fritz-active fresca) porterebbe a un livello diverso da quello
++memorizzato. Nessuna scrittura.
++
++  sudo docker compose exec -T api python3 - < scripts/wp_predict.py
++"""
++
++from __future__ import annotations
++
++import sys
++from datetime import datetime, timedelta
++from pathlib import Path
++
++API = Path("/app") if Path("/app/app").exists() else Path(__file__).resolve().parents[1] / "api"
++if str(API) not in sys.path:
++    sys.path.insert(0, str(API))
++
++from sqlalchemy import create_engine, select  # noqa: E402
++from sqlalchemy.orm import sessionmaker  # noqa: E402
++
++from app.config import get_settings  # noqa: E402
++from app.models import Asset  # noqa: E402
++
++
++def _parse(raw):
++    text = str(raw or "").strip()
++    if not text:
++        return None
++    try:
++        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
++    except ValueError:
++        return None
++    return dt.replace(tzinfo=None) if dt.tzinfo else dt
++
++
++def has_fresh_fritz_active(asset, now, stale_hours=24):
++    fritz = dict(dict((asset.meta or {}).get("discovery") or {}).get("fritz") or {})
++    if fritz.get("active") is not True:
++        return False
++    seen = _parse(fritz.get("last_observed_at"))
++    if seen is None:
++        return False
++    return seen >= now - timedelta(hours=max(1, stale_hours))
++
++
++def new_classify(asset, now, stale_hours=24):
++    protected = bool(
++        (asset.name or "").strip()
++        or asset.status == "noto"
++        or asset.is_critical
++        or (asset.meta or {}).get("manual_overrides")
++        or (asset.meta or {}).get("infrastructure_identity")
++    )
++    recent = bool(
++        asset.portal_last_seen
++        and asset.portal_last_seen >= now - timedelta(hours=max(1, stale_hours))
++    )
++    if recent:
++        return "confirmed_present"
++    if protected:
++        return "known"
++    if has_fresh_fritz_active(asset, now, stale_hours):
++        return "known"
++    if asset.portal_last_seen:
++        return "stale_unlocated"
++    return "fritz_historical"
++
++
++def expected_op(level):
++    if level == "fritz_historical":
++        return "fritz_historical"
++    if level == "stale_unlocated":
++        return "stale_unlocated"
++    return "active"
++
++
++def main():
++    settings = get_settings()
++    engine = create_engine(f"sqlite:///{settings.sqlite_path}")
++    db = sessionmaker(bind=engine)()
++    now = datetime.utcnow()
++    try:
++        flips = []
++        for asset in db.scalars(select(Asset)).all():
++            meta = asset.meta or {}
++            level = new_classify(asset, now)
++            exp = expected_op(level)
++            op = meta.get("operational_state", "active")
++            if asset.trust_level != level or op != exp:
++                flips.append(
++                    {
++                        "id": asset.id,
++                        "stored_trust": asset.trust_level,
++                        "stored_op": op,
++                        "new_level": level,
++                        "new_expected_op": exp,
++                    }
++                )
++        print(f"boot1 structural PREVISTO (NUOVA classify): {len(flips)}")
++        for f in sorted(flips, key=lambda x: x["id"]):
++            print(f"  id={f['id']} {f['stored_trust']}/{f['stored_op']} -> {f['new_level']}/{f['new_expected_op']}")
++    finally:
++        db.rollback()
++        db.close()
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+--- a/scripts/wp_gate.py
++++ b/scripts/wp_gate.py
+@@ -0,0 +1,82 @@
++#!/usr/bin/env python3
++"""W-P.5 gate di regime (read-only): due piani consecutivi a writer fermi.
++
++  sudo docker compose stop collector
++  sudo docker compose exec -T api python3 - < scripts/wp_gate.py
++  sudo docker compose start collector
++"""
++
++from __future__ import annotations
++
++import sys
++from datetime import datetime, timedelta
++from pathlib import Path
++
++API = Path("/app") if Path("/app/app").exists() else Path(__file__).resolve().parents[1] / "api"
++if str(API) not in sys.path:
++    sys.path.insert(0, str(API))
++
++from sqlalchemy import create_engine, func, select  # noqa: E402
++from sqlalchemy.orm import sessionmaker  # noqa: E402
++
++from app.config import get_settings  # noqa: E402
++from app.models import Asset, FactAssertion, IpAddress, NameProposal  # noqa: E402
++from app.services.chassis_grouping import device_counters  # noqa: E402
++from app.services.trust import reconcile_trust_history, trust_needs_apply  # noqa: E402
++
++
++def _plan(db, now):
++    prev = reconcile_trust_history(db, dry_run=True, now=now)
++    plan = prev.get("plan") or {}
++    struct = [a for a in (plan.get("actions") or []) if a.get("structural")]
++    return prev, struct
++
++
++def main():
++    settings = get_settings()
++    db = sessionmaker(bind=create_engine(f"sqlite:///{settings.sqlite_path}"))()
++    now = datetime.utcnow()
++    try:
++        for i in (1, 2):
++            prev, struct = _plan(db, now)
++            ids = sorted(a["asset_id"] for a in struct)
++            print(
++                f"PIANO {i}: structural={len(struct)} ids={ids} "
++                f"needs_apply={trust_needs_apply(prev)} "
++                f"changed={prev.get('changed_assets')} "
++                f"ts_refresh={prev.get('timestamp_refreshes')} "
++                f"proposals_archived={prev.get('proposals_archived')}"
++            )
++        assets = int(db.scalar(select(func.count()).select_from(Asset)) or 0)
++        ipc = int(db.scalar(select(func.count()).select_from(IpAddress).where(IpAddress.is_current == True)) or 0)  # noqa: E712
++        npt = int(db.scalar(select(func.count()).select_from(NameProposal)) or 0)
++        fat = int(db.scalar(select(func.count()).select_from(FactAssertion)) or 0)
++        fa_cur = int(db.scalar(select(func.count()).select_from(FactAssertion).where(FactAssertion.state == "current")) or 0)
++        dc = device_counters(db, now=now)
++        from app.facts.shadow import evaluate_circuit_breaker
++
++        bopen, breason = evaluate_circuit_breaker(db)
++        # 109/136 stato osservato
++        for aid in (109, 136):
++            a = db.get(Asset, aid)
++            if a:
++                print(f"asset {aid}: trust_level={a.trust_level} op={(a.meta or {}).get('operational_state')}")
++        print(
++            f"REGIME: assets={assets} ip_current={ipc} name_proposals={npt} "
++            f"fact_assertions={fat}(current={fa_cur}) AD={dc.get('devices_active')} "
++            f"breaker_open={bopen}"
++        )
++        # observations assente da sqlite_master
++        from sqlalchemy import text
++
++        obs = db.execute(
++            text("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='observations'")
++        ).scalar()
++        print(f"observations_in_sqlite_master={obs}")
++    finally:
++        db.rollback()
++        db.close()
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
