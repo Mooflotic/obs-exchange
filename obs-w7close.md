@@ -190,3 +190,92 @@ dissentono dalla realtà. Debito **APERTO**, nominato.
 `scripts/w7c_measure.py` (nuovo), `CHANGELOG.md`, `docs/KNOWN_DEBT.md`. **Esclusi dichiarati:**
 `docs/obs-w7close.md` (questo report), `docs/obs-w7close.diff.txt` (l'artefatto stesso),
 `docs/obs-w7.diff.txt` (ripubblicato come deliverable W7C.1, non duplicato qui).
+
+---
+
+# W7C-FIX — correzioni post-review (nessun bump: cambia solo uno script di misura)
+
+Nessun codice di produzione toccato: modificato **solo** `scripts/w7c_measure.py` (strumento di
+misura read-only). VERSION resta **0.10.59**.
+
+## W7C-FIX.1 — Misura tautologica FDB corretta
+
+**Difetto (segnalato):** in `scripts/w7c_measure.py` la freschezza FDB era **cablata a
+`port_fresh = False`** e passata a `_mac_ip_policy_present(..., fdb_fresh=...)`. Ma sia
+`present_l2_unaddressed` sia `l2_only_allowed` richiedono `mac_fdb_fresh=True` (lo dimostra
+`test_w762_present_l2_unaddressed_declared_not_deduced`). Quella misura tornava **0 PER
+COSTRUZIONE**: la frase «wire additivo inerte, 0 hit in prod» **non era dimostrata**.
+
+**Fix:** lo script ora calcola la freschezza FDB **reale per ogni asset** con la stessa logica e
+finestra di `reconcile_asset_presence`:
+`port = SwitchPort where asset_id==a.id`; `fdb_fresh = bool(port and port.last_fdb_at and
+port.last_fdb_at >= now - 24h)`. Per ogni hit calcola anche `reliable_old` (reachable ∨ physical
+∨ recent_portal, **senza** il wire) e `reliable_new`.
+
+**Misura corretta (prod, read-only):**
+
+`W7 narrow wire hits (REAL fdb_fresh): 0`
+
+Enumerazione: **vuota** (0 hit). Il numero è **misurato**, non più tautologico. Sonda del
+perché (stessa esecuzione):
+
+`switch_ports_total=46 · with_last_fdb_at=38 · fdb_fresh_in_24h=0 · newest_last_fdb_at=2026-07-25 14:52:35 · assets_with_fresh_fdb=0`
+
+**Due dimostrazioni distinte dell'inerzia (non più «per costruzione»):**
+1. **Misurata oggi:** **nessuna** porta ha `last_fdb_at` nella finestra 24h (la più recente è
+   ~57 h fa, 2026-07-25 14:52). Quindi `fdb_fresh=False` per tutti **come fatto misurato** (il
+   polling FDB non produce osservazioni fresche in questo momento), non come costante imposta.
+   Nessun asset qualifica ⇒ 0 hit reali.
+2. **Strutturale (vale anche a FDB fresco):** ogni decisione che il wire consuma
+   (`present_l2_unaddressed`, `l2_only_allowed`) richiede `mac_fdb_fresh=True`. Ma la **stessa
+   porta fresca** produce in `reconcile_asset_presence` `physical_reasons=["FDB recente"]` →
+   `reliable=True` **indipendentemente dal wire** (`inventory.py`, riga «FDB recente» + `reliable
+   = reachable ∨ physical_reasons ∨ active_discovery ∨ policy_present`). Perciò per **qualsiasi**
+   asset in cui il wire potrebbe attivarsi, `reliable_old` è **già** `True`: il wire **non può
+   cambiare `reliable`** (né `operational_state`). È additivo-inerte per **accoppiamento**, non
+   per assenza di dati.
+
+**Impatto su `reliable`:** 0 hit ⇒ nessun asset cambia esito. E anche in presenza di FDB fresco
+l'esito non cambierebbe (punto 2). Correzione della dicitura, non riscrittura: vedi §precisazione
+in `obs-w7.md` (W7.2.3) e la nota accodata.
+
+## W7C-FIX.2 — Infrastruttura di test: blocco K4 (NON test rosso)
+
+Runner ripristinato: rimossi eventuali container `pytest` orfani; contesto Docker pulito
+(`observatory-api` healthy, collector attivo). Ripetuta l'esecuzione del nodo con fixture
+`tests/test_w7_consumers.py` con l'immagine usa-e-getta `observatory-api --entrypoint python3`.
+
+**Esito:** il **primo nodo resta bloccato oltre il timeout anche dopo la pulizia degli orfani**.
+L'import di `app.services.inventory` è sano (misurato: **1.87 s**), quindi non è un difetto di
+import né del codice cambiato. Per direttiva: **registrato come BLOCCO INFRASTRUTTURALE (K4)**,
+**non** interpretato come test rosso. Non ulteriormente diagnosticato (taglio richiesto).
+
+**Copertura effettiva del codice cambiato (runtime, su dati reali):** il percorso
+`_l2_only_exception_class` (fix K9), `mac_ip_policy_consultation` (W7C.5) e il wire tri-stato
+(W7C.3) sono stati **esercitati a runtime su tutti i 151 asset** da `scripts/w7c_measure.py` e
+dal **blast** `scripts/w7_macip_blast.py` (nessun hang: ~3–4 s ciascuno). Il classifier puro
+`test_mac_ip_policy` (11 nodi, incl. tri-stato W7C.3) resta **ESERCITATO**. I tre nodi fixture
+W7C.2 (`test_w7c23_*`, `test_w7c22_*`) restano **NON esercitati (K4)**: il fix K9 è però provato
+su dati reali dalla misura sopra (`exception_class_changed=0` enumerato, powerline id=7
+riconosciuto sia da vecchio sia da nuovo codice).
+
+## W7C-FIX.3 — Delta disaccordi 52 (W7) → 53 (W7-CLOSE): spiegazione misurata
+
+Lo **stesso strumento** blast di W7 (`scripts/w7_macip_blast.py`, **immutato**: usa exception da
+nome grezzo + `superseded_by_newer_binding=False`) **eseguito ora** rende:
+
+`DISAGREEMENTS vs operational_state: 53` — **identico** ai 53 della consultation W7-CLOSE.
+
+Conseguenza: il **+1 non è causato dal codice W7C** (fix eccezione K9 / tri-stato). Se lo fosse,
+il blast — che **non** contiene quelle modifiche — darebbe ancora 52; invece dà 53. È una
+**deriva temporale dei dati**: un singolo device è transitato nell'insieme dei disaccordi tra la
+misura W7 (0.10.58, contava 52) e W7-CLOSE (0.10.59, ~48 h dopo). `total` invariato **151** in
+entrambe. Il device specifico non è nominabile con certezza perché la misura W7 registrò **solo il
+conteggio (52)**, non gli id; ma la **concordanza dei due strumenti a 53 oggi** dimostra che non è
+una ridefinizione di metrica né un effetto delle modifiche W7C. *(Corregge la §Previsioni sopra,
+che attribuiva il +1 alla FA id=261: quella è al più il trigger temporale del periodo, non una
+causa di codice — la prova decisiva è l'accordo dei due strumenti a 53.)*
+
+## Assert W7C-FIX (UNA RIGA)
+
+`0.10.59 (invariato): code_prod_changed=NO · w7c_measure fdb_fresh=REAL · narrow wire hits(REAL)=0 · fdb_fresh_ports_24h=0/46 (newest 2026-07-25 14:52) · reliable impact=0 (additivo-inerte, misurato+strutturale) · test_w7_consumers=K4 blocco infrastrutturale (non rosso) · test_mac_ip_policy=11 esercitati · blast(immutato)=53 == consultation=53 ⇒ 52→53 deriva dati (non codice) · total=151`
