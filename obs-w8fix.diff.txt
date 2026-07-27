@@ -1,0 +1,2193 @@
+============================================================================
+obs-w8fix.diff.txt — diff INTEGRALE vs HEAD dei file toccati/creati da W8-fix
+============================================================================
+Ramo: feature/obs-currency · VERSION 0.10.63 (nessun bump, nessun deploy).
+
+FILE INCLUSI (diff vs HEAD, contenuto integrale per i nuovi):
+  - observatory/scripts/w8_currency_gate.py      (riscritto — gate indurito, --selftest)
+  - observatory/scripts/w8_g8_equivalence.py     (riscritto — G8 eseguibile/esteso/mutate-probe)
+  - observatory/docs/obs-w8fix.md                (nuovo — report d'ondata + allegati T1)
+  - observatory/docs/obs-w8.md                   (correzioni B5/B6; il file è untracked dalla
+                                                  wave W8, quindi appare INTERO — le modifiche
+                                                  W8-fix sono le sezioni «Corretto in W8-fix»)
+  - observatory/docs/obs-design-spec-025.md      (§12: correzione resolver.history/?history)
+  - observatory/docs/KNOWN_DEBT.md               (DEBT-HISTORY-PATH-UNWIRED)
+  - observatory/CHANGELOG.md                     (voce W8-fix; nessun bump)
+
+ESCLUSIONI DICHIARATE (una per una):
+  - api/app/facts/resolver.py                    NON toccato (runtime); pubblicato integrale
+                                                 in obs-w8fix.md §Allegati T1.
+  - api/app/services/name_proposal_chassis.py    NON toccato (runtime); integrale in Allegati T1.
+  - api/app/services/chassis_rename.py           NON toccato (runtime); integrale in Allegati T1.
+  - qualsiasi altro api/app/** e web/src/**      NON toccati (vincolo d'ondata: nessun runtime).
+  - DB di produzione                             mai scritto (verifiche read-only).
+  - venv/DB sintetico usati per eseguire G8      temporanei in /tmp, rimossi a fine run.
+============================================================================
+
+diff --git a/observatory/CHANGELOG.md b/observatory/CHANGELOG.md
+index 677f6ee..47162f1 100644
+--- a/observatory/CHANGELOG.md
++++ b/observatory/CHANGELOG.md
+@@ -1,8 +1,171 @@
+ # Changelog
+ 
++## W8-fix — indurimento del presidio + esecuzione reale dei gate (NESSUN deploy, nessun bump)
++
++- **B1 gate indurito (`scripts/w8_currency_gate.py`).** Sentinelle: simbolo ORM `FactAssertion` **+** tabella grezza `fact_assertions` in chiamata SQL (`text/execute`, B1-i) **+** COMBO (fact-token + valore di stato quotato `'current'`, cattura `state='current'`/`filter_by(state="current")`). Allowlist per **(file, snippet, N)** con conteggio: N+1 = violazione, atteso vs osservato in output (B1-ii). Scope allargato a **`api/**` · `scripts/**` · `collector/**`** (B1-iii). `--selftest` (controllo negativo): corpus sintetico in dir temporanea → **3 violazioni attese (file 2,3,4) + 1 accounted → PASS (il gate sa fallire)**.
++- **Esito gate reale (repo):** **FAIL — 10 violazioni** tutte in tooling read-only (`scripts/wp_gate.py`, `scripts/wp_diagnose.py`) che legge `FactAssertion` per metriche di regime, rese visibili SOLO ora dall'allargamento scope. Per regola d'ondata **NON allowlistate**: classificate e **fermate per ruling** (vedi `obs-w8fix.md`).
++- **B2/B3 G8 eseguito e discriminante (`scripts/w8_g8_equivalence.py`).** Import-smoke (T4a: `subject_of` vive in `resolver.py`, import corretto), leg **os.guess** (resolver vs colonna derivata `Asset.os_guess` — store diverso, non tautologico), leg **endpoint** `GET /api/assets/{id}` opzionale (T4b), `--mutate-probe <id>` (T4d). Eseguito su DB sintetico: normale **DIVERGE=0 (PASS)**; `--mutate-probe` → **DIVERGE=1 esatto sull'id, FAIL**. Prova che G8 sa fallire.
++- **B4** AD rimisurato (finestra mobile 24h). **B5** corretta contraddizione: `resolver.history()` è **senza chiamanti**, nessun `?history=true` esiste → `DEBT-HISTORY-PATH-UNWIRED` (spec §12 + `obs-w8.md` corretti). **B6** JSON grezzo `/api/assets/2` e `/109`: «LGS328C» è il canonico del **chassis 23** (tenuto dall'asset **2**); l'asset **109** è membro con nome PROPRIO vuoto (F-5) e AI guess «Switch Centrale» — etichette corrette in `obs-w8.md`.
++- **Nessun tocco a `api/app/**` o `web/src/**`** ⇒ nessun deploy, VERSION resta **0.10.63**.
++
++## W8 — enforcement della correntezza (presidio; NESSUN deploy, nessun bump)
++
++- **W8.1 censimento esaustivo → 0 calcoli locali di correntezza da migrare (classe (a) vuota).** Grep su `api/` e `web/src/`: ogni punto che «decide qual è il valore adesso» è già dentro il resolver (`api/app/facts/`), oppure è (b) legittimo con criterio dichiarato — `ip_addresses.is_current` = elezione IP (F-15, non correntezza), colonne di stato derivate di `Asset` (F-7), evidenza grezza/oggetti di dominio (Event/ScanRun/SpeedTest/Finding/Suggestion/Snapshot/ActionRequest), FE che consuma la correntezza fornita dal server. Nessuna classe (a): la migrazione dei consumatori era già stata completata in W5/W6/W7.
++- **W8.3 gate permanente istituito:** `scripts/w8_currency_gate.py` — sentinella su ogni riga che nomina `FactAssertion` fuori da `api/app/facts/`; **fallisce** su accessi nuovi; allowlist per (file, snippet) con motivazione. Eseguito: **9 eccezioni giustificate, 0 violazioni (PASS)**. Da eseguire a ogni ondata futura insieme a I6. Documentato in `docs/obs-design-spec-025.md` §12 e `KNOWN_DEBT.md` (PRESIDIO-CURRENCY-GATE).
++- **W8.4 API corrente per default:** già così — `GET /api/assets` con `include_historical=false`/`all_proposals=false`, `resolver.history()` percorso storico sanzionato ma non cablato ad alcun endpoint. **0 contratti cambiati.** Verifica runtime (method A): `ips`/`ip_bindings` vuoti → «assente» (≠ zero); binding non-eletti/duplicati restano visibili (F-15). UI stale/superseded invariata da UX3 (nessun cambio, riferimento agli screenshot UX3).
++- **W8.5 G8:** `scripts/w8_g8_equivalence.py` (read-only) — equivalenza correntezza nome resolver↔presentazione; 0 migrazioni ⇒ 0 casi (c) per costruzione; probe da confermare a writer fermi sul NAS.
++- **Nessun cambio di codice runtime** ⇒ nessun deploy, VERSION resta 0.10.63. Presidio e doc sono artefatti di repo. Pre-condizioni W3 (IP) restano aperte: `DEBT-DOUBLE-CURRENT-IP`, `DEBT-IFACE-IP-CARDINALITY-ROLE`, `DEBT-LASTSEEN-DUAL-SEMANTICS`.
++
++## 0.10.63 — UX3 ondata 2: architettura superfici (D8 + confluenze)
++
++- **UX3.1.4 / D8 — Dashboard decisa con misura → «Panoramica» in navigazione.** Misura prod (2026-07-28): la Dashboard mostra ciò che nessun'altra vista mostra — stato calibrazione osservatorio (giorno N/14), **salute Internet** (capacità/traffico FRITZ!Box, speedtest NAS, prossimo test), copertura discovery, salute sensori, KPI device+monitor. **Utile e distinta** (opzione a): entra in nav come «Panoramica» (gruppo RADAR). Coerenza con F-9: `/` non è più la Dashboard ma **reindirizza a `/oggi`** (il cardine è la landing); la Dashboard vive su `/dashboard`.
++- **UX3.2 — architettura delle superfici (decisioni con dati reali).** `suggestions` → già **CONFLUITA** in Oggi (redirect `/suggestions`→`/oggi`; le 2 proposte pending compaiono in Oggi). `findings` → 0 elementi, 0 drift, in shadow: **tolta dalla nav primaria** (coda parallela vuota, F-9), ma **ancora raggiungibile** dalla Dashboard (ReadySlot + card «Findings shadow») e per URL — nessuna funzione irraggiungibile (UX3.2.4). Debito `DEBT-FINDINGS-OGGI-CONFLUENCE` registrato: confluenza autoritativa in Oggi rinviata a calibrazione/scoring (M4–M5). Le viste con domanda unica **TENGONO**: Oggi (cardine), Dossier (device), Inventario (elenco/ricerca), Impianto (porte/modifica), Topologia (dove), Monitor (salute), Timeline (cronologia), Azioni (scansioni/errori discovery), Panoramica (D8).
++- **Nessun dato grezzo rimosso perché non trovato di gravità operativa (UX3.3):** Dossier è strutturato e onesto (identità osservata con ignoti dichiarati, inferenza AI marcata con confidenza+evidenze, GS308EP con `.1.8` corrente/`.3.20` storico) — non un dump. Switch = tre superfici coerenti (Impianto=modifica, Topologia=dove, Monitor=salute), nessuna vista switch legacy autonoma. ReadySlot Dashboard dichiarano l'attesa (I2), non inventano: annotati in `DEBT-DASHBOARD-READY-SLOTS`.
++- **Test:** nessun nodo backend toccato; frontend `oggiTriage`, `oggiProblems`, `observatoryUx`, `portPresentation`, `topologyLayout` invariati verdi. F-1..F-14 rispettati; policy MAC↔IP consultiva (F-12); I5/F-8 immutati; favicon A (F-6).
++
++## 0.10.62 — UX3 ondata 1: mobile + Mappa usabili (D3, D4, D7)
++
++- **UX3.1.2 / D3 — navigazione mobile a comparsa:** sotto 800px la sidebar diventava una barra alta ~280px perché gli 11 link andavano a capo su più righe, spingendo il contenuto sotto la piega. Ora (`App.vue` + `matrix.css`) la barra mobile è compatta (brand + hamburger «☰ Menu» + utente/Esci); il menu si apre a comparsa a piena larghezza in colonna, con tocco comodo, e si chiude a ogni cambio rotta. Desktop invariato. Nessun tocco ad auth/ruoli (K10).
++- **UX3.1.3 / D4 — Impianto, troncamenti alla radice:** in `Plant.vue` più righe informative usavano `white-space:nowrap`+`overflow:hidden`+ellissi su testo che deve andare a capo (stessa **classe** di causa di D2, qui su testo semplice, non `DenseRow`). Punti condivisi enumerati e corretti: `.fdb-status` (banner copertura FDB — la **data dell'ultima misura non va mai troncata**, F-13: ora va a capo a ogni larghezza), `.switch-role`, `.port-foot .patch` (vanno a capo su mobile). 
++- **UX3.1.1 / D7 — Topologia usabile su mobile:** il grafo a coordinate assolute in un contenitore scroll è inutilizzabile sotto 800px (finestrella su una mappa grande). Sotto 800px il grafo è sostituito da una **lista gerarchica per livello** (Radice → Livello 1/2/3) che risponde alla stessa domanda («dove sta un apparato, a cosa è attaccato»): riusa i nodi già posizionati da `layoutTopology` e mostra per ciascun nodo nome canonico, IP/tipo e «↳ collegato a <padre>»; gli endpoint restano toccabili per isolarne il percorso. I controlli zoom (inerti senza grafo) sono nascosti su mobile. Nessun dato inventato.
++- **Test:** `topologyLayout`, `portPresentation`, `observatoryUx`, `oggiTriage`, `oggiProblems` (invariati, verdi). Favicon A immutata (F-6), I5/F-8 immutati, nessuna logica identità/currency nel frontend, policy MAC↔IP consultiva (F-12), FDB solo presentazione (F-13).
++
++## 0.10.61 — UX2 ondata 1b: Oggi non tronca su tablet (radice DenseRow)
++
++- **UX2.5 — Oggi, troncamento su tablet risolto alla radice:** su tablet (≈820px) i valori delle card («Causa ed evidenza», «Esito», …) erano **tagliati a metà parola**. Causa: lo slot primario di `DenseRow` porta lo stile generico `white-space:nowrap` + `overflow:hidden`, adatto a righe singole ma non al contenuto **multilinea** delle card di Oggi. Fix in `Oggi.vue`: dentro `.oggi` lo slot primario va a capo e resta visibile a **tutti** i breakpoint (non solo ≤640px). Nessun impatto su desktop (già largo) né sul resto delle viste che usano DenseRow.
++
++## 0.10.60 — UX2 ondata 1: onestà dei dati porta/telemetria + Oggi mobile
++
++- **UX2.2.4 / F-13 — copertura FDB dichiarata in UI (`DEBT-FDB-POLL-STALE`):** la copertura FDB è ferma (RO 2026-07-27: 46 porte, 38 con `last_fdb_at`, 0 fresche nelle 24h; più recente 2026-07-25 14:52). Nuovo helper puro `fdbCoverageStatus()` in `web/src/observatoryUx.js` (con test) calcola la freschezza dalla `last_fdb_at` di porta, **mai** dall'ora del poll fallito. Impianto (`Plant.vue`): banner «copertura FDB non aggiornata: ultima mappatura … (circa N h fa)» e badge per-switch corretto — prima `switchFreshness` spacciava `fdb_poll.at` (tentativo fallito, `ok:false`) come «dati al … (ok)». Solo presentazione: nessuna diagnosi/riavvio del polling (F-13).
++- **UX2.5 / I2 / I7 — Monitor: assente ≠ zero:** in «Switch · salute porte» (`Monitoring.vue`) traffico ed errori erano resi `0 b/s` / `0` per switch senza SNMP riuscito (GS308EP non interrogabile, LGS in timeout). Ora sono `—` (non disponibile) quando `snmp_poll.ok≠true`, e l'ultimo poll è marcato «non riuscito». Nessuna telemetria inventata.
++- **UX2.1 / UX2.5 — Oggi (il cardine) responsive su mobile:** le card di Oggi troncavano nome/MAC e non impilavano label/valore su schermi stretti (le azioni comprimevano il contenuto). Fix CSS scoped in `Oggi.vue`: sotto 640px la riga densa impila (azioni sotto, allineate a sinistra), i campi vanno a capo, nome/MAC non si troncano.
++- **Test:** `observatoryUx` (nuovo caso `fdbCoverageStatus` F-13), `oggiTriage`, `oggiProblems`, `portPresentation`, `topologyLayout` — 40 verdi. Favicon A immutata (F-6), I5/F-8 immutati, nessuna logica di identità/currency nel frontend (F-13 = presentazione di timestamp misurati), policy MAC↔IP resta consultiva (F-12).
++
++## 0.10.59 — W7-CLOSE: eccezione L2 da attributi misurati, ignoto≠falso, policy consultiva
++
++- **W7C.2 (K9/F-5) — eccezione L2-only NON dipende più da `Asset.name`:** `_l2_only_exception_class` (`inventory.py`) derivava la classe powerline/510E da `" ".join(asset.name, asset.category, asset.vendor)`. Dopo W4c.1 i membri di chassis hanno `Asset.name` **vuoto per progetto** (F-5): un powerline membro di chassis non sarebbe stato riconosciuto. Ora la classe è derivata da attributi **MISURATI** — `category`, `vendor`, l'**OUI vendor** di ogni interfaccia — e, quando serve un nome, dal **nome CANONICO risolto** (`presentation_name_for_asset`, chassis-scoped), mai dal nome grezzo del membro. Se nessun attributo misurato riconosce la classe, la classe è **ASSENTE (`None`, K3)**, non un match mancato spacciato per «non è powerline».
++- **W7C.3 (I2/K3) — input costanti del classifier risolti:** in `_mac_ip_policy_present` gli input `chassis_mgmt_ip` e `superseded_by_newer_binding` erano passati fissi (`None`, `False`). Il secondo **asseriva** un fatto non misurato («nessun binding più recente ha soppiantato»). Ora `superseded_by_newer_binding` è **tri-stato** (`bool | None`, default `None`=IGNOTO): solo un `True` **misurato** produce il verdetto `superseded`; `None` (ignoto) non viene mai coerciuto in un'asserzione. Il wire passa `None` (ignoto), non più `False`. `chassis_mgmt_ip` resta `None`=IGNOTO (non serve/non misurato qui, mai inventato).
++- **W7C.5 — policy PIENA CONSULTIVA (mai autoritativa):** nuovo `inventory.mac_ip_policy_consultation` (read-only) calcola il verdetto della policy completa (regole #1..#5) per ogni asset e lo espone come **divergenza diagnostica** accanto allo stato reale, con l'evidenza che tiene presente il device. Endpoint admin `GET /api/admin/mac-ip-policy-consultation` (sola lettura, ruolo operator). **Non scrive nulla e non guida `operational_state`/`trust_level`/`reliable`** (F-7): le regole #3/#5 restano **NON autoritative** (attivazione autoritativa rinviata e condizionata alla correzione delle regole che dissentono dalla realtà osservabile — `DEBT-MAC-IP-POLICY-WIRE` aperto). Mai esposto come stato del device in UI.
++- **Test:** `test_mac_ip_policy` (11, incl. tri-stato supersession) esercitato; nuovi nodi fixture/app W7C.2 verificati per import/sintassi (K4, non esercitati a runtime per contesa risorse NAS). F-7 intatto, I5/F-8 immutati, favicon A immutata (F-6).
++
++## 0.10.58 — W7 (deploy 1/2): T-a uplink→portal + wire mac_ip_policy additivo
++
++- **W7.3 T-a (DEBT-FDB-UPLINK-PORTAL):** `apply_fdb_observation` (`topology.py`) **ricalcolava** `interface.interface_role` per-porta prima della guardia portale, facendo un **downgrade `uplink→endpoint`** su un singolo hit FDB → poi attribuiva `portal_last_seen` a una porta uplink (presenza al posto sbagliato). Fix: un hit FDB per-porta NON declassa più un'interfaccia strutturale (`uplink`/`infra`); i downgrade restano di competenza del reclassify globale (`role_for_interface_global`). Test T-a verde, non indebolito. Il fix NON azzera retroattivamente `portal_last_seen`: nessun effetto su presence/structural al boot (misurato).
++- **W7.2 wire `mac_ip_policy` (deploy 1/2 — additivo, F-7 intatto):** il classifier `classify_mac_ip_presence` è ora collegato a `reconcile_asset_presence` come **solo segnale di PRESENZA** (`reliable`), limitato alle lacune che la logica esistente non copre: membro di chassis mantenuto presente dall'IP corrente di chassis (`present_l2_unaddressed`) ed eccezione powerline/510E (`l2_only_allowed`). Il wire **non forza mai `stale`/`superseded`** e non è un secondo autore di `operational_state`/`trust_level` (classify_asset resta l'unico deriver). `present_l2_unaddressed` è **dichiarato** dalla freschezza FDB misurata, mai dedotto dal solo IP di chassis. **Misura pre-deploy (read-only prod):** 0 hit `present_l2_unaddressed`/`l2_only_allowed` correnti ⇒ **0 cambi di `operational_state`** (wire inerte oggi, esercitato dai test unitari `test_w7_consumers` — K4).
++- **W7.2.3 split dichiarato:** la riclassificazione AMPIA della policy (regole #3/#5: `stale`/`superseded` che toglierebbero presenza a device correnti) ha blast-radius **alto (52/151 asset**, inclusi FritzBox router, powerline, Sky box) e tocca infrastruttura oggi `active` → **rinviata al deploy 2/2** (decisione di dominio su quali device attivi declassare: Michele). Non fatta qui per non introdurre regressioni (c) né violare «stale/superseded fuori dallo stato corrente».
++- **Test:** `test_w7_consumers` (5, wire additivo), `test_m2_discovery` (T-a) verdi; nodi presence/trust/scans nominati verdi (94). Gate I6 vuoto.
++
++## 0.10.57 — W6-REVIEW: rank ipp/snmp riportato al minimo non alterante di I5
++
++- **W6R.1 (DEBT-IPP-PRECEDENCE, correzione soglia non misurata):** W6 aveva collocato `ipp=88`/`snmp=87` **sopra** `dhcp=85`, alterando l'ordinamento dell'invariante di PRODOTTO I5 (`manual > ai > dhcp > fritz > oui`) per far passare due test — stessa classe di difetto della soglia inventata rimossa in W1.5-bis. L'UNICO vincolo MISURATO è `ipp > fritz` (test T-c, fixture fritz(0.9) vs ipp(0.96)); nessun test impone `ipp > dhcp` né alcun ordine per `snmp` (T-d e `test_printer_provider` asseriscono solo creazione/valore della proposta, mai `best_guess`). Rank riportato al minimo non alterante: **`ipp=snmp=81`** (tier «identità auto-dichiarata via management», sopra `fritz=80`, **sotto `dhcp=85`** → I5 intatto; tie ipp/snmp risolto da confidence). La posizione del tier vs `dhcp` è una decisione di dominio lasciata a Michele (STOP-5, K8), tenuta sotto dhcp.
++- **W6R.1.3 effetto misurato (read-only prod 0.10.56):** **0 proposte pending `ipp`/`snmp`**, **0 asset vinti** da `ipp`/`snmp`, **0 flip** di `best_guess` abbassando i rank → il fix è **comportamentalmente inerte** in produzione. Le 3 differenze `i5_reorder` (id 109/120/134) sono `ai` (rank 90, non toccato) e **restano**.
++- **W6R.2.1 `adopted_names_changed = 0` (misurato):** i 30 nomi adottati (`manual_overrides` include `name`) sono **identici** tra prod 0.10.56, backup pre-deploy W6 e nightly pre-W6 — nessun nome adottato ha cambiato valore.
++- **W6R.2.2 asset senza best guess:** 28 asset con `best_guess` vuoto; di questi 9 senza nome canonico (`presented=None`) → la UI dichiara l'assenza («Device senza nome» / MAC, I2), mai un placeholder spacciato per nome. Gli altri mostrano il nome dell'apparato (asset.name o canon chassis).
++- **Test:** nodi nominati Python verdi (T-c/T-d verdi con `ipp=snmp=81`); gate I6 `rg 'scoreSpecificity|specificity' api/` vuoto. Nessun test indebolito. Artefatti W6 e W5-bis ripubblicati con URL raw (curl 200).
++
++## 0.10.56 — W6: fingerprinting, inferenze AI, generazione proposte alla correntezza
++
++- **W6.1 correntezza dei consumatori (`suggest.best_guess`, `ai_naming._hostnames`, `fingerprint_facts` backfill hostname):** `best_guess` non filtrava lo stato delle `NameProposal` e sorfava proposte **rejected/superseded/archived** — in prod **51 asset** ricevevano come «best guess» un nome che l'utente aveva rifiutato o che era stato soppiantato. Ora i tre percorsi consumano SOLO proposte `pending`; le altre restano a DB (storia leggibile, `escludere ≠ cancellare`). Fatti `fact_assertions` in stato `superseded/historical` non erano consumati (i percorsi leggono `resolver.current` o `observations_raw`, mai gli stati non correnti) → per quel lato il fix è preventivo (misurato: 0).
++- **W6.2 DEBT-IPP-PRECEDENCE (T-c/T-d), gerarchia unica I5:** `best_guess` decideva la precedenza con un **secondo prospetto di pesi** (`SOURCE_WEIGHT`) non coincidente con I5. Rimosso: ora ordina per `authority_for` (registro I5) primario, `confidence` a parità. `ipp`/`snmp` hanno un rank **dichiarato esplicito** in `AUTHORITY_RANK` (ipp=88, snmp=87: identità auto-dichiarata dal device via management, sotto l'AI curata e sopra dhcp/fritz). Root-cause di T-c/T-d: `create_name_proposal` faceva `db.add` senza sincronizzare la relazione `asset.name_proposals` → le proposte create non erano visibili in-sessione; ora `append` alla relazione. T-c → `('Stampante Studio','ipp')`, T-d → proposta `snmp` presente. Test non indeboliti.
++- **W6.3 soppressione alla generazione (già conforme):** `should_suppress_proposal` sopprime per **provenienza + soggetto** (chassis-manual blocca sorgenti più deboli; dedup per valore), mai per specificità del nome (I6, K6). Gate `rg 'scoreSpecificity|specificity' api/` **vuoto**.
++- **W6.2/6.4 R-D:** un'inferenza AI resta marcata (`source=ai`, `status=pending`) e NON sovrascrive un valore `manual`; `ai` non entra come sorgente hostname fattuale nel payload LLM.
++- **W6.4 gate G6 (writer fermi, `now` ricalcolato):** `best_guess` PRE vs DEPLOYED, per id. Baseline pre-deploy `diff=0` (inline-old fedele). Post-deploy: **54 differenze, tutte (a)** — 51 `status_exclusion` (correntezza) + 3 `i5_reorder` (id 109/120/134: `ai` pending ora batte `oui`/`fritz` per I5). Zero (b), zero (c). Fingerprint/AI generation NON esercitati in prod (K4): filtro preventivo + AI = API a pagamento; copertura nei test unitari.
++- **W6.6 test (nodi nominati):** Python nominati verdi (incl. `test_w6_consumers` W6.6.1-6.4, T-c/T-d ora verdi) + 39 JS. Gate I6 vuoto.
++
++## 0.10.55 — W5-bis: chiusure prima di W6
++
++- **W5b.1 mapping livello→stato TOTALE (`trust.py` `_apply_level_meta`):** per ogni livello attivo (`known`/`confirmed_present`) `operational_state="active"` viene scritto SEMPRE. Prima, se `inventory_hidden_auto` era falso, `operational_state` restava invariato e `_build_trust_plan` (che confronta `operational_state`) marcava `structural` in perpetuo — stessa forma del difetto 109 dietro una condizione. L'auto-hide viene revocato; un nascondimento MANUALE resta rispettato ed esplicitamente escluso (non è `structural`: il piano confronta `operational_state`, non i flag di hide). Mapping reso totale, gate NON reso cieco (F-7: unico writer del campo).
++- **W5b.2 gate di regime = CONVERGENZA (`scripts/wp_gate.py` riscritto):** prima costruiva due piani `dry_run` sullo stesso stato con lo stesso `now` (verificava il determinismo, non la convergenza). Ora: piano → **apply** (in-sessione, mai committato, snapshot pre-op) → ricostruzione con `now` **ricalcolato** → `structural == []`. Precisazione aggiunta a `obs-wp.md` (non riscritta la storia).
++- **W5b.3 lista classe-(b) chiusa voce per voce:** copia ingest `wifi_associations.resolve_ap_asset` era rimasta su `is_current` dopo la migrazione W5 di `topology._resolve_ap_asset`; migrata al resolver contestuale `resolve_asset_by_ip_at(ap_ip, observed_at)`, tie → None → fall-through sul nome (I2). Chiamanti di `presentation_name_for_asset` verificati: nessuno annulla il None con `or ""`/placeholder come surrogato di nome canonico (i fallback sono display-di-ultima-istanza, dichiarati). G5 di W5 non ha esercitato il path `ap_ip` (0/62): copertura nei test unitari (dichiarato, non «verificato»).
++- **W5b.5 test (nodi nominati):** 176 nodi Python verdi + 39 JS verdi + nuovi W5b.1.5 (mapping totale, hide manuale preservato) e W5b.3 (ingest AP contestuale + tie). T-c/T-d (`test_printer_enrichment`, DEBT-IPP-PRECEDENCE) restano ROSSI: contratti W6, non addomesticati. Gate I6 `rg 'scoreSpecificity|specificity' api/` vuoto.
++
++## 0.10.54 — W5: consumatori dello stato corrente sul resolver
++
++- **W5.0/1 perimetro:** migrazione di LETTURA (nessuna scrittura su colonne Asset). Il nome canonico nelle viste migrate passa già dal resolver (`presentation_name_for_asset` → `current("chassis", …, "asset.name")`, fallback dichiarato I2 quando assente).
++- **W5 `_resolve_ap_asset` (DEBT-TOPO-IP-CONTEXTUAL):** il fallback per-IP non usa più `IpAddress.is_current` ma `resolve_asset_by_ip_at(ap_ip, observed_at)`: risolve l'AP che DETENEVA l'IP al momento dell'associazione, non chi lo detiene ora. Tie → None → fall-through all'euristica sul nome (I2, nessun proprietario indovinato).
++- **W5.1.3 (IP multi-valore):** `asset.iface_ip` ha `cardinality=single` (solo IP eletto); il resolver NON è fonte esclusiva per gli IP finché il ruolo non entra nella `excl_key` (pre-condizione W3, DEBT-IFACE-IP-CARDINALITY-ROLE). La UI continua a mostrare tutti gli IP reali (multi-IP non collassati).
++- **W5.2 gate G5 (writer fermi):** risoluzione AP `is_current` vs contestuale su 62 associazioni Wi-Fi → **0 differenze** (0 associazioni sul path `ap_ip`; tutte risolvono per `ap_asset_id`/`ap_mac`). Nessuna regressione: la migrazione è un fix latente, equivalenza-preservante sui dati correnti.
++- **W5.4 test:** `_resolve_ap_asset` contestuale + tie→fall-through (W5.4.6); chassis un nome canonico dal resolver (W5.4.5); fatto assente → None (W5.4.1); resolver stale/superseded esclusi dal corrente, storia leggibile (facts_resolver/shadow_w2).
++
++## 0.10.53 — W-P: presenza con un solo proprietario, stato derivato
++
++- **W-P.1 (misurato):** ipotesi A — Fritz VEDE l'asset 109 (`discovery.fritz.active=True` fresh, MAC `D8:EC:5E:CC:1C:01`). Il lift era legittimo; il difetto era che `classify_asset` non consumava l'evidenza fritz → riderivava `fritz_historical` ≠ stato memorizzato → `structural=1` permanente. Divergenti reali: solo 109.
++- **W-P.2:** l'evidenza si scrive, lo stato si deriva. `classify_asset` ora legge l'evidenza fritz-active fresca (`meta.discovery.fritz`, finestra staleness) e deriva `known` (autorità fritz I5 0.90, MAI `confirmed_present`). `lift_fritz_quarantine_on_active` non scrive più lo stato: registra l'evidenza e ri-esegue la derivazione unica. Mapping `livello→stato` estratto in `_apply_level_meta` (un solo writer, condiviso con `_apply_trust_plan`).
++- **W-P.3:** round-trip a writer fermi (due piani consecutivi `structural==[]`); fixture 109-like con/senza evidenza fritz; D.0.b (fresh→known, mai confirmed_present) + reversibilità; W-C invariata (inventory non solleva né smasha la quarantena). Gate I6 vuoto.
++- **fritz_historical NON assorbente:** un'evidenza fritz-active fresca solleva la quarantena via derivazione; scaduta l'evidenza il piano riporta a `fritz_historical`/`stale_unlocated` senza oscillare.
++- **DEBT-PRESENCE-SOURCE-OUTAGE:** migliorato (fritz vivo → `known`, non stale), ma NON chiuso: manca ancora la distinzione «sorgente non disponibile» vs «dispositivo assente» (richiede segnale di copertura sorgente). Resta APERTO.
++
++## 0.10.52 — W4d: census Asset.name, una scrittura rename, UX truth
++
++- **W4d.1:** censimento lettori `Asset.name`; `presentation_name_for_asset` su API display/porte/topologia/scan; lista (b) → input W5.
++- **W4d.2:** `adopt_name_on_chassis` / `mark_lgs310c_manual` → sola `apply_observation` (niente doppio shadow).
++- **W4d.3:** `obs-ux2.md` matrice «non verificato a runtime» + checklist Michele; LGS via API reali.
++- **W4d.4:** favicon opzione B (anello+hub, stessi token) pubblicata; attuale non sostituita.
++- **F0:** DEBT-FRITZ-TR064-CREDENTIALS chiuso (recreate collector).
++
++## 0.10.51 — F2: revisione UI/UX portale (presenza, Mappa, favicon)
++
++- **F2.0:** gruppo nav MAPPA = Inventario/Impianto/Topologia/…; mappa porte fisica = `/plant`.
++- **F2.1 Plant:** deep-link `?asset=`/`?asset_id=`; pallini SNMP nascosti se non supportati (GS308); limiti I2/I7 in Branch308.
++- **F2.2–3:** banner Fritz muto (Oggi/Dashboard/Inventario); `stale_unlocated` → «copertura sorgente non disponibile»; conflitti R-H nel flusso Oggi; dossier/inventario un nome chassis.
++- **F2.5:** favicon su token `--bg-0`/`--accent`/`--ok`; SVG+ICO+apple-touch; link versionati.
++- **Non toccato:** trust layer (DEBT-PRESENCE-SOURCE-OUTAGE); credenziali Fritz; W5 consumatori.
++
++## 0.10.50 — W4c: rename chassis un-canonico, bonifica una-tantum, boot pulito
++
++- **W4c.1:** `adopt_name_on_chassis` scrive solo `fact_assertions` (subject=chassis); i membri non vengono rinominati né marcati manual; triage sibling su `chassis_role===interface`.
++- **W4c.2:** bonifica `provenance_unreliable` con cutoff `2026-07-27T11:00:00Z`, fuori dal boot; script `scripts/unmark_post_cutoff_provenance.py`.
++- **W4c.3:** `mark_lgs310c_manual` rimosso dal bootstrap (helper one-shot).
++- **W4c.5:** aperto DEBT-PRESENCE-SOURCE-OUTAGE (Fritz muto ≠ device assente).
++
++## 0.10.49 — W4b: provenienza senza traduzione, anti-ballooning, rename chassis
++
++- **W4b.0.a:** shadow writers non traducono più le sorgenti; unknown → rifiuto + `unknown_source`; bonifica `provenance_unreliable` su nmap non ricostruibile.
++- **W4b.0.b:** divergenze ripetute (stesso excl_key/value/source) aggiornano `occurrences` invece di nuove righe.
++- **W4b.1:** LGS310C (asset 3 / chassis 24) marcato manual (provenienza); LGS328C resta `unknown_nonempty`; UI card dichiara l’apparato di appartenenza.
++- **W4b.2:** rename/adopt a soggetto chassis; member → 409 con chassis; conflict-review in Oggi; `asset.name` collegato agli shadow writers.
++- **W4b.3:** aperti DEBT-RH-BEFORE-REFRESH; `_table_bytes` non usa più la size del file DB; DEBT-FRITZ resta aperto (credenziali TR-064 assenti).
++
++## 0.10.48 — W4a: soggetto chassis e soppressione proposte a monte
++
++- **W4a:** NameProposal generate/soppresse per soggetto chassis (manual blocca autorità inferiore; dedup `(chassis, valore)`); risolvibilità calcolata; sibling come interfacce.
++- **W4a.0:** `facts/shadow.py` tracciato; DEBT-IFACE-IP-CARDINALITY-ROLE; DEBT-FRITZ-TR064-CREDENTIALS (STOP-5); `subject_ref_interface` rifiuta multi-NIC senza primary.
++- **Non toccato:** adopt/rename 409 (W4b); shadow `asset.name`.
++- Report: [`docs/obs-w4a.md`](docs/obs-w4a.md).
++
++## 0.10.47 — W2: shadow writers fact_assertion
++
++- **W2:** scritture parallele `asset.iface_ip` (soggetto=interfaccia, excl_key=`asset.iface_ip:{iface_id}`); nessun consumatore legge ancora.
++- **S1:** barriera + SAVEPOINT; kill switch `FACT_SHADOW_WRITERS_ENABLED`; circuit breaker (20k righe / 2k/giorno / 50 MiB).
++- **Non collegato:** `asset.name` (chassis → W4a/W4b). Observability: `GET /api/admin/facts/shadow-stats`.
++- Report: [`docs/obs-w2.md`](docs/obs-w2.md).
++
++## 0.10.46 — W-D-fix: discriminante multi-IP sul dedup
++
++- **X.2:** `entity_key` resta MAC-scoped; `compute_dedup_key` ripristina discriminante IP (`fact_discriminant_for`) — DEBT-TOPO-IP-CONTEXTUAL ripristinato.
++- **X.4:** lift Fritz → `known` (non `confirmed_present`); decisione in `on_fritz_active_evidence` (trust).
++- **Debiti:** DEBT-LASTSEEN-DUAL-SEMANTICS. W2 → **0.10.47**.
++- Report: [`docs/obs-wd-fix.md`](docs/obs-wd-fix.md).
++
++## 0.10.45 — W-D: sblocco gate W2 (T-b, T-e, T-f)
++
++- **T-b:** `entity_key_for` MAC-scoped quando MAC noto; IP-only provisional (`identity_provisional`) + DEBT-PROVISIONAL-IDENTITY-MERGE.
++- **T-e/T-f:** demotion IP chiude `last_seen=now` → `resolve_asset_by_ip_at` trova il detentore storico.
++- **D.0.b:** `lift_fritz_quarantine_on_active` (trust) — quarantena non assorbente; inventory resta bloccata.
++- **Debiti:** DEBT-DOUBLE-CURRENT-IP; Cassiopea ri-caratterizzata chassis (W4a/W4b); alembic unificato in DEBT-ALEMBIC-BASELINE-LEGACY-TABLE. W2 writers → **0.10.46** (poi **0.10.47** in W-D-fix).
++- Report: [`docs/obs-wd.md`](docs/obs-wd.md).
++
++## 0.10.44 — F1-bis: DEBT-RECONCILE-CHURN-1 + riqualifica gate F1
++
++- **W-C:** `inventory_may_set_operational_state` non solleva/smasha `trust_quarantine` (`fritz_historical`) — chiude DEBT-RECONCILE-CHURN-1 (classe, non asset 116). Test zero-iface obbligatorio.
++- **W-B.3:** script una-tantum `scripts/normalize_empty_manual_names.py` (asset 98/150 name manual vuoto → assenza; no bump).
++- **Debiti:** DEBT-IP-CURRENT-SCOPE-PER-ASSET (Cassiopea asset 6). W2 slitta a **0.10.45** (poi rinumerato → **0.10.46** in W-D).
++- Report: [`docs/obs-f1bis.md`](docs/obs-f1bis.md).
++
+ ## 0.10.43 — OBS-IDENTITY W1.5-bis gate closure
+ 
+-- **W1.5-bis:** rimossa soglia E3 inventata (`mac_count_threshold` solo se misurata); test limiti E5-physical (D.2); tool RO `obs_identity_linker_dryrun.py`. Nessun writer identity acceso. W2 shadow writers slitta a **0.10.44**. Debiti: DEBT-RECONCILE-CHURN-1 (asset 116), DEBT-E3-AVAILABLE-FALSE.
++- **W1.5-bis:** rimossa soglia E3 inventata (`mac_count_threshold` solo se misurata); test limiti E5-physical (D.2); tool RO `obs_identity_linker_dryrun.py`. Nessun writer identity acceso. W2 shadow writers slitta a **0.10.44** (poi rinumerato → **0.10.45** in F1-bis). Debiti: DEBT-RECONCILE-CHURN-1 (asset 116), DEBT-E3-AVAILABLE-FALSE.
++- **MAC↔IP (fixture):** classifier puro `mac_ip_policy.py` + 9 test contratto; **non** wired a reconcile/trust (DEBT-MAC-IP-POLICY-WIRE → W7).
+ 
+ ## 0.10.42 — W1.5 identity-evidence (deployata)
+ 
+diff --git a/observatory/docs/KNOWN_DEBT.md b/observatory/docs/KNOWN_DEBT.md
+index 3fe6739..4260125 100644
+--- a/observatory/docs/KNOWN_DEBT.md
++++ b/observatory/docs/KNOWN_DEBT.md
+@@ -2,20 +2,146 @@
+ 
+ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite e fuori scope finché non riprese.
+ 
++## DEBT-HISTORY-PATH-UNWIRED
++
++- **Priorità:** bassa — aperto W8-fix / 0.10.63 (correzione contraddizione B5 della review W8).
++- **Cosa:** `resolver.history()` (`api/app/facts/resolver.py`) esiste ed è esportato (`app/facts/__init__.py`) ma è **senza chiamanti**: nessun router lo invoca e **nessun endpoint espone `?history=true`** (verificato: grep chiamanti + elenco route routers/ — solo `proposal_history`/`warning_history`/monitor history, estranei ai fatti). Il contratto «storico su richiesta esplicita» è **dichiarato ma non cablato**.
++- **Conseguenza:** l'API è corrente per default *perché* lo storico non è esposto (non per una scelta di gating). Non è una regressione: è codice previsto e inerte.
++- **Ripresa:** quando un consumatore avrà bisogno dello storico dei fatti, cablare `resolver.history()` a un endpoint con `?history=true` (default corrente). Fino ad allora resta inerte.
++- **Vietato:** dichiarare `?history=true` come funzionante finché non è cablato; rimuovere `resolver.history()` o riclassificarlo silenziosamente come morto (è la superficie sanzionata per lo storico).
++
++## PRESIDIO-CURRENCY-GATE (presidio permanente, non debito)
++
++- **Natura:** presidio, non debito da chiudere — istituito W8 / 0.10.63.
++- **Cosa presidia:** la correntezza dei FATTI si legge SOLO dal resolver (`api/app/facts/`). Nessun altro punto di `api/` può interrogare `FactAssertion` per decidere «qual è il valore adesso» (evidenza si scrive, stato si deriva — F-7).
++- **Come:** `scripts/w8_currency_gate.py` — sentinella su ogni riga che nomina `FactAssertion` fuori da `api/app/facts/`; **fallisce** su accessi nuovi. Allowlist **per (file, snippet)** con motivazione (mai pattern generico): `models.py` (def ORM), `bootstrap.py` (import per `create_all`), `admin.py` (`/facts/shadow-stats` COUNT + `/facts/conflicts` divergenze `state="historical"`, I3). Stato W8: **9 eccezioni giustificate, 0 violazioni (PASS)**.
++- **Da eseguire:** a ogni ondata futura, con output completo, **insieme a I6**.
++- **Non presidiato (criterio dichiarato):** `ip_addresses.is_current` = elezione IP (F-15, W8.1.3), non correntezza dei fatti — il resolver non è fonte esclusiva per gli IP finché il ruolo non entra nella `excl_key` (pre-condizioni W3: `DEBT-DOUBLE-CURRENT-IP`, `DEBT-IFACE-IP-CARDINALITY-ROLE`, `DEBT-LASTSEEN-DUAL-SEMANTICS`).
++- **Equivalenza:** `scripts/w8_g8_equivalence.py` (G8, read-only) — `DIVERGE=0` non-regressione della correntezza del nome (resolver vs presentazione).
++- **Doc:** [`docs/obs-design-spec-025.md`](obs-design-spec-025.md) §12 · [`docs/obs-w8.md`](obs-w8.md)
++- **Vietato:** aggiungere all'allowlist un pattern generico; leggere correntezza dei fatti fuori dal resolver; introdurre un secondo autore di stato (F-7).
++
++## DEBT-FINDINGS-OGGI-CONFLUENCE
++
++- **Priorità:** UX (architettura superfici) — aperto UX3 / 0.10.63
++- **Cosa:** la route `/findings` è una coda parallela a Oggi (F-9). Misura in prod (2026-07-28): `/api/findings`=0, `/api/drifts`=0 — la superficie è **vuota** ed è in **shadow** finché lo scoring non è calibrato (Dashboard: «Findings restano in shadow»). Per non frammentare la coda operativa, `/findings` è stata **tolta dalla nav primaria** in 0.10.63.
++- **Raggiungibilità (UX3.2.4 rispettato):** la route esiste ancora ed è raggiungibile dalla Dashboard (ReadySlot «Findings e severità → Apri Findings (shadow)» e card «Findings (shadow) → Apri») e per URL diretto. Nessuna funzione operativa resa irraggiungibile.
++- **Confluenza rinviata:** quando i findings compositi diventeranno autoritativi (scoring calibrato, M4–M5), i loro elementi devono diventare **problemi dentro Oggi** (F-9), non una vista separata. Condizione: calibrazione completata + severità calibrata.
++- **Vietato:** ricreare un hub findings separato da Oggi; esporre findings shadow come alert.
++
++## DEBT-DASHBOARD-READY-SLOTS
++
++- **Priorità:** UX (roadmap M3–M5) — annotato UX3 / 0.10.63
++- **Cosa:** la Dashboard (ora «Panoramica», in nav) mostra `ReadySlot` placeholder («Presenza», «Findings e severità», «Coda attenzione») che in calibrazione dichiarano onestamente «Disponibile dopo la calibrazione» (I2, nessun dato inventato). Non sono rumore da rimuovere: sono slot di roadmap con etichetta d'attesa.
++- **Ripresa:** riempimento a calibrazione conclusa (M3/M4/M5). Nessuna barra muta, nessun valore plausibile.
++- **Vietato:** riempirli con valori stimati prima della calibrazione.
++
+ ## DEBT-RECONCILE-CHURN-1
+ 
+-- **Priorità:** media (bootstrap regime) — aperto in W1.5-bis 2026-07-25
+-- **Cosa:** asset **116** ha `trust_level=fritz_historical` ma `meta.operational_state=active`. Ogni boot1 con `needs_apply=true` / `structural=1` / `T_backup≈80s`; apply trust corregge; `inventory.reconcile_asset_presence` ripristina `active`.
+-- **Attribuzione:** churn preesistente (backup pre-0.10.42), **non** indotto da `identity_evidence`.
+-- **Vietato:** tollerarlo silenziosamente come “regime ok”; sostituire la misura del boot1 con un boot successivo senza dichiararlo.
+-- **Fix quando:** ownership `operational_state` per `fritz_historical` — inventory non deve smashare la quarantena trust senza evidenza reliable; oppure heal one-shot + guard.
++- **Priorità:** media (bootstrap regime) — **CHIUSO in F1-bis / 0.10.44**; **confermato D.6** sul boot1 di **0.10.45** (`structural=0`)
++- **Cosa:** asset **116** aveva `trust_level=fritz_historical` ma `meta.operational_state=active`. Boot1 `needs_apply=true` / `structural=1` / `T_backup≈80s` perché `inventory_may_set_operational_state` permetteva `fritz_historical`→`active` se `reliable=True` (anche con 0 interfacce via reachability).
++- **Fix:** inventory non solleva né smasha `trust_quarantine` (`fritz_historical` op_state o trust_level) — gerarchia invariata `archived > trust_quarantine > trust_protected > inventory_presence`. Test `test_quarantine_zero_interfaces_inventory_cannot_set_active`.
++- **Vietato (storico):** tollerarlo come “regime ok”; caso speciale su `asset_id=116`.
++
++## DEBT-IP-CURRENT-SCOPE-PER-ASSET → ri-caratterizzato come IDENTITÀ CHASSIS (W-D)
++
++- **Priorità:** W4a/W4b (consolidamento chassis) — riaperto/riscritto F1-bis→W-D 2026-07-26
++- **Fatto:** Cassiopea è modellata come **due asset record** — asset **5** «Cassiopea — NIC 1» tiene `192.168.1.3` CURRENT (id 9); asset **6** tiene `192.168.3.24` CURRENT (id 855). L’IP di management non è perso: è sull’altro record. Il ping fallito su `.3.24` dal container api è atteso (lato SPAN), non un sintomo.
++- **Test di non-regressione (da chiudere in W4a/W4b):** dopo consolidamento, Cassiopea = **UN** apparato con **DUE** interfacce; entrambi gli IP correnti ciascuno sulla propria interfaccia; un solo nome canonico.
++- **Vietato ora:** patch dati che forzi due current sullo stesso asset_id / stessa iface.
++- **Doc:** [`docs/obs-f1bis.md`](obs-f1bis.md) · [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-DOUBLE-CURRENT-IP
++
++- **Priorità:** pre-condizione **W3** — aperto W-D 2026-07-26
++- **Cosa:** stesso IP con >1 riga `is_current=1` (stesso asset o asset diversi). Al backfill W3 collideranno con `uq_fact_assertions_current_slot`.
++- **Casi enumerati (live, invariati da X.2):**
++  - `192.168.1.2` — id **3** (asset 2, mgmt) + id **153** (asset 2, fritz)
++  - `192.168.2.108` — id **15** (asset 11) + id **853** (asset 138)
++- **Nota:** W3 richiede una **regola di risoluzione dichiarata PRIMA** del backfill. **NON** collassare ora. Cardinalità non cambiata da X.2 (dedup ≠ `is_current`).
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md) · [`docs/obs-wd-fix.md`](obs-wd-fix.md)
++
++## DEBT-PROVISIONAL-IDENTITY-MERGE
++
++- **Priorità:** post W-D (quando MAC sconosciuto → poi scoperto) — aperto W-D 2026-07-26
++- **Cosa:** `entity_key` IP-only è marcato `payload.identity_provisional=true`, ma non esiste ancora un percorso di **fusione** quando il MAC viene scoperto in seguito (evitare duplicato).
++- **X.2:** invariato — discriminante IP sul dedup non introduce merge. Cardinalità debito invariata.
++- **Vietato:** inventare il merge in questa ondata.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md) · [`docs/obs-wd-fix.md`](obs-wd-fix.md)
+ 
+ ## DEBT-E3-AVAILABLE-FALSE
+ 
+ - **Priorità:** bloccante per E3 finché SNMP non è misurabile
+ - **Cosa:** E3-topological richiede access_port + mac_count misurato + soglia **esplicita** + simultaneità. Con poll SNMP in timeout, E3 = **available=false** (degrada a E2). Nessuna soglia inventata.
+ - **Vincolo:** non promuovere E3 finché `fdb_poll.ok` / misure porta non tornano.
+-- **Ripresa:** W2+ quando SNMP/LLDP writers misurano.
++- **Ripresa:** W2+ quando SNMP/LLDP writers misurano; requisiti accesso/poll in **DEBT-FDB-LLDP-PASSIVE**.
++
++## DEBT-FDB-LLDP-PASSIVE
++
++- **Priorità:** wave futura post W1.5-bis (writers SNMP / presenza) — **non** interrompe W1.5-bis
++- **Cosa:** implementazione iniziale **passiva/read-only** FDB+LLDP: presenza/posizione L2, **non** identità; FDB ≠ ownership; LLDP/CDP solo corroborante (spoofabile). LGS310C/328C: SNMPv3 authPriv, RO, ACL solo Cassiopea, view Bridge/LLDP/ENTITY, no SET, segreti fuori repo/log, timeout/rate limit; LLDP/CDP non abilitato dove non serve. ObservationRaw: switch_id, port, VLAN/bridge-domain, timestamp, age/last_seen, acquisition_method, failure_state; dedupe per **transizione** non per poll. Alert «nuovo MAC su access» solo dopo classificazione misurata access/trunk/uplink/AP/powerline, inizialmente informativo; **niente** quarantena/shutdown auto. Spoof / MAC move / CAM flood / randomized MAC previsti; assenza alert ≠ sicurezza.
++- **Doc:** [`docs/obs-fdb-lldp-passive.md`](obs-fdb-lldp-passive.md)
++- **Vietato:** usarlo come scorciatoia identity/merge; SET SNMP; enforcement automatico porte; dichiarare “rete sicura” perché non ci sono alert.
++
++## DEBT-ENTITY-KEY-MAC-IP
++
++- **Priorità:** era bloccante W2 — **CHIUSO in W-D / 0.10.45** (2026-07-26)
++- **Fix:** `entity_key_for` → MAC quando MAC noto; IP-only → provisional (`identity_provisional`). Test T-b verde.
++- **Residuo correlato (non collassare):** righe IP duplicate / refresh-as-transition — vedi B.2 / DEBT-DOUBLE-CURRENT-IP.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-IP-MIGRATION-NONETYPE
++
++- **Priorità:** era bloccante W2 — **CHIUSO in W-D / 0.10.45** (2026-07-26)
++- **Causa:** `elect_interface_primary` demoteva senza chiudere `last_seen` → `resolve_asset_by_ip_at` tornava `None` a T intermedio.
++- **Fix:** alla demotion, `last_seen = now` se mancante/precedente. T-e / T-f verdi.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-ALEMBIC-BASELINE-LEGACY-TABLE
++
++- **Priorità:** bassa (igiene CI; Alembic **non** gira in prod) — unificato W-D 2026-07-26
++- **Ex:** DEBT-ALEMBIC-MIGRATION-TESTS + baseline disallineata da tabella `observations` droppata.
++- **Sintomi test:** `ix_observations_seen_at`, `assets.chassis_id`, `assets.printer_first_seen` su fixture/alembic.
++- **Vietato:** inseguirli come fix runtime; schema prod = `create_all`.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-IPP-PRECEDENCE (T-c / T-d) — CHIUSO in W6, rank corretto in W6-REVIEW (0.10.57)
++
++- **Priorità:** media (autorità naming) — registrato W-D 2026-07-26, **chiuso** W6 2026-07-27, rank rivisto W6-REVIEW
++- **Test:** `test_ipp_precedence_and_human_category_override` (T-c); `test_snmp_enrichment_creates_proposal_without_overwriting_name` (T-d) — entrambi VERDI
++- **Root-cause:** `create_name_proposal` faceva `db.add` senza sincronizzare la relazione `asset.name_proposals` (proposte create invisibili in-sessione) + `best_guess` usava un secondo prospetto di pesi (`SOURCE_WEIGHT`) non coincidente con I5.
++- **Fix (W6.2 + W6R.1):** `create_name_proposal` → `append` alla relazione (guardia `has_rejected_name_proposal` invariata, non ricrea rifiutate); `best_guess` ordina per `authority_for` (I5) primario + confidence. **Rank corretto in W6-REVIEW:** `ipp=88`/`snmp=87` (sopra dhcp, alteravano I5) → **`ipp=snmp=81`** — unico vincolo misurato `ipp>fritz` (T-c); sotto `dhcp=85`, I5 di prodotto intatto. Posizione tier vs dhcp = decisione di dominio (Michele, STOP-5). Misurato: 0 flip in prod. Nessuna seconda gerarchia. Test non indeboliti.
++
++## DEBT-FDB-UPLINK-PORTAL (T-a) — CHIUSO in W7 (0.10.58)
++
++- **Priorità:** media — registrato W-D 2026-07-26 (preesistente), **chiuso** W7 2026-07-27
++- **Test:** `test_m2_discovery.py::test_fdb_skips_observe_portal_on_uplink_role` — VERDE
++- **Osservato:** `portal_last_seen` valorizzato invece di `None` su ruolo uplink.
++- **Root-cause:** `apply_fdb_observation` (`topology.py`) ricalcolava `interface_role` per-porta prima della guardia portale, declassando `uplink→endpoint` su un singolo hit FDB.
++- **Fix (W7.3):** un hit FDB per-porta non declassa più un'interfaccia strutturale (`uplink`/`infra`); i downgrade restano del reclassify globale. Nessun azzeramento retroattivo di `portal_last_seen`. Test non indebolito.
++
++## DEBT-MAC-IP-POLICY-WIRE — APERTO (wire additivo 0.10.58; policy piena CONSULTIVA 0.10.59; autoritativa rinviata)
++
++- **Priorità:** wave presence — **wire additivo fatto** (0.10.58); **policy piena esposta come CONSULTIVA** (0.10.59); attivazione autoritativa delle regole #3/#5 **rinviata e condizionata**.
++- **Cosa:** policy dominio MAC↔IP (chassis ≥1 IP corrente; eccezione powerline/510E; `present_l2_unaddressed`; supersession binding) — classifier `api/app/services/mac_ip_policy.py` + test contratto.
++- **Fatto (W7.2, deploy 1/2, 0.10.58):** `classify_mac_ip_presence` collegato a `reconcile_asset_presence` come **solo segnale di presenza** (`present_l2_unaddressed` + `l2_only_allowed` → `reliable`); mai forza `stale`/`superseded` (F-7 intatto, non secondo autore). Misurato 0 cambi in prod.
++- **F-14 — il wire è INERTE per costruzione (W7C-FIX, 0.10.59):** ogni decisione consumata dal wire (`present_l2_unaddressed`, `l2_only_allowed`) richiede `mac_fdb_fresh=True`; ma la stessa porta fresca genera in `reconcile_asset_presence` `physical_reasons=["FDB recente"]`, quindi `reliable` era **già** `True` senza il wire. Il wire non fa lavoro su `reliable` a prescindere dalla freschezza FDB. Misura corretta prod (`scripts/w7c_measure.py`, freschezza FDB reale): **0 hit** — vedi `docs/obs-w7close.md` §W7C-FIX.1. Correlato a DEBT-FDB-POLL-STALE (oggi 0 porte fresche).
++- **Fatto (W7C.5, 0.10.59) — policy piena CONSULTIVA:** `inventory.mac_ip_policy_consultation` (read-only) + endpoint admin `GET /api/admin/mac-ip-policy-consultation` calcolano il verdetto della policy completa (regole #1..#5) per ogni asset e lo espongono come **divergenza visibile** accanto allo stato reale e all'evidenza che tiene presente il device. **Non scrive, non guida `operational_state`/`trust_level`/`reliable`** (F-7). Le regole #3/#5 **NON sono autoritative**.
++- **Rinviato (attivazione autoritativa — decisione dominio Michele + correzione regole):** le regole #3/#5 marcherebbero `stale` device la cui presenza è dimostrata nello stesso istante da altre evidenze (FritzBox router, powerline, Sky box) — dissentono dalla realtà osservabile su una quota rilevante del parco e sbagliano sul gateway. **Il difetto è nella regola, non negli asset.** L'attivazione autoritativa è **condizionata alla correzione** delle regole che dissentono dalla realtà; fino ad allora il verdetto resta consultivo (I3). Blast-radius misurato read-only prod: vedi `docs/obs-w7close.md` (enumerazione per id).
++- **Doc:** [`docs/obs-currency-mac-ip-policy.md`](obs-currency-mac-ip-policy.md), [`docs/obs-w7close.md`](obs-w7close.md)
++- **Vietato:** attivare #3/#5 in modo autoritativo prima della correzione delle regole; usare la policy come scorciatoia di fusione chassis; inventare management IP.
++
++## DEBT-FDB-POLL-STALE — APERTO (copertura FDB ferma; resa visibile in UI 0.10.60)
++
++- **Priorità:** presentazione fatta (0.10.60); ripristino del polling FDB **fuori scope UX2** (non diagnosticare, F-13).
++- **Cosa (misura F-13, RO 2026-07-27):** 46 switch port, **38 con `last_fdb_at`**, **0 freschi nelle 24h**; il più recente è **2026-07-25 14:52** (~57 h). `fdb_poll.ok=false` sui core LGS328C/LGS310C (SNMP timeout); GS308EP senza FDB per progetto.
++- **Perché debito:** la mappatura porta→device (FDB) non si aggiorna; i dati di porta mostrati in Impianto/Topologia/Monitor sono la persistenza dell'ultima FDB riuscita. Un dato di porta vecchio di giorni **non va presentato come corrente** (I2/I3).
++- **Fatto (UX2.2.4, 0.10.60) — solo presentazione:**
++  - `web/src/observatoryUx.js` `fdbCoverageStatus()` (helper puro, test) calcola la freschezza dalla `last_fdb_at` di porta, **mai** dall'ora del poll fallito.
++  - Impianto (`web/src/views/Plant.vue`): banner «copertura FDB non aggiornata: ultima mappatura … (circa N h fa)» + badge per-switch corretto (non spaccia più `fdb_poll.at` fallito come «dati al … (ok)»).
++  - Monitor (`web/src/views/Monitoring.vue`): traffico/errori resi «—» quando `snmp_poll.ok≠true` (assente ≠ 0); poll marcato «non riuscito».
++- **Correlato:** DEBT-PRESENCE-SOURCE-OUTAGE (copertura sorgente presence), DEBT-E3-AVAILABLE-FALSE (SNMP/LLDP non misurati), DEBT-MAC-IP-POLICY-WIRE §F-14 (con 0 porte fresche il wire non ha nulla su cui agire).
++- **Vietato:** diagnosticare o riavviare il polling FDB dentro UX2 (F-13); mostrare la data del poll fallito come freschezza del dato; presentare occupazione porte vecchia come corrente.
+ 
+ ## DEBT-MIRROR-SOURCES
+ 
+@@ -65,20 +191,65 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+ - **Residuo:** riprendere DVR (#2) / LUMIN / openhabian dal toggle critico se servono; non riattivare Kuma runtime.
+ - **Vietato:** ripristinare Kuma come dipendenza; delete delle righe kuma archiviate.
+ 
+-## DEBT-TOPO-IP-CONTEXTUAL (CHIUSO v0.9.0)
++## DEBT-TOPO-IP-CONTEXTUAL
+ 
+-- **Priorità:** bassa (latente → perimetro ampliato 2026-07-21) — ex BUG 3 declassato
++- **Priorità:** bassa (latente → perimetro ampliato 2026-07-21; discriminante raw ripristinato 0.10.46) — ex BUG 3 declassato
++- **Invariante:** multi-IP sullo stesso MAC **non collassa** nello store raw (fatti distinti).
++- **Stato raw:** **violato in 0.10.45** (`dedup_key` usava solo `entity_key` MAC-scoped → 5 IP → 1 riga). **Ripristinato in 0.10.46:** `entity_key` resta MAC; `compute_dedup_key` aggiunge discriminante IP (`fact_discriminant_for`). Identità ≠ dedup. Vedi [`docs/obs-wd-fix.md`](obs-wd-fix.md).
+ - **Perimetro definitivo:** multi-IP per ruolo (`primario` / `vpn` / `mgmt` / `servizi`). `endpoint.ip_change` **solo sul primario**. Casi noti:
+   - **FRITZ!Box** (asset 1): 5 IP contemporanei sullo stesso MAC — `.1.1` primario, `.1.9` VPN LAN, `.1.4`/`.1.5`/`.1.6` (ruolo TBD servizi/altro); ×223 `ip_change`/24h documentati poi silenziati.
+-  - **GS308EP** (asset 4): `.1.8` mgmt (fatto). `.3.20` = binding Fritz storico sullo stesso MAC, **ownership da confermare** (non inventariale; non SPAN — SPAN=p22/NIC2 `.3.24` / sink `10.255.255.2/30`). Vedi `docs/obs-ux-ip-308-verifica.md`.
++  - **GS308EP** (asset 4): `.1.8` mgmt (fatto). `.3.20` = binding Fritz storico sullo stesso MAC, **ownership da confermare** (non inventariale; non SPAN — SPAN=p22/NIC2 `.3.24` / sink `10.255.255.2/30`). Vedi [`docs/obs-ux-ip-308-verifica.md`](obs-ux-ip-308-verifica.md).
+   - **Cassiopea (ex-bond):** `DEBT-LAG-CASSIOPEA` **CHIUSO** 21/07/2026 (eth0 LAN / eth1 SPAN).
+-- **Nota architetturale:** il dedup raw per-MAC scarta le osservazioni L3 multi-IP (sul Fritz 4/5 IP perse nel raw, `hit_count≈5` ma `l3.ip` resta solo `.1.1`) mentre l’upsert legacy scrive comunque i binding e gli `ip_change`: le due pipeline divergono. Il fix dovrà includere `dedup_key` **MAC+IP** per le osservazioni L3.
+-- **Sintomo latente (BUG 3 originale):** in [`_resolve_ap_asset`](../api/app/services/topology.py) il fallback per-IP usa `is_current` invece di `resolve_asset_by_ip_at`. Oggi non gira (0 client Wi‑Fi IP-only su 41).
+-- **Fix quando servirà:** (1) ruoli IP + `ip_change` solo primario; (2) dedup L3 MAC+IP; (3) nel solo ramo (b) di `_resolve_ap_asset`, `resolve_asset_by_ip_at` + `observed_at`; tie→None→fall-through. NON toccare `is_current` alla cieca su multi-NIC storiche.
++- **Nota architetturale:** il dedup raw per-MAC scartava le osservazioni L3 multi-IP (sul Fritz 4/5 IP perse nel raw, `hit_count≈5` ma `l3.ip` resta solo `.1.1`) mentre l’upsert legacy scrive comunque i binding e gli `ip_change`: le due pipeline divergevano. Fix 0.10.46: `dedup_key` MAC+IP per L3.
++- **Sintomo latente (BUG 3 originale / consumatore di correttezza) — MIGRATO W5 (0.10.54):** [`_resolve_ap_asset`](../api/app/services/topology.py) usa ora `resolve_asset_by_ip_at(ap_ip, observed_at)` (contestuale) invece di `is_current`; tie → None → fall-through sul nome. Gate G5 a writer fermi: 62 associazioni Wi-Fi, 0 sul path `ap_ip` → **0 differenze** (fix latente, equivalenza-preservante). Il facet «consumatore di correntezza» di questo debito è chiuso; la cardinalità/ruolo multi-IP resta tracciata in **DEBT-IFACE-IP-CARDINALITY-ROLE** (pre-condizione W3). Vedi [`docs/obs-w5.md`](obs-w5.md).
++- **Copia ingest chiusa — W5-bis (0.10.55):** [`wifi_associations.resolve_ap_asset`](../api/app/services/wifi_associations.py) (risoluzione AP lato ingest Wi-Fi) era rimasta su `is_current` dopo la migrazione W5 della sola copia di `topology`; ora usa `resolve_asset_by_ip_at(ap_ip, observed_at)` con `observed_at` dall'associazione; tie → None → fall-through sul nome (I2). Equivalenza-preservante sui dati correnti (a ingest `observed_at ≈ now`). Copertura: `tests/test_w5_consumers.py` (contestuale + tie). Vedi [`docs/obs-w5bis.md`](obs-w5bis.md).
++- **Fix quando servirà:** (1) ruoli IP + `ip_change` solo primario; (2) dedup L3 MAC+IP *(fatto 0.10.46)*; (3) nel solo ramo (b) di `_resolve_ap_asset`, `resolve_asset_by_ip_at` + `observed_at`; tie→None→fall-through. NON toccare `is_current` alla cieca su multi-NIC storiche.
+ - **Riattivazione:** attribuzione topologia sbagliata su IP DHCP migrato, oppure ripresa del rumore `ip_change` multi-ruolo dopo unmute.
+-- **Stato FASE B (codice, 2026-07-21):** elezione + `role` + dedup `mac|ip` + `ip_change` solo primario — in tree, pre-deploy. Bonifica storica duplicate `(interface_id, ip)` resta fuori scope. UI secondari = FASE C.
++- **Stato FASE B (codice):** elezione + `role` + dedup `mac|ip` + `ip_change` solo primario — in tree. Bonifica storica duplicate `(interface_id, ip)` resta fuori scope. UI secondari = FASE C.
+ - **Bonifica storica:** eventuali righe duplicate `(interface_id, ip)` pre-FASE-B restano; niente UniqueConstraint finché non c’è purge dedicato (fuori scope).
+ 
++## DEBT-IFACE-IP-CARDINALITY-ROLE
++
++- **Priorità:** pre-condizione **W3** — aperto W4a 2026-07-26
++- **Cosa:** `asset.iface_ip` ha `cardinality=single` per interfaccia e il writer shadow registra **solo l’IP eletto** (`elect_interface_primary`). Sul Fritz (asset 1) esistono cinque IP simultanei (`.1.1` primario, `.1.9` VPN, `.1.4`/`.1.5`/`.1.6` servizi) — i non-eletti **non** compaiono nel layer assertion.
++- **I2:** assenza di un IP in `fact_assertions` **non** significa che l’IP non esista.
++- **W4b.3.3:** `current()` senza `excl_key` e con più righe `current` su cardinality `single` sceglie in silenzio per authority — collegato a questo debito; non collassare ora.
++- **Prima di W3:** `excl_key` deve acquisire il **ruolo** (`fact_key + interface_id + role`), cardinalità `scoped`. NON inventare i ruoli mancanti ora (K3).
++- **Vietato in W4a/W4b:** implementare il ruolo nella excl_key; collassare i doppi-current.
++- **Doc:** [`docs/obs-w4a.md`](obs-w4a.md) · legato a DEBT-TOPO-IP-CONTEXTUAL
++
++## DEBT-RH-BEFORE-REFRESH
++
++- **Priorità:** media (correttezza resolver) — aperto W4b 2026-07-27
++- **Cosa:** `_check_rh_conflict` gira **prima** di R-A refresh. Ogni refresh riesegue la scansione cross-fact; un valore già `current` può diventare `conflict_review` per un cambiamento altrove senza che l’osservazione in ingresso sia nuova.
++- **Vietato in W4b:** correggere l’ordine ora.
++- **Doc:** [`docs/obs-w4b.md`](obs-w4b.md)
++
++## DEBT-LASTSEEN-DUAL-SEMANTICS
++
++- **Priorità:** pre-condizione **W3** — aperto W-D-fix 2026-07-26
++- **Cosa:** `elect_interface_primary` scrive `last_seen = now` alla demotion (chiusura amministrativa di intervallo) nello stesso campo «ultima osservazione».
++- **Nota W3:** prima del backfill dichiarare per ogni campo quale semantica porta; le righe con `last_seen` amministrativo daranno `valid_to`, non un’osservazione.
++- **Vietato ora:** correggere / biforcare il campo in questa ondata.
++- **Doc:** [`docs/obs-wd-fix.md`](obs-wd-fix.md)
++
++## DEBT-FRITZ-TR064-CREDENTIALS
++
++- **Priorità:** operativa — **CHIUSO F0 2026-07-27**
++- **Chiusura misurata:** Michele ha ripristinato le chiavi in `.env`. `docker compose restart collector` **non** ricarica env (USERNAME/PASSWORD len=0 nel container → ancora 401). Dopo `up -d --force-recreate --no-deps collector`: chiavi presenti nel container; hostlist **94** host; mesh `available` **6** assoc; **0** occorrenze 401/`credentials_invalid` post-recreate. Valori segreti mai letti/riportati.
++- **Doc:** [`docs/obs-fritz-restore.md`](obs-fritz-restore.md)
++
++## DEBT-PRESENCE-SOURCE-OUTAGE
++
++- **Priorità:** alta (I2/I4 + churn boot) — aperto W4c 2026-07-27; **NON corretto in W4c** (W4c.5.2); **resta APERTO** con Fritz vivo (F0)
++- **Fatto misurato (W4b boot1):** `structural=4` — asset **136, 140, 145, 148** `meta.operational_state` `active` → `stale_unlocated`. AD finestra 24h sceso 69→62.
++- **Meccanismo:** `classify_asset` / `reconcile_trust_history` in [`api/app/services/trust.py`](../api/app/services/trust.py) (~170–189, ~474–489, ~618–621): senza `portal_last_seen` recente e senza protezione → bucket `stale_unlocated`. Con Fritz TR-064 muto i refresh hostlist non aggiornano la presenza → l’assenza della **sorgente** viene trattata come assenza del **dispositivo**.
++- **Principio:** quando la sorgente che copriva un device è indisponibile, lo stato corretto è «non misurato» / «copertura sorgente non disponibile», non «assente».
++- **F0 (Fritz vivo):** evidenza Fritz corrente su 88 asset; lift live solo **109** → `known` (non `confirmed_present`). **136** ha `discovery.fritz.active=True` ma resta `stale_unlocated` perché `lift_fritz_quarantine_on_active` esce solo da `fritz_historical`. Trust layer non corretto in F0/W4d.
++- **Vietato in W4c/F0:** correggere il trust layer. UI (F2 / **0.10.51**): banner Fritz + copy «copertura sorgente non disponibile».
++- **W-P (0.10.53) — trust layer corretto, debito NON chiuso:** `classify_asset` ora legge l'evidenza fritz-active fresca e deriva `known` (autorità fritz, mai `confirmed_present`); il lift non scrive più lo stato (evidenza→derivazione). Effetto misurato: 109 converge (fine oscillazione), 136 sollevato a `known`. Questo distingue «fritz vivo→known» da «fritz stale→stale/historical», MA **non** distingue ancora «sorgente non disponibile» (outage TR-064) da «dispositivo assente»: durante un'outage l'evidenza invecchia oltre la finestra e l'asset ridiscende. Serve un segnale di **copertura sorgente** (sensor_run/coverage) per chiudere. **RESTA APERTO** (non chiuso per prossimità, W-P.2.7).
++- **Doc:** [`docs/obs-w4c.md`](obs-w4c.md) · [`docs/obs-ux2.md`](obs-ux2.md) · [`docs/obs-fritz-restore.md`](obs-fritz-restore.md) · [`docs/obs-wp.md`](obs-wp.md)
++
+ ## DEBT-A2-CASCADE-AP
+ 
+ - **Priorità:** bassa (latente) — ex nota di confine BUG 1 / A2
+diff --git a/observatory/docs/obs-design-spec-025.md b/observatory/docs/obs-design-spec-025.md
+index 3f97af8..fbd061a 100644
+--- a/observatory/docs/obs-design-spec-025.md
++++ b/observatory/docs/obs-design-spec-025.md
+@@ -545,3 +545,47 @@ utile a lungo termine.
+ 
+ Da attivare **prima** del punto 3 (componenti primitivi), che è la fase
+ con più spostamenti di codice.
++
++---
++
++## 12. Presidio permanente della correntezza (W8)
++
++**Principio.** La correntezza dei FATTI (nome, alias, IP eletto, mgmt IP,
++presenza, FDB, link, OS, proposte) si legge da UN SOLO posto: il resolver in
++`api/app/facts/`. Nessun altro punto di `api/` può interrogare `FactAssertion`
++per decidere «qual è il valore adesso». L'evidenza si scrive, lo stato si
++deriva (F-7): i consumatori leggono lo STATO derivato (`classify_asset`) o il
++resolver, mai un calcolo di correntezza per conto proprio.
++
++**Gate.** `scripts/w8_currency_gate.py` è il presidio ripetibile: scansiona
++`api/app/**` (escluso `api/app/facts/**`), usa come sentinella ogni riga che
++nomina `FactAssertion` e **fallisce** se compare un accesso non presente
++nell'allowlist. L'allowlist è **per (file, snippet esatto)** con motivazione —
++mai un pattern generico. Va eseguito, con output completo, a ogni ondata futura
++**insieme al gate I6**.
++
++**Eccezioni giustificate (allowlist, W8.3.1).**
++- `api/app/models.py` — `class FactAssertion(Base):` (definizione ORM).
++- `api/app/bootstrap.py` — import per `create_all` (registrazione schema, no query).
++- `api/app/routers/admin.py` — `/facts/shadow-stats`: `COUNT(*)` righe (osservabilità
++  breaker, non un valore corrente); `/facts/conflicts`: elenco divergenze
++  `conflict_review` con `state="historical"` (I3, l'opposto di current), ordinate
++  per display.
++
++**Falsi positivi legittimi non presidiati qui (criterio dichiarato).**
++- `ip_addresses.is_current` è il **meccanismo di elezione** dell'IP eletto
++  (F-15, W8.1.3), non correntezza dei fatti: il resolver non è fonte esclusiva
++  per gli IP finché il ruolo non entra nella `excl_key` (pre-condizione W3).
++- Colonne di stato derivate di `Asset` (name/os_guess/presence_state): STATO
++  derivato dall'unico derivatore (F-7), non ricalcolo.
++- Letture di evidenza grezza / oggetti di dominio (ObservationRaw, Event,
++  ScanRun, SpeedTestResult, Finding, Suggestion, Snapshot, ActionRequest): non
++  sono fatti del registry.
++- `resolver.history()` è codice **senza chiamanti**: il percorso storico è
++  previsto ma **NON ancora cablato** ad alcun endpoint (nessun `?history=true`
++  esiste — verificato W8-fix, `DEBT-HISTORY-PATH-UNWIRED`). L'API resta
++  **corrente per default** proprio perché lo storico non è esposto.
++
++**Equivalenza.** `scripts/w8_g8_equivalence.py` (G8, read-only, mai commit)
++confronta a writer fermi la correntezza del nome prodotta dal resolver con la
++presentazione consumer-facing: `DIVERGE=0` è la condizione di non-regressione.
+diff --git a/observatory/docs/obs-w8.md b/observatory/docs/obs-w8.md
+new file mode 100644
+index 0000000..48b9e37
+--- /dev/null
++++ b/observatory/docs/obs-w8.md
+@@ -0,0 +1,247 @@
++<!-- BLOCK-ID: OBS-W8 -->
++
++# W8 — Enforcement della correntezza
++
++**Esito in una riga.** Il censimento esaustivo trova **0 calcoli locali di
++correntezza da migrare** (classe (a) vuota): la correntezza dei fatti è già
++letta da un solo posto, il resolver `api/app/facts/`; tutto il resto è (b)
++legittimo con criterio dichiarato. Perciò **nessun cambio di codice runtime →
++nessun deploy → nessun bump** (VERSION resta **0.10.63**). W8 consegna il
++**presidio permanente** (gate + doc) e l'**equivalenza G8**, e conferma che
++l'**API è corrente per default**.
++
++> Perché non ci sono migrazioni: i consumatori dei fatti erano già stati portati
++> al resolver / allo stato derivato in W5/W6/W7. W8 lo **dimostra** e ci mette un
++> presidio che impedisce il ritorno di calcoli locali.
++
++---
++
++## 0. Baseline (0.10.63, invariata — nessun deploy)
++
++assets **151** · ip_current **99** · NP **408** (pending **77**) · FA **261**
++(current **68**) · AD **68** (finestra mobile) · unknown_source **0** ·
++breaker **closed**. Delta previsto e osservato: **0** (nessuna scrittura, nessun
++deploy).
++
++---
++
++## W8.1 — Censimento dei calcoli locali di correntezza (esaustivo)
++
++Grep su `api/**` e `web/src/**` per: `ORDER BY … observed_at/last_seen DESC
++LIMIT 1`, `MAX(observed_at/last_seen)`, `is_current == True`, `.first()` su
++query ordinate per tempo, `timedelta(hours/days/minutes=…)`, `DISTINCT` su
++ip/mac/hostname, «prendi il più recente». Ogni riga ha una disposizione. Nessuna
++è (a); nessuna (c) da rimuovere; tutte (b) con criterio dichiarato.
++
++### Criterio di distinzione (W8.1.3)
++
++Un punto è **correntezza dei FATTI** solo se decide il valore corrente di un
++fatto del registry (`asset.name`, `iface.alias`, `asset.iface_ip`,
++`asset.mgmt_ip`, `presence.portal`, `port.fdb_mac`, `rel.physical_link`,
++`os.guess`, `name_proposal`) leggendo `FactAssertion`. Tutto ciò che segue **non
++lo è**, e il criterio è dichiarato riga per gruppo:
++
++| Gruppo | Fatto/oggetto | Criterio usato | Dentro `facts/`? | Disp. |
++|---|---|---|---|---|
++| resolver.py:79,108,146,287,640 · shadow.py:371,401 | correntezza fatti | `state="current"` + order-by id | **Sì** | (b) unica fonte |
++| admin.py:292,295 | COUNT righe FA | osservabilità breaker (no valore) | No (allowlist) | (b) |
++| admin.py:311,315,317,318,320 | divergenze conflict_review | `state="historical"` (I3), display | No (allowlist) | (b) |
++| models.py:155 · bootstrap.py:19 | — | def ORM / import create_all | No (allowlist) | (b) |
++| `ip_addresses.is_current` (≈70 punti, vedi sotto) | IP eletto | **elezione** IP, non correntezza fatto (F-15) | No | (b) |
++| fingerprint_facts.py:1204 | evidenza grezza | `ObservationRaw.observed_at DESC` (evidenza, non stato) | No | (b) |
++| identity/trust/event_maintenance/monitoring (Event.created_at DESC) | eventi | ultimo **evento** di dominio | No | (b) |
++| actions.py:239 · asset_identity.py:274 · evolution.py:175 · suggestions.py:24 · drift.py:32 · monitors/dashboard/speedtest (SpeedTestResult) | oggetti di dominio | ultimo scan/azione/finding/suggestion/snapshot/speedtest | No | (b) |
++| trust.py:399 (MAX last_fdb_at) · flows_summary.py:97 (MAX observed_at) | aggregati evidenza | max di un timestamp d'evidenza (presenza/flussi) | No | (b) |
++| ~30 `timedelta(…)` (retention/monitoring/presence/cooldown) | finestre | freschezza/presenza/retention, **stato derivato da classify_asset** (F-7) | No | (b) |
++| habits:246 · admin:223 · reliability:36 · ip_intel_context:123,129 | DISTINCT | dedup/aggregazione, non «prendi l'ultimo» | No | (b) |
++| web/src/inventoryDevices.js (is_current, maxLastSeen, canonName) | display | consuma correntezza/elezione/stato **dal server** | No (FE) | (b) |
++
++### `is_current` su `ip_addresses` — falso positivo legittimo (F-15, W8.1.3)
++
++È il **meccanismo di elezione** dell'IP eletto, non un calcolo di correntezza
++dei fatti. Distinzione: opera sulla colonna `is_current` della **riga IP**
++(elezione prodotta da `identity.elect_interface_primary`, il produttore
++dell'elezione), non su `FactAssertion`. Il resolver **non** è fonte esclusiva
++per gli IP finché il ruolo non entra nella `excl_key` (pre-condizione W3). Punti
++(campione esaustivo): `identity.py` 305/479/508/886–943/1019 (886–943 =
++`elect_interface_primary`, il produttore), `actions.py` 153/262/277/536,
++`assets.py` 86/98/108/933/951/963, `ingest.py` 231/259, `scans.py`
++111/132/151/499, `topology.py` 339/552/668/1068/1557, `inventory.py`
++134/135/588, `migrate.py` 155–327, `monitoring.py` 148/267/1204, `ai_naming.py`
++213/228, `ai.py` 169, `detectors/__init__.py` 40/63, `ip_intel.py` 298,
++`snapshots.py` 30, `asustor_health.py` 20, `reliability_metrics.py` 38,
++`watch.py` 233, `admin.py` 221, `switches.py` 167, `trust.py` 262,
++`identity_fusion.py` 109, `wifi_associations.py` 116, `mac_ip_policy.py`
++121–123, `dashboard.py` 356, `habits.py` 238, `models.py` 129 (def). **Tutti
++(b)**.
++
++### Classe (c) — codice morto
++
++Nessuna riga da rimuovere. `resolver.history()` è **senza chiamanti** e **NON è
++cablato** ad alcun endpoint (nessun `?history=true` esiste — verificato W8-fix,
++vedi `DEBT-HISTORY-PATH-UNWIRED`): è il percorso storico previsto ma inerte, non
++codice morto da rimuovere. Mantenuto → (b). [Corretto in W8-fix: la formulazione
++originale «esposto solo su ?history=true» era errata.]
++
++---
++
++## W8.2 — Migrazione classe (a)
++
++**Nulla da migrare (classe (a) vuota).** K12 è soddisfatto in modo vacuo: non si
++rimuove alcun calcolo locale, quindi non c'è equivalenza da dimostrare *prima*
++di una rimozione. R-G (W8.2.3): dove il resolver restituisce `None`, il
++chiamante **dichiara l'assenza** — `presentation_name_for_asset` ritorna `None`
++(mai `""`), l'API restituisce `ips: []`/`ip_bindings: []` (assente ≠ zero, vedi
++W8.4). F-15 (W8.2.4): gli IP **non** si migrano al resolver come fonte esclusiva
++(perderebbero gli IP reali non eletti) → **rinviati a W3**, dichiarato.
++
++---
++
++## W8.3 — Il gate permanente (istituito, eseguito)
++
++`scripts/w8_currency_gate.py`. Sentinella: ogni riga che nomina `FactAssertion`
++sotto `api/app/**` escluso `api/app/facts/**`. **Fallisce** su accessi nuovi.
++Allowlist **per (file, snippet esatto)** con motivazione — mai pattern generico.
++
++Output completo (eseguito ora):
++
++```
++== W8 CURRENCY GATE ==
++scope: api/app/**  (escluso api/app/facts/**)
++sentinella: righe che nominano `FactAssertion`
++
++ECCEZIONI GIUSTIFICATE (accounted): 9
++  OK  api/app/models.py:155           | class FactAssertion(Base):
++  OK  api/app/bootstrap.py:19         | from app.models import FactAssertion, IdentityEvidence, ...  # create_all
++  OK  api/app/routers/admin.py:292    | from app.models import FactAssertion
++  OK  api/app/routers/admin.py:295    | rows = int(db.scalar(select(func.count()).select_from(FactAssertion)) or 0)
++  OK  api/app/routers/admin.py:311    | from app.models import FactAssertion
++  OK  api/app/routers/admin.py:315    | select(FactAssertion)
++  OK  api/app/routers/admin.py:317    | FactAssertion.reason == "conflict_review",
++  OK  api/app/routers/admin.py:318    | FactAssertion.state == "historical",
++  OK  api/app/routers/admin.py:320    | .order_by(FactAssertion.last_seen_at.desc(), FactAssertion.id.desc())
++
++VIOLAZIONI (accessi nuovi non giustificati): 0
++
++RISULTATO: PASS
++```
++
++Da eseguire a ogni ondata futura **insieme a I6**. Documentato in
++`docs/obs-design-spec-025.md` §12 e `KNOWN_DEBT.md` (PRESIDIO-CURRENCY-GATE).
++
++---
++
++## W8.4 — Superficie API e UI
++
++**API corrente per default: già così. 0 contratti cambiati.** Enumerazione:
++
++| Endpoint | Default | Storico |
++|---|---|---|
++| `GET /api/assets` | `include_historical=false`, `all_proposals=false` → solo correnti | `?include_historical=true`, `?all_proposals=true` |
++| `GET /api/assets/{id}` | binding correnti + non-eletti visibili (F-15); `proposal_history` = divergenze I3 dichiarate | — |
++| `GET /api/suggestions` | filtro `status` | — |
++| `GET /api/admin/facts/conflicts` | divergenze `state="historical"` (I3, per costruzione storico/diagnostico) | — |
++| `resolver.history()` | non cablato ad alcun endpoint (nessun `?history=true` esiste — `DEBT-HISTORY-PATH-UNWIRED`) | — (percorso previsto, inerte) |
++
++**UI stale/superseded/assente dichiarati — verifica runtime (method A, prod
++0.10.63):**
++
++- **assente ≠ zero** — asset **109** (membro di **chassis 23**; nome PROPRIO
++  **vuoto** per F-5; il nome presentato «LGS328C» è il **canonico del chassis 23**,
++  tenuto dall'asset **2**, non un nome del membro): `ips: []`, `ip_bindings: []`
++  → l'UI mostra «—», non `0`. [Corretto in W8-fix: la formulazione W8 «asset 109
++  LGS328C» attribuiva al membro un nome che ha soggetto CHASSIS.]
++- **non-eletti/duplicati visibili (F-15)** — asset **2**: `192.168.1.2` compare
++  in **due** binding (`role=mgmt` source `mgmt`; `role=""` source `fritz`),
++  entrambi resi con ruolo/sorgente (DEBT-DOUBLE-CURRENT-IP non collassato).
++- **inferenza AI marcata (F-10/I1)** — asset 109: `guess="Switch Centrale"`,
++  `guess_source="ai"` accanto al nome, non spacciata per certezza.
++
++**UI invariata da W8** (nessun cambio di codice): le rese `stale/superseded`
++già verificate con screenshot in **UX3** (`obs-ux3-*`) restano valide; W8 non le
++tocca. Verifica R non ri-esercitata in W8 perché la UI è identica (K4 dichiarato);
++la resa reale del **contratto** è esercitata qui via method A. Nessuna card ad
++alta priorità senza azione (F-9), policy MAC↔IP resta consultiva (F-12).
++
++---
++
++## W8.5 — Gate di equivalenza G8
++
++`scripts/w8_g8_equivalence.py` (read-only, mai commit). Confronta, per ogni
++asset, la correntezza del **nome** dal resolver (`current("asset.name")`) con la
++presentazione consumer-facing (`presentation_name_for_asset`). Classi per id:
++`RESOLVER` (P==R), `FALLBACK` (R=None → stato derivato, I2 dichiarata),
++`ABSENT` (R=None,P=None, I2), `DIVERGE` (R≠None e P≠R → sospetto calcolo locale).
++
++**Previsione:** `DIVERGE=0` (nessun calcolo locale esiste — W8.1). `FALLBACK`
++atteso per i chassis/asset senza fatto-nome manuale a livello chassis (es.
++il nome «LGS328C» del chassis 23 è tenuto dall'asset 2 come canonico (guess
++proprio `oui`; l'AI guess «Switch Centrale» è dell'asset 109, campo separato);
++chassis 24 «LGS310C» è **manuale** F-1 → atteso `RESOLVER`). Con 0
++migrazioni non esiste un before/after: G8 è **conferma**, e per costruzione ha
++**0 casi (c)**. Da eseguire a writer fermi sul NAS (comando in §W8.7).
++
++---
++
++## W8.6 — Previsioni
++
++Nessun deploy ⇒ nessuna variazione prevista: assets **151**, ip_current **99**
++(id congelati come in `obs-ux3.md` §0), NP **408**/pending **77**, FA
++**261**/current **68**, AD ~**68**, unknown_source **0**, breaker **closed**,
++**0** endpoint con contratto cambiato. G8: `DIVERGE=0`. Currency gate: PASS.
++
++---
++
++## W8.7 — Gate W8 e chiusura
++
++| # | Requisito | Stato |
++|---|---|---|
++| 1 | Censimento esaustivo, ogni riga con disposizione | ✅ (0 (a), 0 (c), tutte (b)) |
++| 2 | Classe (a) migrata con equivalenza (K12) | ✅ vacuo (0 (a)); IP rinviati a W3 (F-15) |
++| 3 | Gate permanente istituito, eseguito, output, eccezioni per file:riga | ✅ PASS (9 ecc., 0 viol.) |
++| 4 | API corrente per default; storico solo su richiesta | ✅ già così, 0 contratti cambiati |
++| 5 | UI stale/superseded dichiarati, resa reale | ✅ method A (contratto); R invariata da UX3 (K4) |
++| 6 | G8 senza (c); gate binari/convergenza verdi; I6 vuoto | ⏳ da confermare sul NAS (comandi sotto; nessun deploy) |
++| 7 | Delta enumerati per id | ✅ 0 delta (nessuna scrittura) |
++
++### Comandi di conferma sul NAS (terminale già aperto in `/volume1/Docker/observatory`)
++
++Nessun deploy. Sync degli script nuovi, poi conferma read-only (collector fermo,
++`now` ricalcolato). Rollback non pertinente (nessun cambio runtime).
++
++```
++# 1) sync repo → NAS (dal tuo host di sviluppo, se serve)
++#    rsync -av observatory/scripts/ cassiopea:/volume1/Docker/observatory/scripts/
++
++# 2) presidio correntezza (repo, non tocca prod)
++python3 scripts/w8_currency_gate.py      # atteso: RISULTATO: PASS
++
++# 3) equivalenza G8 + convergenza a writer fermi
++sudo docker compose stop collector
++sudo docker compose exec -T api python3 - < scripts/w8_g8_equivalence.py   # atteso: DIVERGE=0
++sudo docker compose exec -T api python3 - < scripts/wp_gate.py             # atteso: CONVERGENZA: OK
++sudo docker compose start collector
++```
++
++**Assert (una riga, da riportare dopo l'esecuzione):**
++`needs_apply=false · T_backup=0 · structural=0 · observations assente · breaker=closed · convergenza OK · G8 DIVERGE=0 · currency-gate PASS · I6 vuoto`.
++
++---
++
++## Lista per Michele (solo scelte di dominio, nessun difetto funzionale)
++
++1. **Attivazione autoritativa** delle regole #3/#5 della policy MAC↔IP: resta
++   rinviata (F-12, `DEBT-MAC-IP-POLICY-WIRE`) — decisione di dominio su quali
++   device attivi declassare. Nessuna azione richiesta ora.
++2. Dopo la review, **W3 (backfill)** resta bloccato dalle tre pre-condizioni IP
++   aperte: `DEBT-DOUBLE-CURRENT-IP`, `DEBT-IFACE-IP-CARDINALITY-ROLE`,
++   `DEBT-LASTSEEN-DUAL-SEMANTICS`.
++
++---
++
++## STOP
++
++W8 chiuso lato repo (censimento + presidio + doc + G8 pronto). Restano da
++**confermare sul NAS** i gate binari/convergenza/G8/I6 (comandi sopra, nessun
++deploy). Dopo la review si valuta **W3**, che resta bloccato dalle tre
++pre-condizioni IP aperte.
+diff --git a/observatory/docs/obs-w8fix.md b/observatory/docs/obs-w8fix.md
+new file mode 100644
+index 0000000..2ebad39
+--- /dev/null
++++ b/observatory/docs/obs-w8fix.md
+@@ -0,0 +1,954 @@
++# OBS — W8-fix · indurimento del presidio di correntezza ed esecuzione reale dei gate
++
++Ramo `feature/obs-currency` · prod **0.10.63** (nessun bump, nessun deploy, nessun
++tocco a `api/app/**` o `web/src/**`). Tutte le verifiche read-only.
++
++Regola d'ondata rispettata: si revisiona il **diff**; previsioni **prima**, osservati
++**dopo**, scarti spiegati; enumerazione per id; ogni gate accompagnato dalla **prova
++che sa fallire**; nessun test indebolito/rinominato/invertito.
++
++Cosa è stato eseguito **da me, in locale/HTTP** (osservati reali qui sotto):
++gate `--selftest` e scansione repo; G8 (normale + `--mutate-probe`) su **DB
++sintetico** in venv temporaneo; import-smoke; I6 grep; JSON grezzo `/api/assets/{2,109}`;
++baseline via HTTP (assets, FA totale, unknown_source, breaker).
++Cosa resta **handoff sul NAS** (produzione accessibile solo dal terminale di Michele):
++G8 su dati reali + `--mutate-probe` reale, `wp_gate` (convergenza + regime), gate su
++copia NAS (repo-vs-NAS identico), I6 sul NAS. Previsioni dichiarate in **T8**.
++
++---
++
++## Sintesi degli esiti (una riga per bug della review W8)
++
++| Bug | Esito W8-fix |
++|---|---|
++| **B1(i)** raw SQL `fact_assertions` sfuggiva | **Chiuso** — sentinella su `fact_assertions` in `text/execute` + COMBO `state='current'`. Provato dal selftest (file 2). |
++| **B1(ii)** allowlist senza conteggio riutilizzabile | **Chiuso** — allowlist `(file, snippet, N)`; N+1 = violazione; COMBO cattura `filter_by(state="current")`. Provato dal selftest (file 3 e 4). |
++| **B1(iii)** scope più stretto del censimento | **Chiuso** — scope `api/** · scripts/** · collector/**`. Ha fatto emergere **10 violazioni reali** in tooling (ruling, sotto). |
++| **B2/B3** G8 mai eseguito / «0 per costruzione» | **Chiuso** — G8 **eseguito**; `--mutate-probe` → **DIVERGE=1 e FAIL**: discrimina. |
++| **B4** AD copiato, non rimisurato | **Rimisurato** (T7); enumerazione DB per id = handoff NAS. |
++| **B5** contraddizione `?history=true` | **Chiuso** — non esiste; `DEBT-HISTORY-PATH-UNWIRED`, spec §12 + obs-w8.md corretti. |
++| **B6** etichette identità errate | **Chiuso** — JSON grezzo pubblicato; etichette corrette (LGS328C = chassis 23, asset 2). |
++
++---
++
++## T1 — Sorgente per la review: `presentation_name_for_asset` è un wrapper?
++
++**Risposta: wrapper del resolver CON fallback allo stato derivato — NON puro.**
++
++`presentation_name_for_asset(db, asset)` → `chassis_canonical_presentation(db, asset)`:
++- usa `current(db, "chassis", cid, "asset.name")` (il **resolver**) come nome canonico
++  PRIMARIO del chassis (righe 125–136 di `name_proposal_chassis.py`);
++- se il fatto è **assente** (o l'asset è singleton / chassis < 2 membri) **ripiega** sul
++  nome tenuto dal membro `asset.name` — **stato derivato** (righe 137–166).
++
++Conseguenza per G8: quando il resolver ha un valore `R`, la presentazione lo usa ⇒
++`P == R` **per costruzione**. Perciò `DIVERGE` tra funzione interna e resolver sul solo
++`asset.name` è **tautologicamente 0**: confermata la critica B2/B3. Correzioni applicate:
++1. G8 confronta il nome anche con la **superficie consumer reale** — il campo nome di
++   `GET /api/assets/{id}` (leg opzionale, T4b);
++2. la **discriminazione** è dimostrata da `--mutate-probe` (T4d) e dalla leg **`os.guess`**
++   (resolver vs colonna `Asset.os_guess`: store DIVERSO, confronto **non** tautologico).
++
++Gli allegati integrali dei tre file sono in coda al report (§Allegati T1).
++
++---
++
++## T2 + T3 — Gate indurito e controllo negativo (`--selftest`)
++
++### T3a — `python3 scripts/w8_currency_gate.py --selftest` (osservato reale)
++
++```
++== W8 CURRENCY GATE (indurito, W8-fix) ==
++root: /var/folders/.../w8gate_selftest_XXXX
++sentinelle: simbolo ORM 'FactAssertion' · tabella grezza 'fact_assertions' in chiamata SQL (text/execute) · COMBO (fact-token FactAssertion|fact_assertions|fact_key) + valore di stato quotato 'current'
++scope: api/**, scripts/**, collector/**
++esclusioni:
++  - api/app/facts/**  (il resolver È la fonte della correntezza)
++  - scripts/w8_currency_gate.py  (contiene le sentinelle/fact_key come dato)
++  - scripts/w8_g8_equivalence.py  (contiene le sentinelle/fact_key come dato)
++file scansionati: 4
++voci allowlist: 2
++
++ECCEZIONI GIUSTIFICATE (accounted): 1
++  OK  api/app/file1_orm.py:1  (atteso 1, osservato 1)
++      | class FactAssertion(Base):
++      → selftest: ORM def lecita
++
++VIOLAZIONI: 3
++  FAIL api/app/file2_rawsql.py:1  (atteso 0, osservato 1)
++      | stmt = text("SELECT value_norm FROM fact_assertions WHERE fact_key='asset.name' AND state='current' ORDER BY id DESC LIMIT 1")
++      → COMBO fact-token + 'current' (lettura di correntezza)
++  FAIL api/app/file3_filterby.py:1  (atteso 0, osservato 1)
++      | row = db.scalars(select(FactAssertion).filter_by(fact_key="asset.name", state="current")).first()
++      → COMBO fact-token + 'current' (lettura di correntezza)
++  FAIL api/app/file4_count.py:1,2  (atteso 1, osservato 2)
++      | class FactAssertion(Base):
++      → CONTEGGIO: atteso 1, osservato 2 — selftest: autorizzata 1 volta
++
++RISULTATO: FAIL
++
++SELFTEST atteso: 3 violazioni ['file2_rawsql.py', 'file3_filterby.py', 'file4_count.py'] + 1 accounted (file1)
++SELFTEST osservato: 3 violazioni ['file2_rawsql.py', 'file3_filterby.py', 'file4_count.py'] + 1 accounted
++SELFTEST: PASS (il gate sa fallire)
++```
++Exit `0`. **Il gate sa fallire**: cattura raw SQL (B1-i), `filter_by(state="current")`
++(B1-ii), e conteggio N+1 (B1-ii). File 1 (def ORM lecita) resta accounted.
++
++### T3b — `python3 scripts/w8_currency_gate.py` sul repo reale (osservato reale)
++
++Previsione: emergono accessi in tooling `scripts/**` invisibili prima (scope B1-iii).
++Osservato: **175 file scansionati, 8 accounted, 10 violazioni, RISULTATO FAIL**.
++
++Prime iterazioni hanno mostrato **4 falsi positivi** del gate, corretti rendendolo
++preciso (non è un indebolimento: mira al selettore reale di correntezza):
++- `uq_fact_assertions_current_slot` (nome dell'indice) faceva scattare il COMBO perché
++  «current» era **sottostringa di un identificatore** → COMBO ora richiede `'current'`
++  **quotato** come valore di stato (`state='current'`);
++- `"Canonical name from fact_assertions …"` (docstring) faceva scattare la sentinella
++  tabella perché conteneva la parola inglese «from» → la sentinella `fact_assertions`
++  ora scatta solo dentro una **chiamata SQL** (`text(`/`.execute(`/`.exec_driver_sql(`).
++
++**8 accounted (api/, giustificate):**
++```
++  OK  api/app/bootstrap.py:19           (atteso 1)  import per create_all (schema)
++  OK  api/app/models.py:155             (atteso 1)  class FactAssertion(Base) — def ORM
++  OK  api/app/routers/admin.py:292,311  (atteso 2)  import diagnostica read-only
++  OK  api/app/routers/admin.py:295      (atteso 1)  /facts/shadow-stats COUNT righe
++  OK  api/app/routers/admin.py:315      (atteso 1)  /facts/conflicts select (state='historical')
++  OK  api/app/routers/admin.py:317      (atteso 1)  /facts/conflicts reason=conflict_review
++  OK  api/app/routers/admin.py:318      (atteso 1)  /facts/conflicts state='historical' (≠current)
++  OK  api/app/routers/admin.py:320      (atteso 1)  /facts/conflicts order_by (display)
++```
++
++**10 violazioni reali (tooling read-only, mai viste prima) — NON allowlistate:**
++```
++  FAIL scripts/wp_gate.py:36       from app.models import ... FactAssertion ...
++  FAIL scripts/wp_gate.py:102      fat = COUNT(FactAssertion)
++  FAIL scripts/wp_gate.py:103      COUNT(FactAssertion WHERE state == "current")   [COMBO]
++  FAIL scripts/wp_diagnose.py:29   import FactAssertion
++  FAIL scripts/wp_diagnose.py:125  fa_total = COUNT(FactAssertion)
++  FAIL scripts/wp_diagnose.py:127  group_by(FactAssertion.state)
++  FAIL scripts/wp_diagnose.py:232  select(FactAssertion).order_by(...).limit(15)
++  FAIL scripts/wp_diagnose.py:267  select(FactAssertion.id) [now]
++  FAIL scripts/wp_diagnose.py:268  select(FactAssertion.id) [baseline]
++  FAIL scripts/wp_diagnose.py:273  db.get(FactAssertion, fid)
++```
++
++### Classificazione e RULING (T3 — fermata obbligatoria)
++
++Tutte e 10 sono in **tooling read-only** (`wp_gate.py` = gate di convergenza/regime;
++`wp_diagnose.py` = diagnostica W-P). **Non sono consumatori runtime** che ricalcolano
++la correntezza: **contano** righe e leggono la **distribuzione di stato** per metriche
++di regime — la stessa natura di `/facts/shadow-stats` (che È allowlistato). Nessuna
++riga decide «qual è il valore adesso» per servire l'app.
++
++Come da regola, **non le ho aggiunte all'allowlist**. Ruling richiesto a Michele:
++
++- **(A) — raccomandata:** escludere il **tooling read-only di gate/diagnosi** dallo
++  scope (aggiungere `scripts/wp_gate.py`, `scripts/wp_diagnose.py` a `EXCLUDE_FILES`
++  con motivazione), per parità con `api/app/facts/**` (fonte) e con i due file d'ondata
++  già esclusi. Principio: il tooling **misura**, non consuma correntezza a runtime.
++- **(B):** allowlist per-riga (verboso, fragile a ogni refactor del tooling).
++- **(C):** instradare i conteggi da un helper in `api/app/facts/` — **fuori scope**
++  (toccherebbe runtime; vietato in questa ondata).
++
++Finché non c'è ruling, **il gate reale resta FAIL** (onesto: lo scope allargato ha
++rivelato che anche il tooling legge FA). Il **selftest PASS** dimostra che il gate
++discrimina. Non procedo ad allowlistare né escludere di mia iniziativa.
++
++---
++
++## T4 — G8 eseguibile, discriminante, esteso
++
++### T4a — import-smoke (osservato reale)
++`subject_of` vive in `api/app/facts/resolver.py` (riga 44) ed è ri-esportato da
++`app/facts/__init__.py`: l'import `from app.facts.resolver import current, subject_of`
++è **corretto** (nessuna correzione necessaria; nessun tocco al resolver).
++```
++== G8 IMPORT-SMOKE ==
++  OK  current
++  OK  subject_of
++  OK  get_settings
++  OK  Asset
++  OK  npc
++IMPORT-SMOKE: PASS
++```
++
++### T4 b/c/d — esecuzione reale su DB sintetico (venv temporaneo, poi rimosso)
++
++Non potendo toccare la prod da qui, ho **eseguito G8 davvero** su un DB SQLite
++sintetico (3 asset: A1 con fatti `asset.name`+`os.guess` current; A2 solo stato
++derivato; A3 nome vuoto) — per **dimostrare che gira e discrimina**, indipendente
++dalla produzione. Nessun dato reale toccato; venv e DB rimossi a fine run.
++
++**Normale (osservato):**
++```
++== G8 asset.name — consumatore: presentation_name_for_asset() [interna] ==
++  RESOLVER=1 FALLBACK=1 ABSENT=1 DIVERGE=0
++  RESOLVER ids: [1]
++  FALLBACK: id=2 resolver=None consumatore='Bar'
++  ABSENT ids: [3]
++== G8 asset.name — endpoint GET /api/assets/{id} ==
++  SKIP (K4): OBS_G8_BASE/OBS_G8_TOKEN non impostati; leg non esercitata a runtime.
++== G8 os.guess — consumatore: Asset.os_guess [colonna derivata] ==
++  RESOLVER=1 FALLBACK=0 ABSENT=2 DIVERGE=0
++  RESOLVER ids: [1]
++  ABSENT ids: [2, 3]
++RISULTATO G8: PASS
++```
++
++**`--mutate-probe 1` (controllo negativo, osservato):**
++```
++== MUTATE-PROBE attivo su id=1 (sentinella di presentazione) ==
++== G8 asset.name — consumatore: presentation_name_for_asset() [interna] ==
++  RESOLVER=0 FALLBACK=1 ABSENT=1 DIVERGE=1
++  DIVERGE: id=1 resolver='Foo' consumatore='__G8_MUTATE_SENTINEL__'
++== G8 os.guess — ... DIVERGE=0
++RISULTATO G8: FAIL
++MUTATE-PROBE: atteso DIVERGE=1 su id=1 e FAIL — confermato
++```
++Exit `1`. **G8 sa fallire**: la mutazione della sola funzione di presentazione su un
++id produce **DIVERGE=1 esattamente su quell'id** e RISULTATO FAIL. La leg `os.guess`
++(store diverso) resta a DIVERGE=0 e mostra RESOLVER=1 → prova che il confronto legge
++due fonti indipendenti e concordi (non tautologico).
++
++### T4e — contraddizione docstring risolta
++G8 è **read-only sulla TRANSAZIONE DB** (`db.rollback()` finale, nessun commit) ma è un
++file **versionato** (repo + obs-exchange). La docstring ora dichiara: «mai commit» =
++transazione DB, non versionamento git. Durante G8 **nessuna azione è innescata
++sull'api** (solo letture): l'unico writer vivo non riceve scritture.
++
++---
++
++## T5 — B5: ruling su `resolver.history()`
++
++Evidenza (grep chiamanti + elenco route in `api/app/routers/**`):
++- `resolver.history()` è definito (`resolver.py:195`) ed esportato (`facts/__init__.py`)
++  ma **nessun router lo importa o lo invoca**;
++- gli unici «history» nei router sono estranei ai fatti: `proposal_history`
++  (`assets.py`, split proposte-nome), `warning_history` (`switches.py`), history di
++  stato monitor (`monitors.py`). **Nessun `?history=true` esiste.**
++
++Ruling: il contratto «storico su richiesta esplicita» era **dichiarato ma non cablato**.
++Correzioni: `obs-design-spec-025.md` §12 e `obs-w8.md` corretti; aperto
++**`DEBT-HISTORY-PATH-UNWIRED`** in `KNOWN_DEBT.md`. Codice non rimosso né riclassificato
++come morto (è la superficie sanzionata per lo storico, inerte finché non cablata).
++
++---
++
++## T6 — B6: evidenza grezza di identità (JSON, campi pertinenti)
++
++Troncamento dichiarato: mostrati solo i campi richiesti; omessi timestamp di liveness,
++`meta`, `trust_level`, `interfaces`, proposte, ecc. (non pertinenti a identità/IP).
++
++**`GET /api/assets/2`**
++```json
++{ "id": 2, "display_name": "LGS328C", "name": "LGS328C",
++  "chassis_id": 23, "chassis_role": "canonical",
++  "chassis_canonical_name": "LGS328C", "chassis_canonical_asset_id": 2,
++  "guess": "Switch Linksys", "guess_source": "oui", "os_guess": "",
++  "presence_state": "present",
++  "ips": ["192.168.1.2", "192.168.1.2"],
++  "ip_bindings": [
++    {"ip":"192.168.1.2","is_current":true,"role":"mgmt","source":"mgmt","last_seen":"2026-07-27T23:34:34.946316Z"},
++    {"ip":"192.168.1.2","is_current":true,"role":"","source":"fritz","last_seen":"2026-07-18T02:55:32.435005Z"}
++  ] }
++```
++
++**`GET /api/assets/109`**
++```json
++{ "id": 109, "display_name": "LGS328C", "name": "",
++  "chassis_id": 23, "chassis_role": "interface",
++  "chassis_canonical_name": "LGS328C", "chassis_canonical_asset_id": 2,
++  "guess": "Switch Centrale", "guess_source": "ai", "os_guess": "",
++  "presence_state": "fritz_only", "ips": [], "ip_bindings": [] }
++```
++
++**Lettura (soggetto CHASSIS del nome, esplicito):**
++- «**LGS328C**» è il nome **del chassis 23**, tenuto dall'asset **2** (`chassis_role:
++  canonical`, `chassis_canonical_asset_id: 2`); il guess proprio dell'asset 2 è
++  «Switch Linksys» (`oui`).
++- L'asset **109** è un **membro** del chassis 23 (`chassis_role: interface`): il suo
++  nome **proprio è VUOTO** (`name: ""` — F-5); il «LGS328C» che vede l'utente è il
++  **canonico del chassis** ereditato, **non** un nome del membro. Il suo AI guess
++  proprio è «**Switch Centrale**» (`guess_source: ai`, F-10/I1).
++
++Correzione applicata a `obs-w8.md`: la formulazione W8 «asset 109 (LGS328C, chassis 23)»
++attribuiva al membro un nome che ha soggetto chassis; ora esplicitato.
++Anche l'asserzione W8 «chassis 23 LGS328C è AI» era imprecisa (l'AI è il guess «Switch
++Centrale» dell'asset 109; il nome LGS328C del chassis è tenuto dall'asset 2) — corretta.
++
++Nota IP (F-15): l'asset 2 mostra due binding **entrambi `is_current: true`** sulla
++stessa IP `192.168.1.2` con ruoli `mgmt` e `""` (fonti `mgmt` e `fritz`) — è la
++**pre-condizione W3** nota (`DEBT-DOUBLE-CURRENT-IP`, `DEBT-IFACE-IP-CARDINALITY-ROLE`):
++finché il ruolo non entra nell'`excl_key`, coesistono due «correnti» leciti. Non è
++compito di W8-fix.
++
++---
++
++## T7 — Baseline rimisurata (B4)
++
++Misurati **ora** (2026-07-28) via HTTP read-only:
++
++| Metrica | Comando | Osservato | vs 0.10.63 |
++|---|---|---|---|
++| assets (include_historical) | `GET /api/assets?include_historical=true` → len | **151** | = |
++| fact_assertions totale | `GET /api/admin/facts/shadow-stats` → `.fact_assertions` | **261** | = |
++| unknown_source | idem → `.unknown_source` | **0** | = |
++| breaker | idem → `.breaker_open` | **false (closed)** | = |
++
++DB-only (query esatte per NAS — enumerazione per id come da regola):
++```python
++# ip_current (enumerazione id), FA current, NP, AD 24h, unknown_source
++from sqlalchemy import select, func
++from app.models import IpAddress, FactAssertion, NameProposal, Asset
++ip_ids = sorted(r for (r,) in db.execute(select(IpAddress.id).where(IpAddress.is_current == True)).all())
++fa_cur = db.scalar(select(func.count()).select_from(FactAssertion).where(FactAssertion.state=="current"))
++np_tot = db.scalar(select(func.count()).select_from(NameProposal))
++np_pend= db.scalar(select(func.count()).select_from(NameProposal).where(NameProposal.status=="pending"))
++```
++Previsioni (da 0.10.63): `ip_current` = **99** id (i 101 congelati in obs-ux3 §0 meno
++{78,108}); `FA current` = **68**; `NP` totale **408** / pending **77**.
++**AD (finestra mobile 24h)**: **da rimisurare ora** — per costruzione può differire dal
++valore congelato in 0.10.63 (il tempo è passato): non è una regressione, va **letto
++dall'output di `wp_gate` sul NAS** (T8) e, se differisce, spiegato enumerando gli id
++in delta. Nota metrica: `wp_gate` conta `assets` **senza** `include_historical`; il 151
++qui include gli storici — le due misure non vanno confuse.
++
++---
++
++## T8 — Esecuzione reale sul NAS (read-only) — previsioni + comandi (handoff)
++
++Eseguito **da me** (locale/HTTP), osservati sopra: gate `--selftest` (PASS), gate repo
++(FAIL 10, ruling), G8 normale+`--mutate-probe` su DB sintetico (PASS / FAIL atteso),
++import-smoke (PASS), I6 `rg 'scoreSpecificity|specificity' api/` → **VUOTO (PASS)**.
++
++Resta sul NAS (esegui nel terminale già aperto in `/volume1/Docker/observatory`).
++**Previsioni dichiarate PRIMA:**
++
++| Comando | Previsione |
++|---|---|
++| `rsync -av observatory/scripts/ …/scripts/` | trasferisce `w8_currency_gate.py`, `w8_g8_equivalence.py` aggiornati (nessun restart) |
++| `python3 scripts/w8_currency_gate.py --selftest` | identico all'osservato locale: **3 violazioni + 1 accounted, SELFTEST PASS** |
++| `python3 scripts/w8_currency_gate.py` (repo E NAS) | **FAIL, 10 violazioni** identiche a repo. **Se repo≠NAS → FERMARSI** (repo≠prod, difetto da dichiarare) |
++| `sudo docker compose stop collector` | api resta unico writer |
++| `… exec -T api python3 - < scripts/w8_g8_equivalence.py` | **DIVERGE=0** su `asset.name` e `os.guess`, **RISULTATO PASS** (nessuna azione innescata) |
++| `… exec -T api python3 - < scripts/w8_g8_equivalence.py --mutate-probe <id>` | **DIVERGE=1** esatto su `<id>`, **FAIL** (usa un id con `asset.name` corrente, es. un membro del chassis 24/LGS310C manuale) |
++| `… exec -T api python3 - < scripts/wp_gate.py` | **convergenza OK**, breaker closed; riporta ip_current, NP, FA current, **AD rimisurato** |
++| `sudo docker compose start collector` | writer ripristinato |
++| `rg 'scoreSpecificity\|specificity' api/` (sul NAS) | **VUOTO** (I6 PASS) |
++
++Nota su `--mutate-probe` via stdin: `python3 - < file` ignora gli argv dopo `-`; se
++l'invocazione con `--mutate-probe` non riceve l'id, esegui invece:
++`sudo docker compose exec -T api sh -c 'cd /app && python3 scripts/w8_g8_equivalence.py --mutate-probe <id>'`
++(il file è già sincronizzato in `/app/scripts` se il volume lo monta; altrimenti copialo).
++Se un comando fallisce, **riporta l'errore integrale e fermati** (niente varianti).
++
++**Dichiarazione:** durante G8 nessuna azione viene innescata sull'api — sono sole
++letture; `db.rollback()` chiude senza commit.
++
++---
++
++## ASSERT FINALE (valori osservati; NAS = da confermare da Michele)
++
++```
++needs_apply=false · T_backup=0 · structural=0 · observations assente da sqlite_master ·
++breaker=closed(osservato HTTP) · convergenza=OK(NAS, previsto) ·
++currency-gate: selftest PASS (3 violazioni attese OK) · repo-scan FAIL 10 (tooling, RULING) ·
++G8 DIVERGE=0 su asset.name e os.guess (DB sintetico; NAS previsto) ·
++G8 mutate-probe DIVERGE=1 sull'id atteso (osservato) ·
++I6 vuoto (osservato, locale) · AD rimisurato=<da wp_gate NAS> · repo-vs-NAS=<da confermare>
++```
++`T_total` non è un gate: si riporta e basta. **Nota di onestà:** `currency-gate` sul repo
++è **FAIL** (10 violazioni di tooling), non PASS — lo scope allargato (B1-iii) ha
++rivelato che anche `wp_gate`/`wp_diagnose` leggono FA. Attende **ruling** (opzione A
++raccomandata). Il selftest PASS certifica che il gate discrimina.
++
++---
++
++## Allegati T1 — sorgente integrale (immutato; per la review)
++
++Questi tre file **non sono modificati** da W8-fix (nessun tocco a `api/app/**`);
++non compaiono quindi nel diff. Sono pubblicati qui **integralmente** come richiesto.
++Simboli esportati da `app/facts/__init__.py`: `AUTHORITY_RANK`, `FACT_REGISTRY`,
++`get_fact_spec`, `apply_observation`, `canonical_name_for_entity`, **`current`**,
++`current_map`, **`history`**, **`subject_of`**.
++
++### `api/app/facts/resolver.py`
++
++```python
++"""Single resolver for fact currency — R-A..R-H live here only.
++
++Invariant (W4b.0.b): the fact store grows by DISTINCT CHANGE (or distinct
++divergence), never by repeated observation. Refresh and repeated weak evidence
++update last_seen_at / occurrence counters — they do not insert new rows.
++"""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++from datetime import datetime, timedelta
++from typing import Any
++
++from sqlalchemy import and_, select
++from sqlalchemy.orm import Session
++
++from app.facts.registry import (
++    authority_for,
++    default_confidence,
++    get_fact_spec,
++    semantic_contradiction,
++)
++from app.models import Asset, FactAssertion, Interface, utcnow
++
++READMISSION_COOLDOWN = timedelta(hours=4)
++
++# R-C observability (W2 will expose per fact_key/source).
++weak_evidence_count = 0
++conflict_review_count = 0
++
++
++@dataclass
++class ApplyResult:
++    action: str
++    assertion: FactAssertion | None = None
++    incumbent: FactAssertion | None = None
++    conflict: dict[str, Any] | None = None
++
++
++def _norm_value(value: Any) -> str:
++    return " ".join(str(value or "").strip().split())
++
++
++def subject_of(fact_key: str, entity: Any) -> tuple[str, int]:
++    spec = get_fact_spec(fact_key)
++    return spec.subject_ref(entity)
++
++
++def _base_query(subject_type, subject_id, fact_key=None, *, state=None, excl_key=None):
++    clauses = [
++        FactAssertion.subject_type == subject_type,
++        FactAssertion.subject_id == subject_id,
++    ]
++    if fact_key is not None:
++        clauses.append(FactAssertion.fact_key == fact_key)
++    if state is not None:
++        clauses.append(FactAssertion.state == state)
++    if excl_key is not None:
++        clauses.append(FactAssertion.excl_key == excl_key)
++    return select(FactAssertion).where(and_(*clauses))
++
++
++def _incumbent_current(db, subject_type, subject_id, fact_key, excl_key):
++    return db.scalars(
++        _base_query(subject_type, subject_id, fact_key, state="current", excl_key=excl_key)
++        .order_by(FactAssertion.id.desc()).limit(1)
++    ).first()
++
++
++def _related_subjects(entity):
++    if isinstance(entity, Asset):
++        asset = entity
++    elif isinstance(entity, Interface):
++        asset = entity.asset
++    else:
++        return []
++    subjects = [("asset", int(asset.id))]
++    if asset.chassis_id:
++        subjects.append(("chassis", int(asset.chassis_id)))
++    return subjects
++
++
++def _cross_fact_incumbents(db, entity, applying_fact_key):
++    """Current rows on related subjects for R-H (name vs os, etc.)."""
++    seen = set()
++    rows = []
++    for subject_type, subject_id in _related_subjects(entity):
++        for row in db.scalars(
++            _base_query(subject_type, subject_id, state="current").order_by(FactAssertion.id.desc())
++        ).all():
++            if row.fact_key == applying_fact_key:
++                continue
++            key = (row.subject_type, row.subject_id, row.fact_key, row.excl_key)
++            if key in seen:
++                continue
++            seen.add(key)
++            rows.append(row)
++    return rows
++
++
++def current(db, subject_type, subject_id, fact_key, *, excl_key=None, apply_ttl=False):
++    """R-G: absent → None (caller must declare I2).
++
++    Without excl_key and cardinality=single with multiple current rows, this
++    silently picks highest authority (DEBT-IFACE-IP-CARDINALITY-ROLE / W4b.3.3).
++    Callers that need all currents must query explicitly.
++    """
++    spec = get_fact_spec(fact_key)
++    if excl_key is not None:
++        row = _incumbent_current(db, subject_type, subject_id, fact_key, excl_key)
++        if row and apply_ttl:
++            _maybe_stale(db, row, spec)
++        return row
++    rows = list(db.scalars(
++        _base_query(subject_type, subject_id, fact_key, state="current")
++        .order_by(FactAssertion.id.desc())
++    ).all())
++    if not rows:
++        return None
++    if spec.cardinality == "single" and len(rows) > 1:
++        rows.sort(key=lambda r: (r.authority, r.id), reverse=True)
++    row = rows[0]
++    if apply_ttl:
++        _maybe_stale(db, row, spec)
++    return row
++
++
++def current_map(db, subject_type, subject_ids, fact_keys):
++    if not subject_ids or not fact_keys:
++        return {}
++    rows = db.scalars(select(FactAssertion).where(
++        FactAssertion.subject_type == subject_type,
++        FactAssertion.subject_id.in_(subject_ids),
++        FactAssertion.fact_key.in_(fact_keys),
++        FactAssertion.state == "current",
++    )).all()
++    grouped = {}
++    for row in rows:
++        grouped.setdefault((row.subject_id, row.fact_key), []).append(row)
++    out = {}
++    for sid in subject_ids:
++        for fk in fact_keys:
++            bucket = grouped.get((sid, fk))
++            if not bucket:
++                out[(sid, fk)] = None
++                continue
++            spec = get_fact_spec(fk)
++            if spec.cardinality == "single" and len(bucket) > 1:
++                bucket.sort(key=lambda r: (r.authority, r.id), reverse=True)
++            out[(sid, fk)] = bucket[0]
++    return out
++
++
++def history(db, subject_type, subject_id, fact_key, *, excl_key=None):
++    q = _base_query(subject_type, subject_id, fact_key, excl_key=excl_key).order_by(
++        FactAssertion.valid_from.asc(), FactAssertion.id.asc(),
++    )
++    return list(db.scalars(q).all())
++
++
++# _maybe_stale / _new_assertion / _upsert_divergence / _check_rh_conflict /
++# _within_readmission_cooldown / apply_observation (R-A..R-H) /
++# canonical_name_for_entity / expire_stale_facts: invariati dal deploy 0.10.63.
++# Il file completo (652 righe) è nel repo; qui sopra current()/subject_of()/
++# history()/current_map() + simboli esportati, come richiesto da T1.
++```
++
++### `api/app/services/name_proposal_chassis.py` (integrale, 279 righe)
++
++```python
++"""W4a — chassis-scoped name proposal generation guards (provenance + subject only)."""
++
++from __future__ import annotations
++
++from typing import Any, Optional
++
++from sqlalchemy import func, select
++from sqlalchemy.orm import Session, joinedload
++
++from app.facts.registry import AUTHORITY_RANK, authority_for
++from app.models import Asset, NameProposal
++
++MANUAL_AUTHORITY = AUTHORITY_RANK["manual"]
++
++
++def asset_name_authority(asset: Asset) -> Optional[int]:
++    """Return I5 authority rank of asset.name, or None if absent/unknown (I2)."""
++    name = (asset.name or "").strip()
++    if not name:
++        return None
++    meta = dict(asset.meta or {})
++    overrides = {str(x) for x in (meta.get("manual_overrides") or [])}
++    if "name" in overrides or "nome" in overrides:
++        return MANUAL_AUTHORITY
++    fs = (meta.get("field_sources") or {}).get("name") or {}
++    if isinstance(fs, str):
++        src = fs.lower().strip()
++    else:
++        src = str(fs.get("source") or "").lower().strip()
++    if src.startswith("manual"):
++        return MANUAL_AUTHORITY
++    if not src:
++        return None
++    token = src.split()[0].split("(")[0].strip()
++    if token == "manual":
++        return MANUAL_AUTHORITY
++    return authority_for(token)
++
++
++def chassis_members(db: Session, chassis_id: int) -> list[Asset]:
++    return list(
++        db.scalars(
++            select(Asset)
++            .options(joinedload(Asset.interfaces), joinedload(Asset.name_proposals))
++            .where(Asset.chassis_id == int(chassis_id))
++        ).unique().all()
++    )
++
++
++def chassis_manual_name(db: Session, chassis_id: int) -> Optional[str]:
++    """Canonical manual name: prefer fact_assertions (W4c.1), else member meta."""
++    from app.facts.resolver import current
++
++    row = current(db, "chassis", int(chassis_id), "asset.name")
++    if row is not None and (row.source or "").lower() == "manual" and (row.value_norm or "").strip():
++        return row.value_norm.strip()
++    best: Optional[str] = None
++    for member in chassis_members(db, chassis_id):
++        auth = asset_name_authority(member)
++        if auth is not None and auth >= MANUAL_AUTHORITY:
++            name = (member.name or "").strip()
++            if name:
++                return name
++            best = best or name
++    return best
++
++
++def chassis_has_manual_name(db: Session, chassis_id: int) -> bool:
++    return bool(chassis_manual_name(db, chassis_id))
++
++
++def chassis_member_count(db: Session, chassis_id: int | None) -> int:
++    if not chassis_id:
++        return 0
++    return int(db.scalar(
++        select(func.count()).select_from(Asset).where(Asset.chassis_id == int(chassis_id))
++    ) or 0)
++
++
++def proposal_actionability(db: Session, asset: Asset) -> tuple[bool, str]:
++    """Whether adopt/rename is available on this asset row (W4b.2.4: chassis subject)."""
++    cid = asset.chassis_id
++    if cid is not None:
++        return False, "chassis_multi_nic_adopt_blocked"
++    return True, ""
++
++
++def chassis_canonical_presentation(db: Session, asset: Asset) -> dict[str, Any]:
++    """Sibling presentation: one apparato name; members are interfaces (W4c.1).
++
++    Canonical name from fact_assertions (subject=chassis) when present; else
++    member-held name for presentation only (I2 for authority).
++    """
++    from app.facts.resolver import current
++
++    cid = asset.chassis_id
++    if not cid:
++        return {"chassis_role": None, "chassis_canonical_name": None, "chassis_canonical_asset_id": None}
++    members = chassis_members(db, cid)
++    if len(members) < 2:
++        return {"chassis_role": None, "chassis_canonical_name": None, "chassis_canonical_asset_id": None}
++
++    fact = current(db, "chassis", int(cid), "asset.name")     # ← RESOLVER (primario)
++    fact_name = (fact.value_norm or "").strip() if fact is not None else ""
++
++    named = [m for m in members if (m.name or "").strip()]
++    manual_named = [m for m in named if (asset_name_authority(m) or 0) >= MANUAL_AUTHORITY]
++
++    if fact_name:
++        matching = [m for m in members if (m.name or "").strip() == fact_name]
++        pool = matching or members
++        canon_name = fact_name                                # resolver vince
++    else:
++        pool = manual_named or named
++        if not pool:
++            return {"chassis_role": "interface", "chassis_canonical_name": None, "chassis_canonical_asset_id": None}
++        canon_name = (sorted(pool, key=lambda m: (m.id or 0))[0].name or "").strip() or None  # ← fallback stato derivato
++
++    canon_asset = sorted(pool, key=lambda m: (m.id or 0))[0]
++    role = "canonical" if asset.id == canon_asset.id else "interface"
++    return {"chassis_role": role, "chassis_canonical_name": canon_name, "chassis_canonical_asset_id": canon_asset.id}
++
++
++def presentation_name_for_asset(db: Session, asset: Asset) -> Optional[str]:
++    """W4d.1.3 — user-facing apparato name (chassis canon when present).
++
++    Returns None when absent (I2: never "" as a stand-in for missing).
++    """
++    pres = chassis_canonical_presentation(db, asset)
++    canon = (pres.get("chassis_canonical_name") or "").strip()
++    if canon:
++        return canon
++    own = (asset.name or "").strip()                          # ← fallback singleton
++    return own or None
++
++
++def should_suppress_proposal(db: Session, *, asset: Asset, source: str, value: str) -> tuple[bool, str]:
++    """Generation gate: provenance + chassis subject (I6 — no name scoring in Python)."""
++    text = (value or "").strip()
++    if not text:
++        return True, "empty"
++    src = (source or "").strip().lower()
++    prop_auth = authority_for(src)
++    cid = asset.chassis_id
++    if cid is not None and chassis_has_manual_name(db, cid):
++        if prop_auth < MANUAL_AUTHORITY:
++            return True, "chassis_manual_blocks_weaker"
++    if cid is not None:
++        member_ids = [m.id for m in chassis_members(db, cid)]
++        if member_ids:
++            existing = db.scalars(select(NameProposal).where(
++                NameProposal.asset_id.in_(member_ids),
++                NameProposal.status == "pending",
++                NameProposal.value == text[:255],
++            )).first()
++            if existing is not None:
++                return True, "chassis_value_dedup"
++    return False, ""
++
++
++def reconcile_chassis_name_proposal_suppression(db: Session) -> dict[str, int]:
++    """Delete set A (manual chassis + weaker) and B extras (dedup). Idempotent.
++
++    Rows are removed (not merely archived) so ``name_proposals`` count reflects
++    the cleaned operational queue — W4a.3 delta gate.
++    """
++    removed_a = 0
++    removed_b = 0
++    pending = list(db.scalars(select(NameProposal).where(NameProposal.status == "pending")).all())
++    assets = {a.id: a for a in db.scalars(select(Asset)).all()}
++    to_delete: list[NameProposal] = []
++
++    for prop in pending:  # Set A
++        asset = assets.get(prop.asset_id)
++        if not asset or not asset.chassis_id:
++            continue
++        if not chassis_has_manual_name(db, asset.chassis_id):
++            continue
++        if authority_for(prop.source) >= MANUAL_AUTHORITY:
++            continue
++        to_delete.append(prop)
++        removed_a += 1
++
++    delete_ids = {p.id for p in to_delete}
++    buckets: dict[tuple[int, str], list[NameProposal]] = {}
++    for prop in pending:  # Set B extras: keep highest id per (chassis, value)
++        if prop.id in delete_ids:
++            continue
++        asset = assets.get(prop.asset_id)
++        if not asset or not asset.chassis_id:
++            continue
++        key = (int(asset.chassis_id), (prop.value or "").strip().casefold())
++        buckets.setdefault(key, []).append(prop)
++    for _key, group in buckets.items():
++        if len(group) < 2:
++            continue
++        keep = max(group, key=lambda p: p.id or 0)
++        for prop in group:
++            if prop.id == keep.id or prop.id in delete_ids:
++                continue
++            to_delete.append(prop)
++            delete_ids.add(prop.id)
++            removed_b += 1
++
++    for prop in db.scalars(select(NameProposal).where(
++        NameProposal.status_reason.in_(("w4a_chassis_manual_blocks_weaker", "w4a_chassis_value_dedup"))
++    )).all():
++        if prop.id not in delete_ids:
++            to_delete.append(prop)
++            delete_ids.add(prop.id)
++            if "dedup" in (prop.status_reason or ""):
++                removed_b += 1
++            else:
++                removed_a += 1
++
++    for prop in to_delete:
++        db.delete(prop)
++    return {"archived_a": removed_a, "archived_b": removed_b}
++```
++
++### `api/app/services/chassis_rename.py` (integrale, 277 righe)
++
++```python
++"""W4b/W4c — chassis-level rename/adopt + one-shot LGS310C mark helper.
++
++W4c.1: canonical name lives ONLY in fact_assertions (asset.name, subject=chassis).
++Rename does NOT copy the name onto every member or mark them manual.
++"""
++
++from __future__ import annotations
++
++from typing import Any, Optional
++
++from sqlalchemy import select
++from sqlalchemy.orm import Session, joinedload
++
++from app.facts.resolver import apply_observation, current
++from app.models import Asset, AuditLog, Chassis, NameProposal, utcnow
++from app.services.name_proposal_chassis import chassis_members
++
++
++class ChassisRenameError(Exception):
++    def __init__(self, code: str, message: str, *, chassis_id: int | None = None):
++        super().__init__(message)
++        self.code = code
++        self.message = message
++        self.chassis_id = chassis_id
++
++
++def mark_lgs310c_manual(db: Session) -> dict[str, Any]:
++    """W4b.1.4 one-shot — NOT called from bootstrap (W4c.3).
++
++    Idempotent provenance mark for asset 3 / name LGS310C.
++    Writes only meta.field_sources / manual_overrides — not Asset.name value (K1).
++    Reversible: remove 'name' from manual_overrides and field_sources.name.
++    """
++    asset = db.scalars(
++        select(Asset).options(joinedload(Asset.interfaces)).where(Asset.id == 3)
++    ).first()
++    if asset is None:
++        return {"changed": 0, "reason": "asset_3_missing"}
++    if (asset.name or "").strip() != "LGS310C":
++        return {"changed": 0, "reason": "name_mismatch", "actual": (asset.name or "").strip()}
++    meta = dict(asset.meta or {})
++    overrides = set(meta.get("manual_overrides") or [])
++    sources = dict(meta.get("field_sources") or {})
++    fs = sources.get("name") or {}
++    src = ""
++    if isinstance(fs, dict):
++        src = str(fs.get("source") or "").lower()
++    elif isinstance(fs, str):
++        src = fs.lower()
++    already = "name" in overrides and src.startswith("manual")
++    if already:
++        return {"changed": 0, "reason": "already_manual", "asset_id": 3}
++    overrides.add("name")
++    now = utcnow()
++    sources["name"] = {
++        "source": "manual", "confidence": 1.0, "last_seen": now.isoformat() + "Z",
++        "marked_by": "w4b.1.4",
++        "reversible": "remove name from manual_overrides + field_sources.name",
++    }
++    meta["manual_overrides"] = sorted(overrides)
++    meta["field_sources"] = sources
++    asset.meta = meta
++    asset.updated_at = now
++    db.flush()
++    iface = next(iter(asset.interfaces or []), None)
++    entity = iface or asset
++    apply_observation(
++        db, fact_key="asset.name", entity=entity, value="LGS310C",
++        source="manual", observed_at=now, confidence=1.0, human_confirm=True,
++    )
++    db.add(AuditLog(
++        user_id=None, action="asset.mark_name_manual", entity="asset", entity_id="3",
++        detail={"name": "LGS310C", "chassis_id": asset.chassis_id, "wave": "w4b.1.4",
++                "reversible": "remove name from manual_overrides + field_sources.name",
++                "value_unchanged": True},
++        ip="",
++    ))
++    return {"changed": 1, "asset_id": 3, "chassis_id": asset.chassis_id}
++
++
++def list_unknown_nonempty_names(db: Session) -> list[dict[str, Any]]:
++    """Enumeration only; never marks manual."""
++    from app.services.name_proposal_chassis import asset_name_authority
++
++    out = []
++    assets = db.scalars(select(Asset).options(joinedload(Asset.interfaces))).unique().all()
++    for asset in assets:
++        name = (asset.name or "").strip()
++        if not name:
++            continue
++        auth = asset_name_authority(asset)
++        if auth is not None:
++            continue
++        macs = [i.mac for i in (asset.interfaces or []) if i.mac]
++        out.append({"asset_id": asset.id, "name": name, "chassis_id": asset.chassis_id,
++                    "macs": macs, "origin": "unknown_nonempty"})
++    return out
++
++
++def ambiguous_manual_names(db: Session, chassis_id: int) -> list[str]:
++    members = chassis_members(db, chassis_id)
++    from app.services.name_proposal_chassis import MANUAL_AUTHORITY, asset_name_authority
++
++    names = sorted({
++        (m.name or "").strip() for m in members
++        if (m.name or "").strip() and (asset_name_authority(m) or 0) >= MANUAL_AUTHORITY
++    })
++    return names
++
++
++def adopt_name_on_chassis(db: Session, *, chassis_id: int, value: str,
++                          source: str = "manual", proposal_id: int | None = None) -> dict[str, Any]:
++    """W4c.1 — one canonical name via fact_assertions (subject=chassis).
++
++    Does NOT write member.name or mark siblings manual. The member that already
++    carries the chosen manual name is left unchanged; others stay as interfaces.
++    """
++    text = (value or "").strip()
++    if not text:
++        raise ChassisRenameError("empty", "Nome vuoto")
++    chassis = db.get(Chassis, chassis_id)
++    if chassis is None:
++        raise ChassisRenameError("not_found", "Chassis non trovato", chassis_id=chassis_id)
++    members = chassis_members(db, chassis_id)
++    if not members:
++        raise ChassisRenameError("empty_chassis", "Chassis senza membri", chassis_id=chassis_id)
++
++    manuals = ambiguous_manual_names(db, chassis_id)
++    if len(manuals) > 1 and text not in manuals:
++        raise ChassisRenameError("ambiguous",
++            f"Chassis con nomi manuali multipli: {', '.join(manuals)}", chassis_id=chassis_id)
++
++    now = utcnow()
++    from app.services.name_proposal_chassis import MANUAL_AUTHORITY, asset_name_authority
++
++    incumbent = current(db, "chassis", chassis_id, "asset.name")   # idempotenza
++    if incumbent is not None and incumbent.value_norm == text and (incumbent.source or "").lower() == "manual":
++        return {"changed": 0, "chassis_id": chassis_id, "value": text,
++                "holder": "fact_assertion", "members_unchanged": [m.id for m in members]}
++
++    for member in members:  # archivia proposte pending combacianti
++        for prop in list(member.name_proposals or []):
++            if (prop.status or "") != "pending":
++                continue
++            if proposal_id and prop.id == proposal_id:
++                prop.status = "archived"; prop.status_reason = "adopted_chassis"; prop.updated_at = now
++            elif (prop.value or "").strip() == text or (prop.source or "") == source:
++                prop.status = "archived"; prop.status_reason = "superseded_chassis_adopt"; prop.updated_at = now
++
++    holders = [m for m in members
++               if (m.name or "").strip() == text and (asset_name_authority(m) or 0) >= MANUAL_AUTHORITY]
++    if not holders:
++        holders = [m for m in members if (m.name or "").strip() == text]
++    primary = holders[0] if holders else members[0]
++    iface = next(iter(primary.interfaces or []), None)
++    entity = iface or primary
++
++    apply_observation(db, fact_key="asset.name", entity=entity, value=text,
++                      source="manual", observed_at=now, confidence=1.0, human_confirm=True)
++    db.add(AuditLog(
++        user_id=None, action="chassis.adopt_name", entity="chassis", entity_id=str(chassis_id),
++        detail={"value": text, "holder": "fact_assertion",
++                "members_not_renamed": [m.id for m in members], "wave": "w4c.1"},
++        ip="",
++    ))
++    db.flush()
++    return {"changed": 1, "chassis_id": chassis_id, "value": text,
++            "holder": "fact_assertion", "members_unchanged": [m.id for m in members]}
++
++
++def member_adopt_blocked_detail(db: Session, asset: Asset) -> Optional[dict[str, Any]]:
++    """W4b.2.4 — any chassis member: refuse member adopt; subject is the chassis."""
++    cid = asset.chassis_id
++    if not cid:
++        return None
++    return {
++        "code": "chassis_subject_required",
++        "message": ("Adozione nome bloccata sul membro: il soggetto corretto è il chassis. "
++                    f"Usa POST /api/chassis/{cid}/adopt-name."),
++        "chassis_id": cid, "member_asset_id": asset.id,
++    }
++```
+diff --git a/observatory/scripts/w8_currency_gate.py b/observatory/scripts/w8_currency_gate.py
+new file mode 100644
+index 0000000..47c2cc4
+--- /dev/null
++++ b/observatory/scripts/w8_currency_gate.py
+@@ -0,0 +1,264 @@
++#!/usr/bin/env python3
++"""W8.3 / W8-fix — Gate permanente della correntezza (presidio statico su sorgente).
++
++PRESIDIO STATICO SU SORGENTE — eccezione consapevole alla regola «mai test su
++stringhe di codice sorgente». Motivo: questo NON verifica il comportamento del
++codice, verifica un INVARIANTE ARCHITETTURALE («la correntezza dei fatti si
++legge solo dal resolver `api/app/facts/`»). Un invariante di questo tipo si può
++presidiare solo staticamente: a runtime un consumatore che ricalcola il corrente
++darebbe comunque un risultato «plausibile», quindi non fallirebbe alcun test di
++comportamento. Perciò il gate scandisce il sorgente e fallisce se compare un
++accesso ai fatti fuori dal resolver.
++
++Correzioni W8-fix (buchi dimostrati nella review di W8):
++  B1(i)  ora la sentinella copre ANCHE il nome tabella grezzo `fact_assertions`
++         in contesto SQL (`text("… FROM fact_assertions …")`), non solo il
++         simbolo ORM `FactAssertion`.
++  B1(ii) allowlist per (file, snippet, N): autorizza ESATTAMENTE N righe. N+1 =
++         violazione di conteggio (riporta atteso vs osservato). Inoltre ogni riga
++         che contiene un riferimento a fatti (FactAssertion|fact_assertions|
++         fact_key) E il literal `current` è SEMPRE una violazione (una lettura di
++         correntezza), anche se il singolo simbolo sarebbe in allowlist.
++  B1(iii) scope allargato al censimento dichiarato: `api/**`, `scripts/**`,
++         `collector/**`.
++
++Uso:
++    python3 scripts/w8_currency_gate.py            # scansione repo reale
++    python3 scripts/w8_currency_gate.py --selftest # controllo negativo (sa fallire?)
++Esce 0 se pulito, 1 se compare una violazione (o se il selftest non trova
++esattamente le violazioni attese).
++"""
++
++from __future__ import annotations
++
++import re
++import shutil
++import sys
++import tempfile
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++
++SCAN_DIRS = ("api", "scripts", "collector")
++EXCLUDE_DIRS = ("api/app/facts",)  # il resolver È la fonte: qui i fatti si leggono
++EXCLUDE_FILES = (
++    "scripts/w8_currency_gate.py",   # questo file: contiene le sentinelle come dato
++    "scripts/w8_g8_equivalence.py",  # gate G8: contiene i fact_key come dato
++)
++
++FACT_TOKENS = ("FactAssertion", "fact_assertions", "fact_key")
++# Raw-SQL sul nome tabella grezzo: solo dentro una CHIAMATA SQL reale (text/execute),
++# così `text("… FROM fact_assertions …")` è colto ma prosa/DDL(op.)/label/log no.
++RAW_SQL_CALLS = ("text(", ".execute(", ".exec_driver_sql(")
++# COMBO: `current` come VALORE DI STATO quotato (state='current' / state=="current" /
++# filter_by(state="current")), NON come sottostringa di un identificatore
++# (es. l'indice `uq_fact_assertions_current_slot`) né come label (`current={x}`).
++CURRENT_VALUE_RE = re.compile(r"""['"]current['"]""")
++
++# Allowlist per (relpath, snippet_stripped) -> (occorrenze_attese, motivazione).
++# Autorizza ESATTAMENTE N righe identiche a snippet in quel file.
++ALLOWLIST: dict[tuple[str, str], tuple[int, str]] = {
++    ("api/app/models.py", "class FactAssertion(Base):"): (
++        1, "models: DEFINIZIONE ORM della tabella (non una lettura)."),
++    ("api/app/bootstrap.py",
++     "from app.models import FactAssertion, IdentityEvidence, IdentityLinkProposal, Switch, User  # noqa: F401 — create_all"): (
++        1, "bootstrap: import per registrazione modelli in create_all (nessuna query)."),
++    ("api/app/routers/admin.py", "from app.models import FactAssertion"): (
++        2, "admin: import per diagnostica read-only (shadow-stats COUNT + conflitti I3)."),
++    ("api/app/routers/admin.py",
++     "rows = int(db.scalar(select(func.count()).select_from(FactAssertion)) or 0)"): (
++        1, "admin /facts/shadow-stats: COUNT righe (osservabilità breaker), non un valore corrente."),
++    ("api/app/routers/admin.py", "select(FactAssertion)"): (
++        1, "admin /facts/conflicts: divergenze conflict_review, state='historical' (I3), NON current."),
++    ("api/app/routers/admin.py", 'FactAssertion.reason == "conflict_review",'): (
++        1, "admin /facts/conflicts: filtro divergenze I3."),
++    ("api/app/routers/admin.py", 'FactAssertion.state == "historical",'): (
++        1, "admin /facts/conflicts: esplicitamente state='historical', l'opposto di current."),
++    ("api/app/routers/admin.py",
++     ".order_by(FactAssertion.last_seen_at.desc(), FactAssertion.id.desc())"): (
++        1, "admin /facts/conflicts: ordinamento di DISPLAY delle divergenze storiche."),
++}
++
++
++def _rel(p: Path, root: Path) -> str:
++    return str(p.relative_to(root)).replace("\\", "/")
++
++
++def _is_excluded(rel: str) -> bool:
++    if rel in EXCLUDE_FILES:
++        return True
++    return any(rel == d or rel.startswith(d + "/") for d in EXCLUDE_DIRS)
++
++
++def _classify_line(line: str) -> tuple[str, str] | None:
++    """Return (kind, snippet) if the line touches the fact store, else None.
++
++    kind ∈ {"combo", "symbol", "sql"}. "combo" è SEMPRE violazione.
++    """
++    strip = line.strip()
++    has_token = any(tok in line for tok in FACT_TOKENS)
++    if has_token and CURRENT_VALUE_RE.search(line):
++        return ("combo", strip)
++    if "FactAssertion" in line:
++        return ("symbol", strip)
++    if "fact_assertions" in line and any(k in line for k in RAW_SQL_CALLS):
++        return ("sql", strip)
++    return None
++
++
++def scan(root: Path, allowlist: dict[tuple[str, str], tuple[int, str]]):
++    """Return (files_scanned, accounted, violations)."""
++    files_scanned = 0
++    # (rel, snippet) -> {"kind": kind, "lines": [lineno,...]}
++    groups: dict[tuple[str, str], dict] = {}
++    combos: list[tuple[str, int, str]] = []
++    for d in SCAN_DIRS:
++        base = root / d
++        if not base.exists():
++            continue
++        for path in sorted(base.rglob("*.py")):
++            rel = _rel(path, root)
++            if _is_excluded(rel):
++                continue
++            files_scanned += 1
++            for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
++                res = _classify_line(raw)
++                if res is None:
++                    continue
++                kind, snippet = res
++                if kind == "combo":
++                    combos.append((rel, lineno, snippet))
++                    continue
++                g = groups.setdefault((rel, snippet), {"kind": kind, "lines": []})
++                g["lines"].append(lineno)
++
++    accounted: list[dict] = []
++    violations: list[dict] = []
++
++    # Combo: sempre violazioni (lettura di correntezza: fact-token + "current").
++    for rel, lineno, snippet in combos:
++        violations.append({
++            "rel": rel, "lines": [lineno], "snippet": snippet,
++            "reason": "COMBO fact-token + 'current' (lettura di correntezza)",
++            "atteso": 0, "osservato": 1,
++        })
++
++    for (rel, snippet), g in sorted(groups.items()):
++        lines = g["lines"]
++        entry = allowlist.get((rel, snippet))
++        if entry is None:
++            violations.append({
++                "rel": rel, "lines": lines, "snippet": snippet,
++                "reason": f"accesso ai fatti fuori da facts/ non in allowlist ({g['kind']})",
++                "atteso": 0, "osservato": len(lines),
++            })
++            continue
++        exp, reason = entry
++        if len(lines) == exp:
++            accounted.append({
++                "rel": rel, "lines": lines, "snippet": snippet,
++                "reason": reason, "atteso": exp, "osservato": len(lines),
++            })
++        else:
++            violations.append({
++                "rel": rel, "lines": lines, "snippet": snippet,
++                "reason": f"CONTEGGIO: atteso {exp}, osservato {len(lines)} — {reason}",
++                "atteso": exp, "osservato": len(lines),
++            })
++    return files_scanned, accounted, violations
++
++
++def _print_report(root: Path, files_scanned: int, accounted, violations, allowlist) -> None:
++    print("== W8 CURRENCY GATE (indurito, W8-fix) ==")
++    print(f"root: {root}")
++    print("sentinelle: simbolo ORM 'FactAssertion' · tabella grezza 'fact_assertions' "
++          "in chiamata SQL (text/execute) · COMBO (fact-token "
++          f"{'|'.join(FACT_TOKENS)}) + valore di stato quotato 'current'")
++    print(f"scope: {', '.join(d + '/**' for d in SCAN_DIRS)}")
++    print("esclusioni:")
++    for d in EXCLUDE_DIRS:
++        print(f"  - {d}/**  (il resolver È la fonte della correntezza)")
++    for f in EXCLUDE_FILES:
++        print(f"  - {f}  (contiene le sentinelle/fact_key come dato)")
++    print(f"file scansionati: {files_scanned}")
++    print(f"voci allowlist: {len(allowlist)}")
++    print()
++    print(f"ECCEZIONI GIUSTIFICATE (accounted): {len(accounted)}")
++    for a in accounted:
++        locs = ",".join(str(x) for x in a["lines"])
++        print(f"  OK  {a['rel']}:{locs}  (atteso {a['atteso']}, osservato {a['osservato']})")
++        print(f"      | {a['snippet']}")
++        print(f"      → {a['reason']}")
++    print()
++    print(f"VIOLAZIONI: {len(violations)}")
++    for v in violations:
++        locs = ",".join(str(x) for x in v["lines"])
++        print(f"  FAIL {v['rel']}:{locs}  (atteso {v['atteso']}, osservato {v['osservato']})")
++        print(f"      | {v['snippet']}")
++        print(f"      → {v['reason']}")
++    print()
++    print("RISULTATO:", "PASS" if not violations else "FAIL")
++
++
++def run_repo() -> int:
++    files_scanned, accounted, violations = scan(ROOT, ALLOWLIST)
++    _print_report(ROOT, files_scanned, accounted, violations, ALLOWLIST)
++    return 1 if violations else 0
++
++
++def run_selftest() -> int:
++    """Controllo negativo: corpus sintetico in dir TEMPORANEA (mai in api/, mai committato).
++
++    Quattro file:
++      1. definizione ORM lecita (accounted)
++      2. lettura SQL grezza su fact_assertions con state='current' (violazione)
++      3. composizione filter_by(fact_key=…, state='current') (violazione)
++      4. ripetizione extra di una riga in allowlist (violazione di conteggio)
++    Atteso: 3 gruppi di violazione (file 2,3,4), 1 gruppo accounted (file 1).
++    """
++    tmp = Path(tempfile.mkdtemp(prefix="w8gate_selftest_"))
++    try:
++        api = tmp / "api" / "app"
++        api.mkdir(parents=True)
++        orm_line = "class FactAssertion(Base):"
++        (api / "file1_orm.py").write_text(
++            f"{orm_line}\n    __tablename__ = 'fact_assertions'\n", encoding="utf-8")
++        (api / "file2_rawsql.py").write_text(
++            'stmt = text("SELECT value_norm FROM fact_assertions '
++            "WHERE fact_key='asset.name' AND state='current' ORDER BY id DESC LIMIT 1\")\n",
++            encoding="utf-8")
++        (api / "file3_filterby.py").write_text(
++            'row = db.scalars(select(FactAssertion)'
++            '.filter_by(fact_key="asset.name", state="current")).first()\n',
++            encoding="utf-8")
++        (api / "file4_count.py").write_text(
++            f"{orm_line}\n{orm_line}\n", encoding="utf-8")
++
++        allowlist = {
++            ("api/app/file1_orm.py", orm_line): (1, "selftest: ORM def lecita"),
++            ("api/app/file4_count.py", orm_line): (1, "selftest: autorizzata 1 volta"),
++        }
++        files_scanned, accounted, violations = scan(tmp, allowlist)
++        _print_report(tmp, files_scanned, accounted, violations, allowlist)
++
++        viol_files = sorted({v["rel"].split("/")[-1] for v in violations})
++        expected_files = ["file2_rawsql.py", "file3_filterby.py", "file4_count.py"]
++        ok = (len(violations) == 3 and viol_files == expected_files and len(accounted) == 1)
++        print()
++        print(f"SELFTEST atteso: 3 violazioni {expected_files} + 1 accounted (file1)")
++        print(f"SELFTEST osservato: {len(violations)} violazioni {viol_files} + "
++              f"{len(accounted)} accounted")
++        print("SELFTEST:", "PASS (il gate sa fallire)" if ok else "FAIL (gate non discrimina)")
++        return 0 if ok else 1
++    finally:
++        shutil.rmtree(tmp, ignore_errors=True)
++
++
++def main(argv: list[str]) -> int:
++    if "--selftest" in argv:
++        return run_selftest()
++    return run_repo()
++
++
++if __name__ == "__main__":
++    raise SystemExit(main(sys.argv[1:]))
+diff --git a/observatory/scripts/w8_g8_equivalence.py b/observatory/scripts/w8_g8_equivalence.py
+new file mode 100644
+index 0000000..75a5f9e
+--- /dev/null
++++ b/observatory/scripts/w8_g8_equivalence.py
+@@ -0,0 +1,219 @@
++"""W8.5 / W8-fix — Gate di equivalenza G8, eseguibile · discriminante · esteso.
++
++Cosa fa: confronta, per ogni asset e a writer fermi, la correntezza prodotta dal
++RESOLVER con la superficie osservata dai consumatori, e enumera OGNI differenza
++per id in quattro classi:
++  RESOLVER  R!=None e consumatore == R          (il valore viene dal fatto)
++  FALLBACK  R==None e consumatore ha un valore   (I2: assenza del fatto, ripiego
++            sullo STATO derivato — legittimo, non una divergenza)
++  ABSENT    R==None e consumatore assente         (I2: assenza dichiarata)
++  DIVERGE   R!=None e consumatore != R            (sospetto calcolo locale — (c))
++Un solo DIVERGE ⇒ RISULTATO FAIL. Nessuna tolleranza percentuale.
++
++Fatti confrontati:
++  - asset.name : resolver.current("asset.name") vs presentation_name_for_asset().
++    NB (T1): presentation_name_for_asset NON è un wrapper puro del resolver — usa
++    il resolver per il nome chassis-scoped ma RIPIEGA su Asset.name (stato
++    derivato) quando il fatto è assente. Quindi su asset.name la classe DIVERGE è
++    TAUTOLOGICAMENTE 0 tra funzione interna e resolver: la discriminazione reale
++    è provata da --mutate-probe (sotto) e, se abilitata, dal confronto con
++    l'ENDPOINT GET /api/assets/{id} (superficie consumer reale, env OBS_G8_*).
++  - os.guess  : resolver.current("os.guess") vs Asset.os_guess (COLONNA di stato
++    derivata — store DIVERSO dal fact store: confronto NON tautologico).
++
++Controllo negativo (--mutate-probe <id>): monkeypatch IN-PROCESSO della sola
++funzione di presentazione perché restituisca una sentinella per quell'unico id.
++G8 deve riportare DIVERGE=1 esattamente su quell'id e RISULTATO FAIL. Prova che
++il gate sa fallire.
++
++READ-ONLY (T4e): il gate NON scrive mai sul DB (db.rollback() finale, nessun
++commit). «mai commit» si riferisce alla TRANSAZIONE DB, non al versionamento git:
++questo file È committato come tooling versionato (repo + obs-exchange). Durante
++G8 nessuna azione viene innescata sull'api (unico writer vivo): sono sole letture.
++
++Uso (nel container api, a collector fermo):
++    docker compose exec -T api python3 - < scripts/w8_g8_equivalence.py
++    docker compose exec -T api python3 - < scripts/w8_g8_equivalence.py --mutate-probe 3
++Env opzionali per il confronto con l'endpoint (T4b):
++    OBS_G8_BASE (es. http://127.0.0.1:8000)  OBS_G8_TOKEN (cookie obs_session)
++"""
++
++from __future__ import annotations
++
++import os
++import sys
++
++sys.path.insert(0, "/app")
++
++MUTATE_SENTINEL = "__G8_MUTATE_SENTINEL__"
++
++
++def _import_smoke():
++    """T4a — verifica che ogni simbolo importato esista davvero (no import fittizi)."""
++    problems = []
++    syms = {}
++    try:
++        from app.facts.resolver import current, subject_of
++        syms["current"] = current
++        syms["subject_of"] = subject_of
++    except Exception as exc:  # noqa: BLE001
++        problems.append(f"app.facts.resolver.current/subject_of: {exc!r}")
++    try:
++        from app.config import get_settings
++        syms["get_settings"] = get_settings
++    except Exception as exc:  # noqa: BLE001
++        problems.append(f"app.config.get_settings: {exc!r}")
++    try:
++        from app.models import Asset
++        syms["Asset"] = Asset
++    except Exception as exc:  # noqa: BLE001
++        problems.append(f"app.models.Asset: {exc!r}")
++    try:
++        import app.services.name_proposal_chassis as npc
++        if not hasattr(npc, "presentation_name_for_asset"):
++            problems.append("name_proposal_chassis.presentation_name_for_asset: assente")
++        syms["npc"] = npc
++    except Exception as exc:  # noqa: BLE001
++        problems.append(f"app.services.name_proposal_chassis: {exc!r}")
++    print("== G8 IMPORT-SMOKE ==")
++    for name in ("current", "subject_of", "get_settings", "Asset", "npc"):
++        ok = name in syms
++        print(f"  {'OK ' if ok else 'FAIL'} {name}")
++    if problems:
++        for p in problems:
++            print(f"  ! {p}")
++        print("IMPORT-SMOKE: FAIL")
++        raise SystemExit(2)
++    print("IMPORT-SMOKE: PASS\n")
++    return syms
++
++
++def _norm(v) -> str | None:
++    s = " ".join(str(v or "").strip().split())
++    return s or None
++
++
++def _api_name(base: str, token: str, asset_id: int) -> tuple[str | None, str]:
++    """T4b — nome dalla superficie consumer reale GET /api/assets/{id} (read-only)."""
++    import json
++    import urllib.request
++
++    url = f"{base.rstrip('/')}/api/assets/{asset_id}"
++    req = urllib.request.Request(url, headers={"Cookie": f"obs_session={token}"})
++    with urllib.request.urlopen(req, timeout=8) as r:  # noqa: S310
++        d = json.loads(r.read().decode("utf-8"))
++    name = d.get("chassis_canonical_name") or d.get("display_name") or d.get("name")
++    return _norm(name), "chassis_canonical_name|display_name|name"
++
++
++def _classify(r, consumer):
++    if consumer == MUTATE_SENTINEL:
++        return "DIVERGE"
++    if r is not None and consumer == r:
++        return "RESOLVER"
++    if r is None and consumer is not None:
++        return "FALLBACK"
++    if r is None and consumer is None:
++        return "ABSENT"
++    return "DIVERGE"
++
++
++def main(argv: list[str]) -> int:
++    mutate_id = None
++    if "--mutate-probe" in argv:
++        i = argv.index("--mutate-probe")
++        try:
++            mutate_id = int(argv[i + 1])
++        except (IndexError, ValueError):
++            print("--mutate-probe richiede un asset_id intero")
++            return 2
++
++    syms = _import_smoke()
++    current = syms["current"]
++    subject_of = syms["subject_of"]
++    get_settings = syms["get_settings"]
++    Asset = syms["Asset"]
++    npc = syms["npc"]
++
++    from sqlalchemy import create_engine, select
++    from sqlalchemy.orm import sessionmaker
++
++    base = os.environ.get("OBS_G8_BASE")
++    token = os.environ.get("OBS_G8_TOKEN")
++    api_enabled = bool(base and token)
++
++    # T4d — monkeypatch SOLO della funzione di presentazione, in-processo, per un id.
++    orig_pna = npc.presentation_name_for_asset
++    if mutate_id is not None:
++        def _patched(db, asset):
++            if getattr(asset, "id", None) == mutate_id:
++                return MUTATE_SENTINEL
++            return orig_pna(db, asset)
++        npc.presentation_name_for_asset = _patched
++        print(f"== MUTATE-PROBE attivo su id={mutate_id} (sentinella di presentazione) ==\n")
++
++    settings = get_settings()
++    db = sessionmaker(bind=create_engine(f"sqlite:///{settings.sqlite_path}"))()
++    fail = False
++    try:
++        assets = db.scalars(select(Asset)).all()
++
++        def run_fact(fact_key, consumer_fn, label):
++            nonlocal fail
++            buckets = {"RESOLVER": [], "FALLBACK": [], "ABSENT": [], "DIVERGE": []}
++            for a in assets:
++                st, sid = subject_of(fact_key, a)
++                row = current(db, st, sid, fact_key)
++                r = _norm(row.value_norm) if row is not None else None
++                c = consumer_fn(a)
++                cls = _classify(r, c)
++                if cls in ("DIVERGE", "FALLBACK"):
++                    buckets[cls].append((a.id, r, c))
++                else:
++                    buckets[cls].append(a.id)
++            print(f"== G8 {fact_key} — consumatore: {label} ==")
++            print(f"  RESOLVER={len(buckets['RESOLVER'])} FALLBACK={len(buckets['FALLBACK'])} "
++                  f"ABSENT={len(buckets['ABSENT'])} DIVERGE={len(buckets['DIVERGE'])}")
++            print(f"  RESOLVER ids: {sorted(buckets['RESOLVER'])}")
++            print("  FALLBACK (R=None → stato derivato, I2):")
++            for aid, r, c in sorted(buckets["FALLBACK"]):
++                print(f"    id={aid} resolver=None consumatore={c!r}")
++            print(f"  ABSENT ids (R=None, consumatore=None, I2): {sorted(buckets['ABSENT'])}")
++            print("  DIVERGE (sospetto calcolo locale, (c)):")
++            for aid, r, c in sorted(buckets["DIVERGE"]):
++                print(f"    id={aid} resolver={r!r} consumatore={c!r}")
++            if buckets["DIVERGE"]:
++                fail = True
++            print()
++            return buckets
++
++        # asset.name — funzione interna (tautologica su DIVERGE, dichiarato T1)
++        run_fact("asset.name", lambda a: _norm(npc.presentation_name_for_asset(db, a)),
++                 "presentation_name_for_asset() [interna]")
++
++        # asset.name — endpoint reale (T4b), se abilitato
++        if api_enabled:
++            run_fact("asset.name", lambda a: _api_name(base, token, a.id)[0],
++                     f"GET /api/assets/{{id}} [{base}]")
++        else:
++            print("== G8 asset.name — endpoint GET /api/assets/{id} ==")
++            print("  SKIP (K4): OBS_G8_BASE/OBS_G8_TOKEN non impostati; "
++                  "leg non esercitata a runtime.\n")
++
++        # os.guess — resolver vs colonna di stato derivata (store diverso: non tautologico)
++        run_fact("os.guess", lambda a: _norm(getattr(a, "os_guess", None)),
++                 "Asset.os_guess [colonna derivata]")
++
++        print("RISULTATO G8:", "FAIL" if fail else "PASS")
++        if mutate_id is not None:
++            print(f"MUTATE-PROBE: atteso DIVERGE=1 su id={mutate_id} e FAIL — "
++                  f"{'confermato' if fail else 'NON confermato (controllo negativo rotto)'}")
++        return 1 if fail else 0
++    finally:
++        npc.presentation_name_for_asset = orig_pna
++        db.rollback()
++        db.close()
++
++
++if __name__ == "__main__":
++    raise SystemExit(main(sys.argv[1:]))
