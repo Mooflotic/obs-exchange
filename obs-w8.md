@@ -77,9 +77,11 @@ per gli IP finché il ruolo non entra nella `excl_key` (pre-condizione W3). Punt
 
 ### Classe (c) — codice morto
 
-Nessuna riga da rimuovere. `resolver.history()` è **senza chiamanti** ma è il
-percorso storico **sanzionato** (esposto solo su `?history=true`): non è morto,
-è il contratto per lo storico. Mantenuto → (b).
+Nessuna riga da rimuovere. `resolver.history()` è **senza chiamanti** e **NON è
+cablato** ad alcun endpoint (nessun `?history=true` esiste — verificato W8-fix,
+vedi `DEBT-HISTORY-PATH-UNWIRED`): è il percorso storico previsto ma inerte, non
+codice morto da rimuovere. Mantenuto → (b). [Corretto in W8-fix: la formulazione
+originale «esposto solo su ?history=true» era errata.]
 
 ---
 
@@ -139,13 +141,16 @@ Da eseguire a ogni ondata futura **insieme a I6**. Documentato in
 | `GET /api/assets/{id}` | binding correnti + non-eletti visibili (F-15); `proposal_history` = divergenze I3 dichiarate | — |
 | `GET /api/suggestions` | filtro `status` | — |
 | `GET /api/admin/facts/conflicts` | divergenze `state="historical"` (I3, per costruzione storico/diagnostico) | — |
-| `resolver.history()` | non cablato ad alcun endpoint | percorso `?history=true` sanzionato, non usato |
+| `resolver.history()` | non cablato ad alcun endpoint (nessun `?history=true` esiste — `DEBT-HISTORY-PATH-UNWIRED`) | — (percorso previsto, inerte) |
 
 **UI stale/superseded/assente dichiarati — verifica runtime (method A, prod
 0.10.63):**
 
-- **assente ≠ zero** — asset **109** (LGS328C, chassis 23): `ips: []`,
-  `ip_bindings: []` → l'UI mostra «—», non `0`.
+- **assente ≠ zero** — asset **109** (membro di **chassis 23**; nome PROPRIO
+  **vuoto** per F-5; il nome presentato «LGS328C» è il **canonico del chassis 23**,
+  tenuto dall'asset **2**, non un nome del membro): `ips: []`, `ip_bindings: []`
+  → l'UI mostra «—», non `0`. [Corretto in W8-fix: la formulazione W8 «asset 109
+  LGS328C» attribuiva al membro un nome che ha soggetto CHASSIS.]
 - **non-eletti/duplicati visibili (F-15)** — asset **2**: `192.168.1.2` compare
   in **due** binding (`role=mgmt` source `mgmt`; `role=""` source `fritz`),
   entrambi resi con ruolo/sorgente (DEBT-DOUBLE-CURRENT-IP non collassato).
@@ -170,8 +175,9 @@ presentazione consumer-facing (`presentation_name_for_asset`). Classi per id:
 
 **Previsione:** `DIVERGE=0` (nessun calcolo locale esiste — W8.1). `FALLBACK`
 atteso per i chassis/asset senza fatto-nome manuale a livello chassis (es.
-chassis 23 «LGS328C» è **AI**, non un `asset.name` manuale corrente → ripiego
-sullo stato; chassis 24 «LGS310C» è **manuale** F-1 → `RESOLVER`). Con 0
+il nome «LGS328C» del chassis 23 è tenuto dall'asset 2 come canonico (guess
+proprio `oui`; l'AI guess «Switch Centrale» è dell'asset 109, campo separato);
+chassis 24 «LGS310C» è **manuale** F-1 → atteso `RESOLVER`). Con 0
 migrazioni non esiste un before/after: G8 è **conferma**, e per costruzione ha
 **0 casi (c)**. Da eseguire a writer fermi sul NAS (comando in §W8.7).
 
