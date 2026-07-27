@@ -6,7 +6,8 @@
 
 **Rinumerazione:** W4b → **0.10.49** · W5→0.10.50 · W6→0.10.51 · W7→0.10.52 · W8→0.10.53
 
-Diff: [`docs/obs-w4b.diff.txt`](obs-w4b.diff.txt)
+Diff: [`docs/obs-w4b.diff.txt`](obs-w4b.diff.txt) — **integrale** dei file toccati dall’ondata.  
+**Esclusione dichiarata:** il file `obs-w4b.diff.txt` non include sé stesso (evita auto-ricorsione). Nessun altro file W4b escluso.
 
 ---
 
