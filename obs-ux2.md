@@ -110,9 +110,9 @@ Asset: `favicon.svg` · `favicon.ico` (16/32/48) · `apple-touch-icon.png` 180 �
 
 ### Render obbligatori (allegati)
 
-![favicon 16px](obs-ux2-assets/favicon-16.png)
+![favicon 16px](https://raw.githubusercontent.com/Mooflotic/obs-exchange/main/obs-ux2-favicon-16.png)
 
-![favicon 32px](obs-ux2-assets/favicon-32.png)
+![favicon 32px](https://raw.githubusercontent.com/Mooflotic/obs-exchange/main/obs-ux2-favicon-32.png)
 
 Leggibilità a 16px: L ciano + O verde distinti su fondo `--bg-0` (una iterazione).
 
