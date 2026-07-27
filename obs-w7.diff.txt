@@ -1,0 +1,263 @@
+diff -ruN w7_before/VERSION w7_after/VERSION
+--- a/VERSION
++++ b/VERSION
+@@ -1 +1 @@
+-0.10.57
++0.10.58
+diff -ruN w7_before/web/package.json w7_after/web/package.json
+--- a/web/package.json
++++ b/web/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "lan-observatory-web",
+   "private": true,
+-  "version": "0.10.57",
++  "version": "0.10.58",
+   "type": "module",
+   "scripts": {
+diff -ruN w7_before/api/app/services/topology.py w7_after/api/app/services/topology.py
+--- a/api/app/services/topology.py
++++ b/api/app/services/topology.py
+@@ -1249,7 +1249,17 @@
+             interface.mac_type = "virtual"
+             interface.interface_role = "virtual"
+             continue
+-        interface.interface_role = role_for_interface_on_port(interface, port, role_ctx)
++        # W7.3 (DEBT-FDB-UPLINK-PORTAL / T-a): a single-port FDB hit must NOT downgrade
++        # a structural (uplink/infra) interface to endpoint — role downgrades are owned by
++        # the global reclassify (role_for_interface_global). Preserving the structural role
++        # here keeps FDB presence from being attributed to an uplink/infra port.
++        prior_role = (interface.interface_role or "").lower()
++        computed_role = role_for_interface_on_port(interface, port, role_ctx)
++        if prior_role in {"uplink", "infra"} and computed_role == "endpoint":
++            interface.interface_role = prior_role
++        else:
++            interface.interface_role = computed_role
+         role = (interface.interface_role or "unknown").lower()
+         # M2: do NOT treat uplink/infra/virtual FDB hits as portal presence.
+         if role in {"uplink", "infra", "virtual"} or mac_type == "virtual":
+             continue
+diff -ruN w7_before/api/app/services/inventory.py w7_after/api/app/services/inventory.py
+--- a/api/app/services/inventory.py
++++ b/api/app/services/inventory.py
+@@ -189,6 +189,52 @@
++def _l2_only_exception_class(asset: Asset) -> str | None:
++    text = " ".join(str(x or "") for x in (asset.name, asset.category, asset.vendor)).lower()
++    if "powerline" in text or "510e" in text:
++        return "powerline"
++    return None
++
++
++def _chassis_has_current_ip(db: Session, asset: Asset) -> bool:
++    """Any member of the asset's chassis carries a current IP (W7.2 rule #1)."""
++    if not asset.chassis_id:
++        return bool(current_ip(asset))
++    members = db.scalars(select(Asset).where(Asset.chassis_id == int(asset.chassis_id))).all()
++    return any(bool(current_ip(m)) for m in members)
++
++
++def _mac_ip_policy_present(db: Session, asset: Asset, *, fdb_fresh: bool) -> bool:
++    """W7.2 additive wire: mac_ip_policy as a PRESENCE (reliability) signal only.
++
++    Only the present-family decisions contribute to ``reliable`` — the policy NEVER forces
++    ``stale``/``superseded`` here (F-7: classify_asset stays the sole deriver; broad
++    reclassification is a later wave).
++    """
++    from app.services.mac_ip_policy import MacIpPresenceInputs, classify_mac_ip_presence
++
++    has_ip = bool(current_ip(asset))
++    ever_ip = any(addr.ip for i in asset.interfaces for addr in i.addresses)
++    decision = classify_mac_ip_presence(
++        MacIpPresenceInputs(
++            mac_fdb_fresh=fdb_fresh,
++            mac_has_history_only=(ever_ip and not has_ip),
++            mac_has_current_ip=has_ip,
++            chassis_has_current_ip=_chassis_has_current_ip(db, asset),
++            chassis_mgmt_ip=None,
++            l2_only_exception_class=_l2_only_exception_class(asset),
++            superseded_by_newer_binding=False,
++        )
++    )
++    # Additive only, and ONLY the gaps the existing logic misses: a chassis member kept
++    # present by chassis-scoped IP (present_l2_unaddressed) and the powerline/510E L2-only
++    # exception. Plain "present" (member has its own current IP) is already handled.
++    return decision in {"present_l2_unaddressed", "l2_only_allowed"}
++
++
+ def reconcile_asset_presence(
+     db: Session,
+     asset: Asset,
+@@ -232,10 +278,15 @@
+     active_discovery = recent_portal
++    fdb_fresh = bool(port and port.last_fdb_at and port.last_fdb_at >= cutoff)
++    # W7.2 additive wire: chassis-scoped current IP / present_l2_unaddressed → presence
++    # signal (never forces stale; F-7 preserved).
++    policy_present = _mac_ip_policy_present(db, asset, fdb_fresh=fdb_fresh)
+     reliable = (
+         reachability.get("status") == "reachable"
+         or bool(physical_reasons)
+         or active_discovery
++        or policy_present
+     )
+diff -ruN w7_before/tests/test_w7_consumers.py w7_after/tests/test_w7_consumers.py
+--- /dev/null
++++ b/tests/test_w7_consumers.py
+@@ -0,0 +1,140 @@
++"""W7 — mac_ip_policy wired into presence as an ADDITIVE reliability signal.
++
++Behavioral (no assertions on source strings). Verifies:
++- chassis with ≥1 current IP keeps a FDB-fresh member present (present_l2_unaddressed);
++- present_l2_unaddressed is DECLARED from measured FDB freshness, never DEDUCED;
++- the powerline/510E L2-only exception is present when FDB-fresh;
++- the wire is additive-only: it never forces stale/superseded (F-7 preserved).
++"""
++
++from __future__ import annotations
++
++import sys
++import uuid
++from datetime import datetime, timedelta
++from pathlib import Path
++
++import pytest
++from sqlalchemy import create_engine
++from sqlalchemy.orm import sessionmaker
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
++
++from app.db import Base
++from app.models import Asset, Chassis, Interface, IpAddress, Switch, SwitchPort
++from app.services.inventory import (
++    _chassis_has_current_ip,
++    _mac_ip_policy_present,
++    reconcile_asset_presence,
++)
++
++
++@pytest.fixture()
++def db(tmp_path):
++    engine = create_engine(f"sqlite:///{tmp_path / 'w7.db'}")
++    Base.metadata.create_all(engine)
++    session = sessionmaker(bind=engine)()
++    yield session
++    session.close()
++
++
++def _asset(db, **kw):
++    a = Asset(uid=str(uuid.uuid4()), name=kw.pop("name", ""), category=kw.pop("category", "unknown"), meta=kw.pop("meta", {}))
++    for k, v in kw.items():
++        setattr(a, k, v)
++    db.add(a)
++    db.flush()
++    return a
++
++
++def _iface(db, asset, mac, ip=None, is_current=True):
++    i = Interface(asset_id=asset.id, mac=mac)
++    db.add(i)
++    db.flush()
++    if ip is not None:
++        db.add(IpAddress(interface_id=i.id, ip=ip, is_current=is_current, source="dhcp"))
++        db.flush()
++    return i
++
++
++def test_w762_chassis_with_current_ip_keeps_fdb_fresh_member_present(db):
++    """present_l2_unaddressed: chassis has ≥1 current IP, member is FDB-fresh w/o own IP."""
++    ch = Chassis(label="switch-x")
++    db.add(ch)
++    db.flush()
++    a_ip = _asset(db, chassis_id=ch.id)  # member with a current IP
++    _iface(db, a_ip, "AA:BB:CC:00:00:01", ip="192.168.1.9", is_current=True)
++    a_l2 = _asset(db, chassis_id=ch.id)  # FDB-fresh member without its own IP
++    _iface(db, a_l2, "AA:BB:CC:00:00:02")
++    db.flush()
++
++    assert _chassis_has_current_ip(db, a_l2) is True
++    assert _mac_ip_policy_present(db, a_l2, fdb_fresh=True) is True
++
++
++def test_w762_present_l2_unaddressed_declared_not_deduced(db):
++    """Without measured FDB freshness the member is NOT declared present (I2/K3)."""
++    ch = Chassis(label="switch-y")
++    db.add(ch)
++    db.flush()
++    a_ip = _asset(db, chassis_id=ch.id)
++    _iface(db, a_ip, "AA:BB:CC:00:00:11", ip="192.168.1.10", is_current=True)
++    a_l2 = _asset(db, chassis_id=ch.id)
++    _iface(db, a_l2, "AA:BB:CC:00:00:12")
++    db.flush()
++    assert _mac_ip_policy_present(db, a_l2, fdb_fresh=False) is False
++
++
++def test_w762_powerline_l2_only_exception_present_when_fdb_fresh(db):
++    a = _asset(db, name="FRITZ!Powerline 510E", category="infrastruttura")
++    _iface(db, a, "AA:BB:CC:00:00:21")  # no IP, standalone (no chassis)
++    db.flush()
++    assert _mac_ip_policy_present(db, a, fdb_fresh=True) is True
++    assert _mac_ip_policy_present(db, a, fdb_fresh=False) is False
++
++
++def test_w762_no_chassis_ip_member_not_present(db):
++    ch = Chassis(label="switch-z")
++    db.add(ch)
++    db.flush()
++    a1 = _asset(db, chassis_id=ch.id)
++    _iface(db, a1, "AA:BB:CC:00:00:31")  # no IP
++    a2 = _asset(db, chassis_id=ch.id)
++    _iface(db, a2, "AA:BB:CC:00:00:32")  # no IP
++    db.flush()
++    assert _chassis_has_current_ip(db, a2) is False
++    assert _mac_ip_policy_present(db, a2, fdb_fresh=True) is False
++
++
++def test_w761_wire_is_additive_never_forces_stale(db):
++    a = _asset(db, meta={"reachability": {"status": "no_reply"}, "discovery": {"fritz": {"active": False}}})
++    _iface(db, a, "AA:BB:CC:00:00:41")  # no current IP
++    a.portal_last_seen = datetime.utcnow() - timedelta(hours=72)
++    a.trust_level = ""  # not quarantined/protected → inventory owns active↔stale
++    db.flush()
++    assert _mac_ip_policy_present(db, a, fdb_fresh=False) is False
++    stale = reconcile_asset_presence(db, a)
++    assert stale is True
++    assert (a.meta or {}).get("operational_state") == "stale_unlocated"
+diff -ruN w7_before/scripts/w7_macip_blast.py w7_after/scripts/w7_macip_blast.py
+--- /dev/null
++++ b/scripts/w7_macip_blast.py
+@@ (nuovo) — misura read-only blast-radius policy PIENA (regole #3/#5); enumera per id i
++           disaccordi vs operational_state (52/151). Read-only, rollback.
+diff -ruN w7_before/scripts/w7_wire_predict.py w7_after/scripts/w7_wire_predict.py
+--- /dev/null
++++ b/scripts/w7_wire_predict.py
+@@ (nuovo) — misura read-only del wire RISTRETTO (present_l2_unaddressed/l2_only_allowed):
++           replica reliable/stale old vs new, enumera cambi operational_state per id.
++           Prod: 0 hit ⇒ 0 cambi. Read-only, rollback.
+diff -ruN w7_before/scripts/w7_g7.py w7_after/scripts/w7_g7.py
+--- /dev/null
++++ b/scripts/w7_g7.py
+@@ (nuovo) — gate G7: snapshot (operational_state, presence_state, trust_level) per id,
++           riesegue reconcile_asset_presence in-sessione, enumera cambi, rollback.
++           Prod 0.10.58: assets=151 changes=0.
+diff -ruN w7_before/CHANGELOG.md w7_after/CHANGELOG.md
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,5 +1,15 @@
+ # Changelog
+ 
++## 0.10.58 — W7 (deploy 1/2): T-a uplink→portal + wire mac_ip_policy additivo
++
++- **W7.3 T-a (DEBT-FDB-UPLINK-PORTAL):** apply_fdb_observation ricalcolava interface_role
++  per-porta declassando uplink→endpoint su un hit FDB, poi attribuiva portal_last_seen a
++  una porta uplink. Fix: un hit FDB per-porta non declassa più uplink/infra; downgrade al
++  reclassify globale. Test T-a verde, non indebolito. Nessun azzeramento retroattivo.
++- **W7.2 wire mac_ip_policy (deploy 1/2, additivo):** classify_mac_ip_presence collegato a
++  reconcile_asset_presence come solo segnale di presenza (present_l2_unaddressed +
++  l2_only_allowed → reliable); mai forza stale/superseded (F-7). Misura prod: 0 cambi.
++- **W7.2.3 split:** riclassificazione ampia (regole #3/#5) blast-radius 52/151 → deploy 2/2.
++
+ ## 0.10.57 — W6-REVIEW: rank ipp/snmp riportato al minimo non alterante di I5
+diff -ruN w7_before/docs/KNOWN_DEBT.md w7_after/docs/KNOWN_DEBT.md
+--- a/docs/KNOWN_DEBT.md
++++ b/docs/KNOWN_DEBT.md
+@@ (DEBT-FDB-UPLINK-PORTAL → CHIUSO in W7 0.10.58; root-cause + fix W7.3)
+@@ (DEBT-MAC-IP-POLICY-WIRE → PARZIALE: wire additivo fatto 1/2; ampio #3/#5 rinviato 2/2)
