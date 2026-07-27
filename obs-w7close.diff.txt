@@ -372,7 +372,7 @@ diff -ruN w7close_before/tests/test_w7_consumers.py w7close_after/tests/test_w7_
 diff -ruN w7close_before/scripts/w7c_measure.py w7close_after/scripts/w7c_measure.py
 --- /dev/null
 +++ b/scripts/w7c_measure.py
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,135 @@
 +"""W7-CLOSE read-only measurements (rollback, never commits).
 +
 +Runs inside the deployed api container against the prod DB:
@@ -382,18 +382,24 @@ diff -ruN w7close_before/scripts/w7c_measure.py w7close_after/scripts/w7c_measur
 +Reports:
 +- W7C.2.4 — assets whose L2-only EXCEPTION CLASS changes with the fix (old = raw
 +  name+category+vendor; new = measured category+vendor+iface OUI + canonical name).
-+  Enumerated per id. Zero ⇒ preventive fix (declared).
++  Enumerated per id. Zero => preventive fix (declared).
++- Narrow additive wire hits TODAY using the REAL FDB freshness (SwitchPort.last_fdb_at
++  >= cutoff, same 24h window as reconcile_asset_presence). present_l2_unaddressed /
++  l2_only_allowed both REQUIRE mac_fdb_fresh=True, so passing a hardwired False measures
++  0 by construction (tautology) — this uses the measured freshness instead. For every
++  hit it also reports whether the wire CHANGES `reliable` vs the pre-existing logic
++  (reachable / physical / recent portal) and whether operational_state would change.
 +- W7C.5.3 — FULL mac_ip_policy verdict as CONSULTIVE divergence: per-id disagreements
 +  vs the real operational_state, with the evidence that keeps the device present.
-+- Narrow additive wire hits today (present_l2_unaddressed/l2_only_allowed) — must be 0
-+  in prod (W7 wire inert).
 +
 +Nothing is written. chassis_mgmt_ip and supersession stay UNKNOWN (I2).
 +"""
 +
 +from __future__ import annotations
 +
++import os
 +import sys
++from datetime import datetime, timedelta
 +
 +sys.path.insert(0, "/app")
 +
@@ -401,12 +407,14 @@ diff -ruN w7close_before/scripts/w7c_measure.py w7close_after/scripts/w7c_measur
 +from sqlalchemy.orm import sessionmaker
 +
 +from app.config import get_settings
-+from app.models import Asset
++from app.models import Asset, Switch, SwitchPort
 +from app.services.inventory import (
 +    _l2_only_exception_class,
 +    _mac_ip_policy_present,
++    current_ip,
 +    mac_ip_policy_consultation,
 +)
++from app.services.trust import is_portal_evidence
 +
 +
 +def _old_exception_class(asset: Asset) -> str | None:
@@ -417,10 +425,22 @@ diff -ruN w7close_before/scripts/w7c_measure.py w7close_after/scripts/w7c_measur
 +    return None
 +
 +
++def _recent(value, cutoff):
++    if isinstance(value, datetime):
++        return value >= cutoff
++    try:
++        return datetime.fromisoformat(str(value or "").replace("Z", "")) >= cutoff
++    except (ValueError, TypeError):
++        return False
++
++
 +def main() -> int:
 +    settings = get_settings()
++    hours = max(1, int(os.environ.get("ASSET_STALE_AFTER_HOURS", "24")))
 +    db = sessionmaker(bind=create_engine(f"sqlite:///{settings.sqlite_path}"))()
 +    try:
++        now = datetime.utcnow()
++        cutoff = now - timedelta(hours=hours)
 +        assets = db.scalars(select(Asset)).all()
 +
 +        # W7C.2.4 — exception-class delta (old vs new).
@@ -434,13 +454,39 @@ diff -ruN w7close_before/scripts/w7c_measure.py w7close_after/scripts/w7c_measur
 +        for aid, old, new, cid, nm, cat, ven in sorted(changed):
 +            print(f"  id={aid} old={old} new={new} chassis={cid} name={nm!r} cat={cat!r} vendor={ven!r}")
 +
-+        # Narrow additive wire hits today (must be 0 in prod).
-+        narrow_hits = []
++        # Narrow additive wire hits with REAL measured FDB freshness (fix of tautology).
++        hits = []
 +        for a in assets:
-+            port_fresh = False  # fdb freshness handled inside reconcile; here approximate via helper
-+            if _mac_ip_policy_present(db, a, fdb_fresh=port_fresh):
-+                narrow_hits.append(a.id)
-+        print(f"W7 narrow wire hits (fdb_fresh=False snapshot): {len(narrow_hits)} {sorted(narrow_hits)}")
++            port = db.scalar(select(SwitchPort).where(SwitchPort.asset_id == a.id))
++            fdb_fresh = bool(port and port.last_fdb_at and port.last_fdb_at >= cutoff)
++            if not _mac_ip_policy_present(db, a, fdb_fresh=fdb_fresh):
++                continue
++            # Pre-existing reliability terms (identical to reconcile_asset_presence).
++            meta = dict(a.meta or {})
++            reachability = dict(meta.get("reachability") or {})
++            physical = fdb_fresh
++            infra = dict(meta.get("infrastructure_identity") or {})
++            sw = db.get(Switch, infra.get("switch_id")) if infra.get("switch_id") else None
++            if sw:
++                poll = dict((sw.meta or {}).get("snmp_poll") or {})
++                if (poll.get("ok") or poll.get("lldp")) and _recent(poll.get("at"), cutoff):
++                    physical = True
++            recent_portal = any(
++                is_portal_evidence(str(k)) and _recent(ts, cutoff)
++                for k, ts in dict(a.presence_sources or {}).items()
++            )
++            reliable_old = reachability.get("status") == "reachable" or physical or recent_portal
++            reliable_new = reliable_old or True  # wire adds policy_present=True here
++            op = meta.get("operational_state") or "active"
++            hits.append((a.id, fdb_fresh, reliable_old, reliable_new, op, a.trust_level or "", a.chassis_id, a.name or ""))
++
++        print(f"W7 narrow wire hits (REAL fdb_fresh): {len(hits)}")
++        for aid, ff, ro, rn, op, tl, cid, nm in sorted(hits):
++            changes = "reliable_unchanged" if ro == rn else f"reliable {ro}->{rn}"
++            print(
++                f"  id={aid} fdb_fresh={ff} reliable_old={ro} reliable_new={rn} ({changes}) "
++                f"op_state={op} trust={tl} chassis={cid} name={nm!r}"
++            )
 +
 +        # W7C.5.3 — full-policy CONSULTIVE disagreements per id.
 +        report = mac_ip_policy_consultation(db)
