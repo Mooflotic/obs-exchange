@@ -1,0 +1,288 @@
+--- a/api/app/services/topology.py
++++ b/api/app/services/topology.py
+@@ -21,7 +21,7 @@
+     Switch,
+     SwitchPort,
+ )
+-from app.services.identity import find_asset_by_mac
++from app.services.identity import find_asset_by_mac, resolve_asset_by_ip_at
+ from app.services.macutil import normalize_mac, same_device
+ from app.services.port_naming import port_labels, switch_display_name
+ 
+@@ -1064,12 +1064,11 @@
+             return found
+     ap_ip = str(link.get("ap_ip") or "").strip()
+     if ap_ip:
+-        found = db.scalar(
+-            select(Asset)
+-            .join(Interface)
+-            .join(IpAddress)
+-            .where(IpAddress.ip == ap_ip, IpAddress.is_current == True)  # noqa: E712
+-        )
++        # W5 / DEBT-TOPO-IP-CONTEXTUAL: resolve the AP by who HELD ap_ip at the
++        # association time, not by whoever holds is_current now. Ambiguous tie →
++        # None → fall-through to the name heuristic (never guess an owner, I2).
++        observed_at = _parse_observed_at(link.get("observed_at")) or datetime.utcnow()
++        found = resolve_asset_by_ip_at(db, ap_ip, observed_at)
+         if found and found.id != client.id:
+             return found
+     ap_name = (link.get("ap_name") or "").strip().lower()
+--- a/VERSION
++++ b/VERSION
+@@ -1 +1 @@
+-0.10.53
++0.10.54
+--- a/web/package.json
++++ b/web/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "lan-observatory-web",
+   "private": true,
+-  "version": "0.10.53",
++  "version": "0.10.54",
+   "type": "module",
+   "scripts": {
+     "dev": "vite",
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,4 +1,12 @@
+ # Changelog
++
++## 0.10.54 — W5: consumatori dello stato corrente sul resolver
++
++- **W5.0/1 perimetro:** migrazione di LETTURA (nessuna scrittura su colonne Asset). Il nome canonico nelle viste migrate passa già dal resolver (`presentation_name_for_asset` → `current("chassis", …, "asset.name")`, fallback dichiarato I2 quando assente).
++- **W5 `_resolve_ap_asset` (DEBT-TOPO-IP-CONTEXTUAL):** il fallback per-IP non usa più `IpAddress.is_current` ma `resolve_asset_by_ip_at(ap_ip, observed_at)`: risolve l'AP che DETENEVA l'IP al momento dell'associazione, non chi lo detiene ora. Tie → None → fall-through all'euristica sul nome (I2, nessun proprietario indovinato).
++- **W5.1.3 (IP multi-valore):** `asset.iface_ip` ha `cardinality=single` (solo IP eletto); il resolver NON è fonte esclusiva per gli IP finché il ruolo non entra nella `excl_key` (pre-condizione W3, DEBT-IFACE-IP-CARDINALITY-ROLE). La UI continua a mostrare tutti gli IP reali (multi-IP non collassati).
++- **W5.2 gate G5 (writer fermi):** risoluzione AP `is_current` vs contestuale su 62 associazioni Wi-Fi → **0 differenze** (0 associazioni sul path `ap_ip`; tutte risolvono per `ap_asset_id`/`ap_mac`). Nessuna regressione: la migrazione è un fix latente, equivalenza-preservante sui dati correnti.
++- **W5.4 test:** `_resolve_ap_asset` contestuale + tie→fall-through (W5.4.6); chassis un nome canonico dal resolver (W5.4.5); fatto assente → None (W5.4.1); resolver stale/superseded esclusi dal corrente, storia leggibile (facts_resolver/shadow_w2).
+ 
+ ## 0.10.53 — W-P: presenza con un solo proprietario, stato derivato
+ 
+--- a/docs/KNOWN_DEBT.md
++++ b/docs/KNOWN_DEBT.md
+@@ -150,7 +150,7 @@
+   - **GS308EP** (asset 4): `.1.8` mgmt (fatto). `.3.20` = binding Fritz storico sullo stesso MAC, **ownership da confermare** (non inventariale; non SPAN — SPAN=p22/NIC2 `.3.24` / sink `10.255.255.2/30`). Vedi [`docs/obs-ux-ip-308-verifica.md`](obs-ux-ip-308-verifica.md).
+   - **Cassiopea (ex-bond):** `DEBT-LAG-CASSIOPEA` **CHIUSO** 21/07/2026 (eth0 LAN / eth1 SPAN).
+ - **Nota architetturale:** il dedup raw per-MAC scartava le osservazioni L3 multi-IP (sul Fritz 4/5 IP perse nel raw, `hit_count≈5` ma `l3.ip` resta solo `.1.1`) mentre l’upsert legacy scrive comunque i binding e gli `ip_change`: le due pipeline divergevano. Fix 0.10.46: `dedup_key` MAC+IP per L3.
+-- **Sintomo latente (BUG 3 originale / consumatore di correttezza):** in [`_resolve_ap_asset`](../api/app/services/topology.py) il fallback per-IP usa `is_current` invece di `resolve_asset_by_ip_at`. Oggi non gira (0 client Wi‑Fi IP-only su 41). **Classe di difetto OBS-CURRENCY:** è un **consumatore di correntezza** da migrare esplicitamente in **W5/W7** (lista consumatori fact_assertions / resolve-at-T).
++- **Sintomo latente (BUG 3 originale / consumatore di correttezza) — MIGRATO W5 (0.10.54):** [`_resolve_ap_asset`](../api/app/services/topology.py) usa ora `resolve_asset_by_ip_at(ap_ip, observed_at)` (contestuale) invece di `is_current`; tie → None → fall-through sul nome. Gate G5 a writer fermi: 62 associazioni Wi-Fi, 0 sul path `ap_ip` → **0 differenze** (fix latente, equivalenza-preservante). Il facet «consumatore di correntezza» di questo debito è chiuso; la cardinalità/ruolo multi-IP resta tracciata in **DEBT-IFACE-IP-CARDINALITY-ROLE** (pre-condizione W3). Vedi [`docs/obs-w5.md`](obs-w5.md).
+ - **Fix quando servirà:** (1) ruoli IP + `ip_change` solo primario; (2) dedup L3 MAC+IP *(fatto 0.10.46)*; (3) nel solo ramo (b) di `_resolve_ap_asset`, `resolve_asset_by_ip_at` + `observed_at`; tie→None→fall-through. NON toccare `is_current` alla cieca su multi-NIC storiche.
+ - **Riattivazione:** attribuzione topologia sbagliata su IP DHCP migrato, oppure ripresa del rumore `ip_change` multi-ruolo dopo unmute.
+ - **Stato FASE B (codice):** elezione + `role` + dedup `mac|ip` + `ip_change` solo primario — in tree. Bonifica storica duplicate `(interface_id, ip)` resta fuori scope. UI secondari = FASE C.
+--- a/tests/test_w5_consumers.py
++++ b/tests/test_w5_consumers.py
+@@ -0,0 +1,130 @@
++"""W5 — migrazione dei consumatori dello stato corrente al resolver.
++
++Copre i nodi nominati applicabili al perimetro backend migrato:
++- W5.4.6: `_resolve_ap_asset` usa `resolve_asset_by_ip_at` + `observed_at`
++  (contestuale, non `is_current`); tie → None → fall-through.
++- W5.4.5: chassis = un nome canonico dal resolver in ogni vista migrata.
++- W5.4.1: fatto assente → `presentation_name_for_asset` dichiara None (I2), non "".
++"""
++from __future__ import annotations
++
++import sys
++import uuid
++from datetime import datetime, timedelta
++from pathlib import Path
++
++import pytest
++from sqlalchemy import create_engine
++from sqlalchemy.orm import sessionmaker
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
++
++from app.db import Base
++from app.facts.resolver import apply_observation
++from app.models import Asset, Chassis, Interface, IpAddress
++from app.services.name_proposal_chassis import presentation_name_for_asset
++from app.services.topology import _resolve_ap_asset
++
++
++@pytest.fixture()
++def db(tmp_path):
++    engine = create_engine(f"sqlite:///{tmp_path / 'w5.db'}")
++    Base.metadata.create_all(engine)
++    session = sessionmaker(bind=engine)()
++    yield session
++    session.close()
++
++
++def _asset(db, name="", chassis_id=None):
++    a = Asset(uid=str(uuid.uuid4()), name=name, status="nuovo", chassis_id=chassis_id)
++    db.add(a)
++    db.flush()
++    return a
++
++
++def _iface(db, asset, mac):
++    i = Interface(asset_id=asset.id, mac=mac)
++    db.add(i)
++    db.flush()
++    return i
++
++
++def _ip(db, iface, ip, *, is_current, first_seen, last_seen, source="fritz"):
++    row = IpAddress(
++        interface_id=iface.id,
++        ip=ip,
++        is_current=is_current,
++        first_seen=first_seen,
++        last_seen=last_seen,
++        source=source,
++    )
++    db.add(row)
++    db.flush()
++    return row
++
++
++def test_w546_resolve_ap_by_ip_at_contextual(db):
++    """L'AP che DETENEVA ap_ip al momento dell'associazione, non chi lo ha ora."""
++    t0 = datetime(2026, 7, 1, 10, 0, 0)
++    t_assoc = datetime(2026, 7, 1, 12, 0, 0)
++    t1 = datetime(2026, 7, 1, 14, 0, 0)
++    t2 = datetime(2026, 7, 2, 9, 0, 0)
++
++    ap = _asset(db, name="AP-vecchio")
++    ap_if = _iface(db, ap, "AA:AA:AA:AA:AA:01")
++    _ip(db, ap_if, "192.168.9.9", is_current=False, first_seen=t0, last_seen=t1)
++
++    taker = _asset(db, name="nuovo-detentore")
++    tk_if = _iface(db, taker, "BB:BB:BB:BB:BB:02")
++    _ip(db, tk_if, "192.168.9.9", is_current=True, first_seen=t2, last_seen=t2)
++
++    client = _asset(db, name="client-wifi")
++    link = {"ap_ip": "192.168.9.9", "observed_at": t_assoc.isoformat()}
++
++    resolved = _resolve_ap_asset(db, client, link)
++    assert resolved is not None
++    assert resolved.id == ap.id  # contestuale, NON il detentore is_current
++
++
++def test_w546_tie_returns_none_fallthrough_to_name(db):
++    """Tie temporale → resolve None → fall-through all'euristica sul nome."""
++    t0 = datetime(2026, 7, 1, 10, 0, 0)
++    t_assoc = datetime(2026, 7, 1, 12, 0, 0)
++    t1 = datetime(2026, 7, 1, 14, 0, 0)
++
++    a1 = _asset(db, name="AP-uno")
++    i1 = _iface(db, a1, "AA:AA:AA:AA:AA:11")
++    _ip(db, i1, "192.168.9.10", is_current=False, first_seen=t0, last_seen=t1)
++    a2 = _asset(db, name="AP-due")
++    i2 = _iface(db, a2, "BB:BB:BB:BB:BB:22")
++    _ip(db, i2, "192.168.9.10", is_current=False, first_seen=t0, last_seen=t1)
++
++    client = _asset(db, name="client")
++    # solo ap_ip ambiguo → resolve None → nessun fall-through possibile → None
++    assert _resolve_ap_asset(db, client, {"ap_ip": "192.168.9.10", "observed_at": t_assoc.isoformat()}) is None
++    # con ap_name il fall-through trova per nome
++    ap = _resolve_ap_asset(db, client, {"ap_ip": "192.168.9.10", "observed_at": t_assoc.isoformat(), "ap_name": "AP-uno"})
++    assert ap is not None and ap.id == a1.id
++
++
++def test_w545_chassis_one_canonical_name_from_resolver(db):
++    """Chassis: un apparato = un nome canonico (resolver) per ogni membro."""
++    ch = Chassis()
++    db.add(ch)
++    db.flush()
++    m1 = _asset(db, name="", chassis_id=ch.id)
++    _iface(db, m1, "AA:AA:AA:AA:AA:31")
++    m2 = _asset(db, name="", chassis_id=ch.id)
++    _iface(db, m2, "AA:AA:AA:AA:AA:32")
++
++    apply_observation(db, fact_key="asset.name", entity=m1, value="LGS-CANON", source="manual")
++
++    assert presentation_name_for_asset(db, m1) == "LGS-CANON"
++    assert presentation_name_for_asset(db, m2) == "LGS-CANON"
++
++
++def test_w541_absent_fact_declares_none(db):
++    """Fatto assente → None (I2), mai stringa vuota come surrogato."""
++    a = _asset(db, name="")
++    _iface(db, a, "AA:AA:AA:AA:AA:41")
++    assert presentation_name_for_asset(db, a) is None
+--- a/scripts/w5_gate.py
++++ b/scripts/w5_gate.py
+@@ -0,0 +1,81 @@
++#!/usr/bin/env python3
++"""W5.2 gate di equivalenza G5 (read-only): risoluzione AP is_current vs contestuale.
++
++Confronta, per ogni associazione Wi-Fi che ricade sul path ap_ip (dopo id/mac), il
++detentore `is_current` (vecchio) col detentore `resolve_asset_by_ip_at(@observed_at)`
++(nuovo). Enumera OGNI differenza per id. Eseguire a writer fermi (collector stop).
++
++  sudo docker compose stop collector
++  sudo docker compose exec -T api python3 - < scripts/w5_gate.py
++  sudo docker compose start collector
++"""
++
++from __future__ import annotations
++
++import sys
++from datetime import datetime
++from pathlib import Path
++
++API = Path("/app") if Path("/app/app").exists() else Path(__file__).resolve().parents[1] / "api"
++if str(API) not in sys.path:
++    sys.path.insert(0, str(API))
++
++from sqlalchemy import create_engine, select  # noqa: E402
++from sqlalchemy.orm import sessionmaker  # noqa: E402
++
++from app.config import get_settings  # noqa: E402
++from app.models import Asset, Interface, IpAddress  # noqa: E402
++from app.services.identity import find_asset_by_mac, resolve_asset_by_ip_at  # noqa: E402
++from app.services.macutil import normalize_mac  # noqa: E402
++from app.services.topology import _asset_link, _parse_observed_at  # noqa: E402
++
++
++def main():
++    settings = get_settings()
++    db = sessionmaker(bind=create_engine(f"sqlite:///{settings.sqlite_path}"))()
++    now = datetime.utcnow()
++    try:
++        wifi = ip_path = diffs = 0
++        rows = []
++        for asset in db.scalars(select(Asset)).all():
++            link = _asset_link(asset)
++            if link.get("media") != "wifi" and not link.get("ap_mac"):
++                continue
++            wifi += 1
++            if link.get("ap_asset_id"):
++                continue  # path id: identico
++            ap_mac = normalize_mac(link.get("ap_mac") or "")
++            if ap_mac:
++                m = find_asset_by_mac(db, ap_mac)
++                if m and m.id != asset.id:
++                    continue  # path mac: identico
++            ap_ip = str(link.get("ap_ip") or "").strip()
++            if not ap_ip:
++                continue
++            ip_path += 1
++            old = db.scalar(
++                select(Asset)
++                .join(Interface)
++                .join(IpAddress)
++                .where(IpAddress.ip == ap_ip, IpAddress.is_current == True)  # noqa: E712
++            )
++            old_id = old.id if old and old.id != asset.id else None
++            observed_at = _parse_observed_at(link.get("observed_at")) or now
++            new = resolve_asset_by_ip_at(db, ap_ip, observed_at)
++            new_id = new.id if new and new.id != asset.id else None
++            if old_id != new_id:
++                diffs += 1
++                rows.append(
++                    f"  client={asset.id} ap_ip={ap_ip} observed_at={link.get('observed_at')} "
++                    f"old(is_current)={old_id} new(contextual)={new_id}"
++                )
++        print(f"G5 AP-resolution: wifi_links={wifi} ip_path={ip_path} differenze={diffs}")
++        for r in rows:
++            print(r)
++    finally:
++        db.rollback()
++        db.close()
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
