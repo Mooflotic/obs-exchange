@@ -1,0 +1,445 @@
+# obs-o5-bonifica.diff.txt
+# SOLO F0: facts/o5_bonifica.py, CLI wrapper, port_fdb defect count, discarded_moves in signals, KNOWN_DEBT, test defect exclusion
+# Esclusioni: Plant.vue, plantFdb.js, shadow predicato (→ o4hotfix), VERSION bump cosmetic
+
+##### api/app/facts/o5_bonifica.py
++"""O5 F0 — bonifica port.fdb_mac (UPDATE only). Lives in facts/ (currency path)."""
++
++from __future__ import annotations
++
++from datetime import datetime
++from typing import Any
++
++from sqlalchemy import func, select
++from sqlalchemy.orm import Session
++
++from app.models import FactAssertion
++
++HOTFIX_STARTED_AT = datetime(2026, 7, 28, 22, 1, 43)
++HOTFIX_SOURCE = (
++    "docker inspect observatory-api-1 State.StartedAt="
++    "2026-07-28T22:01:43.153510797Z "
++    "(hotfix deploy ./scripts/deploy.sh api; "
++    "backup pre-deploy-20260729-0000.db)"
++)
++DEFECT_REASON = "o4_defect_concurrent_presence_move"
++EXPECTED_SPURIOUS = 396
++FACT_PORT_FDB_MAC = "port.fdb_mac"
++
++
++def identify_spurious(db: Session) -> list[FactAssertion]:
++    return list(
++        db.scalars(
++            select(FactAssertion)
++            .where(
++                FactAssertion.fact_key == FACT_PORT_FDB_MAC,
++                FactAssertion.state == "superseded",
++                FactAssertion.reason == "mac_move",
++                FactAssertion.created_at < HOTFIX_STARTED_AT,
++            )
++            .order_by(FactAssertion.id)
++        ).all()
++    )
++
++
++def count_pre_o4(db: Session) -> int:
++    return int(
++        db.scalar(
++            select(func.count())
++            .select_from(FactAssertion)
++            .where(
++                FactAssertion.fact_key == FACT_PORT_FDB_MAC,
++                FactAssertion.created_at < datetime(2026, 7, 28, 21, 50, 0),
++            )
++        )
++        or 0
++    )
++
++
++def fa_total(db: Session) -> int:
++    return int(db.scalar(select(func.count()).select_from(FactAssertion)) or 0)
++
++
++def current_port_fdb(db: Session) -> int:
++    return int(
++        db.scalar(
++            select(func.count())
++            .select_from(FactAssertion)
++            .where(
++                FactAssertion.fact_key == FACT_PORT_FDB_MAC,
++                FactAssertion.state == "current",
++            )
++        )
++        or 0
++    )
++
++
++def list_no_baseline(db: Session) -> list[FactAssertion]:
++    rows = db.scalars(
++        select(FactAssertion).where(
++            FactAssertion.fact_key == FACT_PORT_FDB_MAC,
++            FactAssertion.state == "current",
++        )
++    ).all()
++    out = []
++    for r in rows:
++        vj = dict(r.value_json or {})
++        if vj.get("baseline") or vj.get("baseline_reconstructed"):
++            continue
++        out.append(r)
++    return out
++
++
++def apply_mark_spurious(db: Session, rows: list[FactAssertion]) -> int:
++    n = 0
++    for r in rows:
++        if r.reason == DEFECT_REASON:
++            continue
++        r.reason = DEFECT_REASON
++        n += 1
++    db.flush()
++    return n
++
++
++def apply_baseline_reconstructed(
++    db: Session, rows: list[FactAssertion], *, when: datetime
++) -> list[dict[str, Any]]:
++    marked: list[dict[str, Any]] = []
++    iso = when.isoformat() + ("Z" if when.tzinfo is None else "")
++    for r in rows:
++        vj = dict(r.value_json or {})
++        if vj.get("baseline") or vj.get("baseline_reconstructed"):
++            continue
++        vj["baseline_reconstructed"] = True
++        vj["baseline_at"] = iso
++        vj["baseline_quality"] = "reconstructed"
++        vj["baseline_defect"] = "DEBT-O4-SPURIOUS-MOVES / O4 concurrent-presence churn"
++        r.value_json = vj
++        marked.append({"id": r.id, "port_id": int(r.subject_id), "mac": r.value_norm})
++    db.flush()
++    return marked
+
+##### scripts/o5_bonifica_o4.py
++"""O5 F0 — CLI wrapper. Logic lives in app.facts.o5_bonifica (currency path).
++
++Usage (api container, SQLITE_PATH set):
++  python3 /data/o5_bonifica_o4.py --dry-run
++  python3 /data/o5_bonifica_o4.py --apply
++"""
++
++from __future__ import annotations
++
++import argparse
++import json
++import os
++import sys
++from datetime import datetime
++from pathlib import Path
++
++_ROOT = Path(__file__).resolve().parents[1]
++for _p in (_ROOT / "api", Path("/app")):
++    if _p.is_dir() and str(_p) not in sys.path:
++        sys.path.insert(0, str(_p))
++if Path("/app").is_dir():
++    _ROOT = Path("/data") if Path("/data/db").is_dir() else _ROOT
++
++from app.facts.o5_bonifica import (  # noqa: E402
++    EXPECTED_SPURIOUS,
++    HOTFIX_SOURCE,
++    HOTFIX_STARTED_AT,
++    DEFECT_REASON,
++    apply_baseline_reconstructed,
++    apply_mark_spurious,
++    count_pre_o4,
++    current_port_fdb,
++    fa_total,
++    identify_spurious,
++    list_no_baseline,
++)
++
++
++def _session():
++    from app.db import get_engine, _session_factory
++
++    get_engine()
++    return _session_factory()()
++
++
++def backup_db(*, root: Path) -> dict:
++    import sqlite3
++
++    src = Path(os.environ.get("SQLITE_PATH") or root / "data" / "db" / "observatory.db")
++    if not src.is_file():
++        for cand in (Path("/data/db/observatory.db"), Path("/app/data/db/observatory.db")):
++            if cand.is_file():
++                src = cand
++                break
++    stamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
++    dest_dir = src.parent.parent / "backups"
++    if not dest_dir.is_dir():
++        dest_dir = root / "data" / "backups"
++    dest_dir.mkdir(parents=True, exist_ok=True)
++    dest = dest_dir / f"o5-pre-bonifica-{stamp}.db"
++    dst = sqlite3.connect(str(dest))
++    src_con = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
++    src_con.backup(dst)
++    src_con.close()
++    row = dst.execute("PRAGMA integrity_check").fetchone()
++    ok = row and row[0] == "ok"
++    dst.close()
++    return {
++        "src": str(src),
++        "dest": str(dest),
++        "size": dest.stat().st_size,
++        "integrity_check": row[0] if row else None,
++        "ok": bool(ok),
++    }
++
++
++def main(argv: list[str] | None = None) -> int:
++    p = argparse.ArgumentParser(description=__doc__)
++    p.add_argument("--apply", action="store_true")
++    p.add_argument("--dry-run", action="store_true", default=True)
++    p.add_argument("--root", default=str(_ROOT))
++    p.add_argument("--skip-backup", action="store_true")
++    args = p.parse_args(argv)
++    do_apply = bool(args.apply)
++    root = Path(args.root)
++
++    report: dict = {
++        "hotfix_started_at": HOTFIX_STARTED_AT.isoformat() + "Z",
++        "hotfix_source": HOTFIX_SOURCE,
++        "defect_reason": DEFECT_REASON,
++        "expected_spurious": EXPECTED_SPURIOUS,
++    }
++
++    if do_apply and not args.skip_backup:
++        bak = backup_db(root=root)
++        report["backup"] = bak
++        print("BACKUP", json.dumps(bak, ensure_ascii=False))
++        if not bak.get("ok"):
++            print("STOP: integrity_check failed", file=sys.stderr)
++            return 2
++
++    db = _session()
++    try:
++        pre_o4 = count_pre_o4(db)
++        report["pre_o4_port_fdb_mac"] = pre_o4
++        if pre_o4 != 0:
++            print("STOP: pre-O4 port.fdb_mac != 0:", pre_o4, file=sys.stderr)
++            return 3
++
++        rows = identify_spurious(db)
++        # After apply, reason changed — dry-run path uses mac_move; re-apply is idempotent via mark
++        report["spurious_count"] = len(rows)
++        report["spurious_first_20_ids"] = [r.id for r in rows[:20]]
++        print("F0.1 COUNT", len(rows), "FIRST20", report["spurious_first_20_ids"])
++        if len(rows) != EXPECTED_SPURIOUS and len(rows) != 0:
++            # 0 after successful prior apply is OK for --apply re-check via defect count
++            from app.facts.port_fdb import count_o4_defect_moves
++
++            defect_n = count_o4_defect_moves(db)
++            if defect_n == EXPECTED_SPURIOUS and do_apply:
++                print("ALREADY_MARKED", defect_n)
++                report["already_marked"] = defect_n
++            else:
++                print(
++                    f"STOP: expected {EXPECTED_SPURIOUS}, got {len(rows)} — no write",
++                    file=sys.stderr,
++                )
++                report["stopped"] = True
++                print(json.dumps(report, ensure_ascii=False, default=str))
++                return 4
++
++        fa_before = fa_total(db)
++        cur_before = current_port_fdb(db)
++        no_bl = list_no_baseline(db)
++        report["fa_before"] = fa_before
++        report["current_before"] = cur_before
++        report["no_baseline_before"] = len(no_bl)
++        report["no_baseline_bindings"] = [
++            {"port_id": int(r.subject_id), "mac": r.value_norm, "id": r.id} for r in no_bl
++        ]
++        print("FA_BEFORE", fa_before, "CUR_BEFORE", cur_before, "NO_BL", len(no_bl))
++
++        if not do_apply:
++            report["mode"] = "dry-run"
++            print(json.dumps(report, ensure_ascii=False, default=str))
++            return 0
++
++        if len(rows) == EXPECTED_SPURIOUS:
++            n_mark = apply_mark_spurious(db, rows)
++        else:
++            n_mark = 0
++        when = datetime.utcnow()
++        reconstructed = apply_baseline_reconstructed(db, no_bl, when=when)
++        db.commit()
++
++        fa_after = fa_total(db)
++        cur_after = current_port_fdb(db)
++        report["mode"] = "apply"
++        report["marked_spurious"] = n_mark
++        report["reconstructed"] = reconstructed
++        report["reconstructed_n"] = len(reconstructed)
++        report["fa_after"] = fa_after
++        report["current_after"] = cur_after
++        report["reconstruction_at"] = when.isoformat() + "Z"
++
++        if fa_after != fa_before or cur_after != cur_before:
++            print(
++                "STOP: invariant broken FA",
++                fa_before,
++                "→",
++                fa_after,
++                "CUR",
++                cur_before,
++                "→",
++                cur_after,
++                file=sys.stderr,
++            )
++            report["invariant_broken"] = True
++            print(json.dumps(report, ensure_ascii=False, default=str))
++            return 5
++
++        print(json.dumps(report, ensure_ascii=False, default=str))
++        return 0
++    finally:
++        db.close()
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+
+##### api/app/facts/port_fdb.py
+"""O4/O5 — read helpers for port.fdb_mac (currency path lives in facts/).
+
+Consumers outside facts/ must use these helpers — never FactAssertion directly.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app.models import FactAssertion
+
+FACT_PORT_FDB_MAC = "port.fdb_mac"
+# O5 F0: spurious mac_move from O4 concurrent-presence defect (never deleted).
+O4_DEFECT_MOVE_REASON = "o4_defect_concurrent_presence_move"
+
+
+def _row_view(row: FactAssertion) -> dict[str, Any]:
+    return {
+        "id": int(row.id),
+        "subject_type": row.subject_type,
+        "subject_id": int(row.subject_id),
+        "fact_key": row.fact_key,
+        "state": row.state,
+        "value_norm": row.value_norm or "",
+        "value_json": dict(row.value_json or {}),
+        "source": row.source,
+        "authority": row.authority,
+        "excl_key": row.excl_key,
+        "reason": row.reason or "",
+        "observed_at": row.observed_at,
+        "created_at": row.created_at,
+        "last_seen_at": row.last_seen_at,
+        "superseded_by_id": row.superseded_by_id,
+    }
+
+
+def list_current_port_fdb_mac(db: Session) -> list[dict[str, Any]]:
+    rows = db.scalars(
+        select(FactAssertion).where(
+            FactAssertion.fact_key == FACT_PORT_FDB_MAC,
+            FactAssertion.state == "current",
+        )
+    ).all()
+    return [_row_view(r) for r in rows]
+
+
+def count_o4_defect_moves(db: Session) -> int:
+    """How many spurious concurrent-presence moves were marked (not deleted)."""
+    return int(
+        db.scalar(
+            select(func.count())
+            .select_from(FactAssertion)
+            .where(
+                FactAssertion.fact_key == FACT_PORT_FDB_MAC,
+                FactAssertion.reason == O4_DEFECT_MOVE_REASON,
+            )
+        )
+        or 0
+    )
+
+
+def list_mac_move_supersessions(
+    db: Session, *, include_defect: bool = False
+) -> list[dict[str, Any]]:
+    """Superseded port.fdb_mac with reason=mac_move (active) or defect marker.
+
+    Default excludes O4 defect rows (DEBT-O4-SPURIOUS-MOVES). The count of
+    excluded rows is available via count_o4_defect_moves().
+    """
+    if include_defect:
+        rows = db.scalars(
+            select(FactAssertion).where(
+                FactAssertion.fact_key == FACT_PORT_FDB_MAC,
+                FactAssertion.state == "superseded",
+                FactAssertion.reason.in_(("mac_move", O4_DEFECT_MOVE_REASON)),
+                FactAssertion.superseded_by_id.isnot(None),
+            )
+        ).all()
+    else:
+        rows = db.scalars(
+            select(FactAssertion).where(
+                FactAssertion.fact_key == FACT_PORT_FDB_MAC,
+                FactAssertion.state == "superseded",
+                FactAssertion.reason == "mac_move",
+                FactAssertion.superseded_by_id.isnot(None),
+            )
+        ).all()
+    return [_row_view(r) for r in rows]
+
+
+def get_port_fdb_mac_by_id(db: Session, assertion_id: int) -> dict[str, Any] | None:
+    row = db.get(FactAssertion, assertion_id)
+    if row is None or row.fact_key != FACT_PORT_FDB_MAC:
+        return None
+    return _row_view(row)
+
+##### tests/test_o5_bonifica.py :: test_o5_defect_reason_excluded
++def test_o5_defect_reason_excluded_from_active_moves(db):
++    sw = Switch(code="328c", name="A", model="Linksys LGS328C", port_count=1, ip="192.0.2.1")
++    db.add(sw)
++    db.flush()
++    p = SwitchPort(switch_id=sw.id, number=1)
++    db.add(p)
++    db.flush()
++    fa = FactAssertion(
++        subject_type="port",
++        subject_id=p.id,
++        fact_key="port.fdb_mac",
++        excl_key="fdb:AA:BB:CC:DD:EE:01",
++        value_norm="AA:BB:CC:DD:EE:01",
++        value_json={},
++        source="fdb",
++        authority=60,
++        state="superseded",
++        reason=O4_DEFECT_MOVE_REASON,
++        superseded_by_id=1,
++        observed_at=datetime.utcnow(),
++        last_seen_at=datetime.utcnow(),
++        valid_from=datetime.utcnow(),
++    )
++    db.add(fa)
++    db.commit()
++    assert count_o4_defect_moves(db) == 1
++    assert list_mac_move_supersessions(db) == []
+
+##### docs/KNOWN_DEBT.md :: DEBT-O4-SPURIOUS-MOVES
++## DEBT-O4-SPURIOUS-MOVES
++(vedi file repo; voce O5)
+
