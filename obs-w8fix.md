@@ -21,11 +21,11 @@ copia NAS (repo-vs-NAS identico), I6 sul NAS. Previsioni dichiarate in **T8**.
 
 | Bug | Esito W8-fix |
 |---|---|
-| **B1(i)** raw SQL `fact_assertions` sfuggiva | **Chiuso** — sentinella su `fact_assertions` in `text/execute` + COMBO `state='current'`. Provato dal selftest (file 2). |
+| **B1(i)** raw SQL `fact_assertions` sfuggiva | **Mitigato** [Corretto in W8-fix2: NON «Chiuso»] — sentinella su `fact_assertions` in `text/execute` + COMBO `state='current'` (provato dal selftest, file 2). Resta scoperto (R6) l'SQL costruito su più righe e concatenato. |
 | **B1(ii)** allowlist senza conteggio riutilizzabile | **Chiuso** — allowlist `(file, snippet, N)`; N+1 = violazione; COMBO cattura `filter_by(state="current")`. Provato dal selftest (file 3 e 4). |
 | **B1(iii)** scope più stretto del censimento | **Chiuso** — scope `api/** · scripts/** · collector/**`. Ha fatto emergere **10 violazioni reali** in tooling (ruling, sotto). |
 | **B2/B3** G8 mai eseguito / «0 per costruzione» | **Chiuso** — G8 **eseguito**; `--mutate-probe` → **DIVERGE=1 e FAIL**: discrimina. |
-| **B4** AD copiato, non rimisurato | **Rimisurato** (T7); enumerazione DB per id = handoff NAS. |
+| **B4** AD copiato, non rimisurato | **Rinviato al NAS** [Corretto in W8-fix2: NON «Rimisurato»] — via HTTP solo assets/FA/unknown_source/breaker; AD/ip_current/NP/FA-current sono letti da `wp_gate` sul NAS (T7). |
 | **B5** contraddizione `?history=true` | **Chiuso** — non esiste; `DEBT-HISTORY-PATH-UNWIRED`, spec §12 + obs-w8.md corretti. |
 | **B6** etichette identità errate | **Chiuso** — JSON grezzo pubblicato; etichette corrette (LGS328C = chassis 23, asset 2). |
 
@@ -352,7 +352,9 @@ letture; `db.rollback()` chiude senza commit.
 ## ASSERT FINALE (valori osservati; NAS = da confermare da Michele)
 
 ```
-needs_apply=false · T_backup=0 · structural=0 · observations assente da sqlite_master ·
+# [Corretto in W8-fix2] needs_apply/T_backup/structural/observations NON erano osservati
+# in W8-fix (copiati da W8 → da 0.10.63): vanno letti come <da NAS> finché wp_gate non gira.
+needs_apply=<da NAS> · T_backup=<da NAS> · structural=<da NAS> · observations=<da NAS> ·
 breaker=closed(osservato HTTP) · convergenza=OK(NAS, previsto) ·
 currency-gate: selftest PASS (3 violazioni attese OK) · repo-scan FAIL 10 (tooling, RULING) ·
 G8 DIVERGE=0 su asset.name e os.guess (DB sintetico; NAS previsto) ·
