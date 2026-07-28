@@ -1,0 +1,729 @@
+# obs-o8-conservazione.diff.txt — queueConservationCheck · 3 superfici · N6 · held_name_is_manual
+# generated O8 / 0.10.71
+
+diff --git a/observatory/web/src/triageRules.js b/observatory/web/src/triageRules.js
+index aff7410..2fc7907 100644
+--- a/observatory/web/src/triageRules.js
++++ b/observatory/web/src/triageRules.js
+@@ -4,6 +4,10 @@
+  */
+ 
+ import { proposalSourceRank } from "./observatoryUx.js";
++import {
++  absorbedChassisAssetIds,
++  buildChassisNameCards,
++} from "./oggiChassis.js";
+ 
+ export const ADOPT_CONFIDENCE_MIN = 0.75;
+ 
+@@ -243,15 +247,22 @@ export function isNoiseProposal(currentName, proposedName) {
+  */
+ export function buildTriageRows(assets, chassisPayload = {}) {
+   const list = Array.isArray(assets) ? assets : [];
+-  const chassisIds = chassisMemberIds(chassisPayload);
++  // T2: absorb only members of real cards (≥2 visible), not raw chassisMemberIds.
++  const absorbed = absorbedChassisAssetIds(list, chassisPayload);
+   const rows = [];
+ 
+   for (const asset of list) {
+     if ((asset?.status || "") === "ignorato") continue;
++    if (absorbed.has(Number(asset.id))) continue;
++    // W4c.1.3 belt: only suppress interface siblings when they are on a card.
++    // If not absorbed (e.g. sole visible member after ignorato filter), conserve
++    // pending in triage (O1-FIX T2 / P3).
+     const top = topPendingProposal(asset);
+     if (!top) continue;
+ 
+-    const currentName = String(asset?.name || "").trim();
++    const currentName = String(
++      asset?.name || asset?.chassis_canonical_name || "",
++    ).trim();
+     const proposedName = String(top.value || "").trim();
+     if (!proposedName) continue;
+     if (currentName && currentName === proposedName) continue;
+@@ -260,17 +271,23 @@ export function buildTriageRows(assets, chassisPayload = {}) {
+     const scoreProposed = scoreSpecificity(proposedName);
+     const collisions = countCollisions(proposedName, list, asset.id);
+     const manual = isManualName(asset);
+-    const chassisMember = chassisIds.has(Number(asset.id));
++    const chassisMember = absorbed.has(Number(asset.id));
+     const confidence = normalizeConfidence(top.confidence);
+     const moreSpecific = scoreProposed > scoreCurrent;
+     const isNoise = isNoiseProposal(currentName, proposedName);
+     const isAi = String(top.source || "").toLowerCase() === "ai";
++    // W4a.2.5: computed resolvability (API). Default true only if field absent.
++    const actionable = top.actionable !== false && top.resolvable !== false;
+ 
+     let verdict;
+     let recommendedAction;
+     let massEligible = false;
+ 
+-    if (chassisMember) {
++    if (!actionable) {
++      // I2: declare non-resolvable; never high-priority adopt
++      verdict = "unresolvable";
++      recommendedAction = "verifica";
++    } else if (chassisMember) {
+       // D5: riga in verifica; D5-bis: rumore chassis entra in massa via noiseProposalIds
+       verdict = "chassis";
+       recommendedAction = "verifica";
+@@ -316,7 +333,11 @@ export function buildTriageRows(assets, chassisPayload = {}) {
+       score_proposed: scoreProposed,
+       collisions,
+       chassis_member: chassisMember,
++      chassis_id: asset.chassis_id ?? null,
++      chassis_canonical_name: asset.chassis_canonical_name || null,
+       is_noise: isNoise,
++      actionable,
++      actionable_reason: top.actionable_reason || null,
+       // mass_eligible: solo rumore di griglia (non chassis). La massa usa noiseProposalIds.
+       mass_eligible: massEligible,
+       manual_name: manual,
+@@ -347,7 +368,9 @@ export function noiseProposalIds(assets, _chassisPayload = {}) {
+   const ids = [];
+   for (const asset of list) {
+     if ((asset?.status || "") === "ignorato") continue;
+-    const currentName = String(asset?.name || "").trim();
++    const currentName = String(
++      asset?.chassis_canonical_name || asset?.display_name || asset?.name || "",
++    ).trim();
+     const proposals = (asset?.proposals || asset?.name_proposals || []).filter(
+       (p) => (p.status || "pending") === "pending" && p.value,
+     );
+@@ -375,7 +398,9 @@ export function noiseProposalsMissingIdCount(assets, _chassisPayload = {}) {
+   let n = 0;
+   for (const asset of list) {
+     if ((asset?.status || "") === "ignorato") continue;
+-    const currentName = String(asset?.name || "").trim();
++    const currentName = String(
++      asset?.chassis_canonical_name || asset?.display_name || asset?.name || "",
++    ).trim();
+     const proposals = (asset?.proposals || asset?.name_proposals || []).filter(
+       (p) => (p.status || "pending") === "pending" && p.value,
+     );
+@@ -406,3 +431,100 @@ export function summarizeTriage(rows) {
+     collide: list.filter((r) => r.verdict === "collide").length,
+   };
+ }
++
++/**
++ * O8 Q1/Q2 — every non-ignorato asset with ≥1 pending proposal appears exactly
++ * once across three surfaces: triage row, chassis-card member, OR rumore queue.
++ * Exact no-op (proposed === current) → suppressed_noop (counted, not missing).
++ * Chassis members do not also count as rumore for conservation (card wins).
++ * Enumerates ids (never totals alone).
++ *
++ * @param {Array<object>} assets
++ * @param {object} chassisPayload
++ * @param {{ hiddenProposalIds?: Set<number>|number[] }} [opts]
++ * @returns {{ missing: number[], duplicated: number[], suppressed_noop: number[], surfaces: Record<number, string[]> }}
++ */
++export function queueConservationCheck(assets, chassisPayload = {}, opts = {}) {
++  const list = Array.isArray(assets) ? assets : [];
++  const hidden = new Set(
++    [...(opts.hiddenProposalIds || [])].map(Number).filter((n) => Number.isFinite(n)),
++  );
++  const cards = buildChassisNameCards(list, chassisPayload);
++  const inCard = new Set();
++  for (const c of cards) {
++    for (const id of c.member_asset_ids || []) inCard.add(Number(id));
++  }
++  const rows = buildTriageRows(list, chassisPayload).filter(
++    (r) => r.proposal_id == null || !hidden.has(Number(r.proposal_id)),
++  );
++  const inTriage = new Set(
++    rows.map((r) => Number(r.asset_id ?? r.id)).filter((n) => Number.isFinite(n)),
++  );
++  const noisePropIds = new Set(
++    noiseProposalIds(list, chassisPayload).filter((pid) => !hidden.has(Number(pid))),
++  );
++  const inNoise = new Set();
++  for (const asset of list) {
++    if ((asset?.status || "") === "ignorato") continue;
++    const props = asset?.proposals || asset?.name_proposals || [];
++    if (props.some((p) => noisePropIds.has(Number(p.id)))) {
++      inNoise.add(Number(asset.id));
++    }
++  }
++
++  const missing = [];
++  const duplicated = [];
++  const suppressed_noop = [];
++  /** @type {Record<number, string[]>} */
++  const surfaces = {};
++
++  for (const asset of list) {
++    if ((asset?.status || "") === "ignorato") continue;
++    const pending = (asset?.proposals || asset?.name_proposals || []).filter(
++      (p) => (p.status || "pending") === "pending" && p.value,
++    );
++    if (!pending.length) continue;
++    const id = Number(asset.id);
++    if (!Number.isFinite(id)) continue;
++
++    const currentName = String(
++      asset?.name || asset?.chassis_canonical_name || "",
++    ).trim();
++    const visiblePending = pending.filter(
++      (p) => p.id == null || !hidden.has(Number(p.id)),
++    );
++    const exactNoops = pending.filter(
++      (p) => currentName && currentName === String(p.value || "").trim(),
++    );
++    // Q2: all visible pending are exact no-ops (or only hidden+noop remain) → soppresso-no-op
++    if (
++      exactNoops.length &&
++      visiblePending.every(
++        (p) => currentName && currentName === String(p.value || "").trim(),
++      )
++    ) {
++      suppressed_noop.push(id);
++      surfaces[id] = ["suppressed_noop"];
++      continue;
++    }
++    if (!visiblePending.length) {
++      // fully structurally hidden (vendor/duplicato/…) — accounted, not missing
++      surfaces[id] = ["suppressed_structural"];
++      continue;
++    }
++
++    const hits = [];
++    if (inCard.has(id)) hits.push("chassis");
++    if (inTriage.has(id)) hits.push("triage");
++    // Rumore as third surface only when NOT already on triage/card.
++    // (Griglia rumore ⊆ triage; massa noiseProposalIds può ripetere gli stessi id.)
++    if (inNoise.has(id) && !inCard.has(id) && !inTriage.has(id)) hits.push("rumore");
++    surfaces[id] = hits;
++    if (!hits.length) missing.push(id);
++    if (hits.length > 1) duplicated.push(id);
++  }
++  missing.sort((x, y) => x - y);
++  duplicated.sort((x, y) => x - y);
++  suppressed_noop.sort((x, y) => x - y);
++  return { missing, duplicated, suppressed_noop, surfaces };
++}
+
+diff --git a/observatory/web/src/oggiProblems.js b/observatory/web/src/oggiProblems.js
+index f625f1a..865cba5 100644
+--- a/observatory/web/src/oggiProblems.js
++++ b/observatory/web/src/oggiProblems.js
+@@ -8,7 +8,7 @@ import {
+   normalizeName,
+   scoreSpecificity,
+ } from "./triageRules.js";
+-import { UX_COPY } from "./observatoryUx.js";
++import { FDB_STALE_HOURS, UX_COPY } from "./observatoryUx.js";
+ 
+ /** @param {string} verdict */
+ export function humanVerificaLabel(verdictOrKey) {
+@@ -25,6 +25,13 @@ export function verdictLabelIt(verdict) {
+   if (verdict === "upgrade") return "nome migliore";
+   if (verdict === "collide") return UX_COPY.collide;
+   if (verdict === "chassis") return "multi-NIC";
++  if (verdict === "chassis_nome") return "apparato multi-interfaccia";
++  if (verdict === "chassis_nome_assente") return "nome non noto";
++  if (verdict === "chassis_nome_inferenza") return "nome inferito";
++  if (verdict === "chassis_nome_legacy") return "manuale su interfaccia";
++  if (verdict === "chassis_conflitto") return "conflitto nome";
++  if (verdict === "chassis_upgrade") return "nome migliore (apparato)";
++  if (verdict === "unresolvable") return "non risolvibile";
+   if (verdict === "rumore") return UX_COPY.rumore;
+   if (verdict === "adotta") return "da adottare";
+   if (verdict === "move") return "porta da confermare";
+@@ -64,15 +71,32 @@ export function nameProblemFields(row) {
+     impact = "L'AI può sbagliare — nessun campo autorevole cambia senza adozione esplicita.";
+     action = "Verifica evidenze nel Dossier, Adotta se convinto, Ignora per archiviare (non ricrea).";
+     certainty = `inferenza AI · confidenza ${pct}% · può sbagliare`;
++  } else if (row.verdict === "unresolvable" || row.actionable === false) {
++    priority = "bassa";
++    cause =
++      row.actionable_reason === "chassis_multi_nic_adopt_blocked"
++        ? `Proposta non risolvibile sul membro: il soggetto corretto è il chassis «${row.chassis_canonical_name || row.current_name || "?"}» (id ${row.chassis_id || "?"}).`
++        : `Proposta dichiarata non risolvibile (${row.actionable_reason || "no-action"}).`;
++    impact = "Non compare in alta priorità: nessuna azione eseguibile da questa card.";
++    action =
++      row.chassis_id
++        ? `Usa il rename a livello chassis (POST /api/chassis/${row.chassis_id}/adopt-name), oppure Ignora.`
++        : "Apri il Dossier; Ignora se non pertinente.";
++    outcome = "Nessuna adozione da questa card finché non c'è un'azione eseguibile.";
++    certainty = "Certezza strutturale (actionable=false) · non è confidenza nome";
+   } else if (row.verdict === "chassis") {
+-    priority = "alta";
++    priority = "media";
++    const apparato = row.chassis_canonical_name || row.current_name || "apparato";
+     cause =
+-      "Questo asset è membro di uno chassis multi-NIC: più interfacce sullo stesso apparato fisico.";
++      `Membro dello chassis di «${apparato}» (più NIC sullo stesso apparato). ` +
++      `Non è un device anonimo distinto.`;
+     impact =
+-      "Adottare il nome su una sola NIC lascia i sibling con nomi diversi (blocco API 409).";
++      "Adottare il nome su una sola NIC lascia i sibling incoerenti (blocco API 409 sul membro).";
+     action =
+-      "Apri il Dossier / chassis per capire le NIC; il rename a livello chassis non è ancora disponibile.";
+-    outcome = "Nessuna adozione finché non esiste rename chassis.";
++      row.chassis_id
++        ? `Rinomina a livello chassis (id ${row.chassis_id}), oppure Ignora.`
++        : "Apri il Dossier / chassis; usa rename a livello chassis.";
++    outcome = "Il nome canonico si applica a tutto lo chassis.";
+     certainty = "Certezza strutturale (chassis_id) · non è una misura di confidenza nome";
+   } else if (row.manual_name) {
+     priority = "media";
+@@ -95,6 +119,99 @@ export function nameProblemFields(row) {
+   return { priority, cause, impact, action, certainty, outcome };
+ }
+ 
++/**
++ * Six fields for an O1 chassis name card.
++ * @param {object} card from buildChassisNameCards
++ */
++export function chassisNameFields(card) {
++  const members = card.members || [];
++  const memberList = members
++    .map((m) => {
++      const role = m.role || "membro";
++      const ip = (m.ips && m.ips[0]) || "—";
++      return `#${m.asset_id} (${role}, ${ip})`;
++    })
++    .join(" · ");
++  const guessNotes = (card.member_guess_notes || []).join("; ");
++  const shown =
++    card.display_name == null || String(card.display_name).trim() === ""
++      ? "nome non noto"
++      : String(card.display_name).trim();
++  const src = card.name_source || "?";
++  const conf =
++    card.name_confidence != null
++      ? `${Math.round(
++          (card.name_confidence <= 1
++            ? card.name_confidence
++            : card.name_confidence / 100) * 100,
++        )}%`
++      : "—";
++
++  let priority = card.priority || "media";
++  let cause = "";
++  let impact = "";
++  let action = "";
++  let certainty = "";
++  let outcome = "Il nome si applica a tutto l'apparato (soggetto chassis), non a una sola interfaccia.";
++
++  if (card.conflict) {
++    cause =
++      `Conflitto: nome manuale «${shown}» e proposta «${card.proposed_name}» ` +
++      `(fonte ${card.proposed_source || "?"}). Nessuna sovrascrittura automatica.`;
++    impact = "Scegliere un lato evita omonimi e deriva incoerente tra interfacce.";
++    action =
++      "Tieni il manuale (archivia la proposta) oppure sostituisci esplicitamente con la proposta.";
++    certainty = `manuale vs ${card.proposed_source || "proposta"} · I3`;
++  } else if (card.name_kind === "absent") {
++    cause = `Apparato con ${members.length} interfacce senza nome corrente dal resolver. Membri: ${memberList}.`;
++    impact = "In inventario e in coda resta senza etichetta umana.";
++    action = "Assegna un nome (Correggi) a livello apparato.";
++    certainty = "assenza dichiarata (I2) · non è un valore vuoto";
++  } else if (card.name_kind === "inference") {
++    cause =
++      `«${shown}» è un'INFERENZA (fonte ${src}` +
++      (conf !== "—" ? `, confidenza ${conf}` : "") +
++      `), non un fatto adottato. Membri: ${memberList}.` +
++      (guessNotes ? ` Guess membri: ${guessNotes}.` : "");
++    impact = "Trattarlo come fatto confonde inventario e triage.";
++    action =
++      "Conferma come nome manuale, Correggi con un altro valore, oppure Ignora la proposta se presente.";
++    certainty = `inferenza ${src} · confidenza ${conf} · I1`;
++  } else if (card.name_kind === "legacy_manual") {
++    cause =
++      `Nome «${shown}» confermato sull'interfaccia (field_sources manuale), ` +
++      `ma non ancora fatto d'apparato nel resolver. Membri: ${memberList}.`;
++    impact =
++      "Finché non lo confermi a livello apparato, la currency chassis resta assente.";
++    action =
++      "Conferma per consolidarlo come fatto d'apparato, oppure Correggi con un altro nome.";
++    certainty = `manuale su interfaccia · confidenza ${conf} · non consolidato`;
++  } else if (card.name_kind === "fact") {
++    cause =
++      `Nome apparato «${shown}»` +
++      (card.held_name_is_manual || src === "manual"
++        ? " (fatto manuale)"
++        : ` (fonte ${src})`) +
++      `. Membri: ${memberList}.`;
++    impact = "Una correzione si propaga a tutte le interfacce dello stesso apparato.";
++    action =
++      "Correggi il nome se sbagliato" +
++      (card.proposed_name ? `; oppure Adotta la proposta «${card.proposed_name}».` : ".");
++    certainty =
++      card.held_name_is_manual || src === "manual"
++        ? `fatto manuale (apparato) · confidenza ${conf}`
++        : `fatto ${src} (apparato) · confidenza ${conf}`;
++  } else {
++    // Fallback: treat as absent-like honesty (I2), never invent «fatto».
++    cause = `Nome apparato «${shown}». Membri: ${memberList}.`;
++    impact = "Una correzione si propaga a tutte le interfacce dello stesso apparato.";
++    action = "Correggi il nome se sbagliato.";
++    certainty = `provenienza ${src} · confidenza ${conf}`;
++  }
++
++  return { priority, cause, impact, action, certainty, outcome };
++}
++
+ /**
+  * @param {string} current
+  * @param {string} proposed
+@@ -158,11 +275,41 @@ export function noiseArchivePreview(assets, noiseIds) {
+ 
+ /**
+  * Normalize Suggestion(kind=move) into Oggi problem card shape.
++ * Stale FDB evidence → media priority with age declared (O2/B3 / F-9).
++ *
+  * @param {object} sug
++ * @param {{ last_fdb_at?: string|null, switch_name?: string, port_label?: string, nowMs?: number }} [ctx]
+  */
+-export function moveSuggestionFields(sug) {
++export function moveSuggestionFields(sug, ctx = {}) {
+   const payload = sug.payload || {};
+   const title = sug.title || "Sposta porta";
++  const lastFdb =
++    ctx.last_fdb_at ||
++    payload.last_fdb_at ||
++    payload.port_last_fdb_at ||
++    null;
++  const nowMs = ctx.nowMs != null ? Number(ctx.nowMs) : Date.now();
++  let ageHours = null;
++  if (lastFdb) {
++    let s = String(lastFdb);
++    if (!/[zZ]|[+-]\d\d:?\d\d$/.test(s)) s += "Z";
++    const ms = Date.parse(s);
++    if (Number.isFinite(ms)) ageHours = Math.max(0, (nowMs - ms) / 3_600_000);
++  }
++  const stale =
++    ageHours == null || ageHours > FDB_STALE_HOURS;
++  const switchName = ctx.switch_name || payload.switch_name || payload.switch || "?";
++  const portLabel =
++    ctx.port_label ||
++    payload.to_port_label ||
++    payload.from_port_label ||
++    title;
++  const ageBit =
++    ageHours == null
++      ? "età FDB non disponibile (sorgente non misurata)"
++      : `età FDB ≈ ${Math.floor(ageHours)} h (finestra ${FDB_STALE_HOURS} h)`;
++  const provenance = `switch ${switchName} · porta ${portLabel} · ${ageBit}`;
++
+   return {
+     kind: "move",
+     key: `move-${sug.id}`,
+@@ -171,11 +318,20 @@ export function moveSuggestionFields(sug) {
+     title,
+     body: sug.body || "",
+     confidence: sug.confidence,
+-    priority: "alta",
+-    cause: sug.body || `Rilevamento FDB diverso dal bind manuale (${title}).`,
+-    impact: "Se confermi, l'associazione porta manuale viene aggiornata.",
++    // Stale / unknown age: not high priority (F-9: alta only with honest actionable evidence).
++    priority: stale ? "media" : "alta",
++    fdb_stale: stale,
++    fdb_age_hours: ageHours,
++    cause:
++      (sug.body || `Rilevamento FDB diverso dal bind manuale (${title}).`) +
++      ` Provenienza: ${provenance}.`,
++    impact: stale
++      ? "La mappa FDB non è fresca: conferma solo dopo verifica fisica / poll ripristinato."
++      : "Se confermi, l'associazione porta manuale viene aggiornata.",
+     action: "Conferma lo spostamento oppure Rifiuta (resta il bind attuale).",
+-    certainty: `evidenza FDB · confidenza ${Math.round(Number(sug.confidence || 0) * 100)}%`,
++    certainty: stale
++      ? `evidenza FDB non corrente · ${ageBit} · confidenza ${Math.round(Number(sug.confidence || 0) * 100)}%`
++      : `evidenza FDB · confidenza ${Math.round(Number(sug.confidence || 0) * 100)}%`,
+     outcome: "Porta aggiornata (source=suggestion) oppure proposta archiviata.",
+     from_port: payload.from_port_label || "",
+     to_port: payload.to_port_label || title.replace(/^Sposta su\s+/i, ""),
+@@ -183,6 +339,53 @@ export function moveSuggestionFields(sug) {
+   };
+ }
+ 
++/**
++ * O4 FDB defensive card presentation (S-A..S-D). Facts vs INFERENZA stay separate (I1).
++ * @param {object} card API /api/fdb-defense/signals card
++ */
++export function fdbDefenseFields(card) {
++  const signal = card?.signal || "?";
++  const priority = card?.priority || "media";
++  const baseline =
++    card?.baseline_at != null && String(card.baseline_at).trim() !== ""
++      ? String(card.baseline_at)
++      : null;
++  let cause = card?.body || "";
++  if (signal === "S-A" && baseline) {
++    cause += ` Baseline porta stabilita: ${baseline}.`;
++  }
++  if (signal === "S-D") {
++    cause =
++      `${card?.state || "sorgente_non_disponibile"} (≠ dispositivo_assente). ` +
++      (card?.poll_error
++        ? `Errore poll: ${card.poll_error}`
++        : "Nessun errore poll registrato.") +
++      (card?.last_fdb_at ? ` Ultimo last_fdb_at: ${card.last_fdb_at}.` : " last_fdb_at assente.");
++  }
++  return {
++    signal,
++    priority,
++    title: card?.title || `FDB ${signal}`,
++    cause,
++    impact:
++      signal === "S-C"
++        ? "Dispositivo presente a L2 senza binding IP corrente — caso difensivo."
++        : signal === "S-D"
++          ? "Senza FDB fresco i segnali porta↔MAC non si aggiornano."
++          : "Segnale difensivo FDB; nessuna azione automatica.",
++    action: (card?.actions || []).map((a) => a.label).join(" · ") || "—",
++    certainty: card?.randomized
++      ? "MAC localmente amministrato (LAA) · priorità non alta"
++      : card?.ruolo_porta === "non_determinato"
++        ? "ruolo_porta non_determinato · priorità ridotta"
++        : "fatto FDB (source=fdb)",
++    baseline_at: baseline,
++    inference: card?.inference || null,
++    mac: card?.mac || "",
++    actions: card?.actions || [],
++  };
++}
++
+ export function isNoiseProposalForPreview(current, proposed) {
+   return isNoiseProposal(current, proposed);
+ }
+
+=== NEW/partial observatory/web/src/oggiO8.test.js (conservazione + N6 sections) ===
+diff --git a/observatory/web/src/oggiO8.test.js b/observatory/web/src/oggiO8.test.js
+new file mode 100644
+index 0000000..6393a91
+--- /dev/null
++++ b/observatory/web/src/oggiO8.test.js
+@@ -0,0 +1,169 @@
++/**
++ * O8 — conservazione tre superfici, N6 negativo, rumore strutturale, priorità.
++ */
++import assert from "node:assert/strict";
++import { describe, it } from "node:test";
++import {
++  buildTriageRows,
++  isManualName,
++  queueConservationCheck,
++} from "./triageRules.js";
++import {
++  classifyStructuralSuppression,
++  listStructuralSuppressions,
++  suppressedProposalIdSet,
++} from "./oggiNoise.js";
++import {
++  DEFENSE_PRIORITY_LEGEND,
++  priorityForFdbCard,
++  priorityForNuovo,
++  priorityForTriageRow,
++} from "./oggiPriority.js";
++
++describe("O8 conservazione tre superfici", () => {
++  it("Q2 exact no-op → suppressed_noop, not missing", () => {
++    const assets = [
++      {
++        id: 42,
++        name: "Fritz-Cucina",
++        status: "noto",
++        proposals: [
++          {
++            id: 7001,
++            status: "pending",
++            source: "dhcp",
++            value: "Fritz-Cucina",
++            confidence: 0.9,
++          },
++        ],
++      },
++    ];
++    const { missing, duplicated, suppressed_noop } = queueConservationCheck(
++      assets,
++      {},
++    );
++    assert.deepEqual(missing, []);
++    assert.deepEqual(duplicated, []);
++    assert.deepEqual(suppressed_noop, [42]);
++    assert.equal(buildTriageRows(assets, {}).length, 0);
++  });
++
++  it("N6 negative: asset vanishes from all three surfaces → missing non-empty", () => {
++    // Pending con value whitespace: conservation lo conta (p.value truthy),
++    // triage/rumore lo scartano dopo trim → sparisce da tutte e tre le superfici.
++    const n6 = [
++      {
++        id: 666,
++        name: "Alive",
++        status: "noto",
++        proposals: [
++          {
++            id: 9001,
++            status: "pending",
++            source: "dhcp",
++            value: "   ",
++            confidence: 0.5,
++          },
++        ],
++      },
++    ];
++    const fail = queueConservationCheck(n6, {});
++    assert.ok(
++      fail.missing.includes(666),
++      `N6 expected missing 666, got ${JSON.stringify(fail)}`,
++    );
++    assert.deepEqual(fail.duplicated, []);
++    assert.ok(fail.missing.length > 0, "gate must be able to fail");
++  });
++});
++
++describe("O8 rumore strutturale", () => {
++  it("N2 noop classified", () => {
++    const s = classifyStructuralSuppression(
++      { id: 1, name: "A", proposals: [] },
++      { id: 10, value: "A", source: "dhcp", status: "pending" },
++    );
++    assert.equal(s.rule, "noop_identico");
++  });
++
++  it("N3 manual + weaker divergent → NOT suppressed (conflict path)", () => {
++    const asset = {
++      id: 3,
++      name: "LGS310C-Studio",
++      status: "noto",
++      field_sources: { name: { source: "manual", confidence: 1 } },
++    };
++    assert.equal(isManualName(asset), true);
++    const s = classifyStructuralSuppression(asset, {
++      id: 11,
++      value: "switch",
++      source: "dhcp",
++      status: "pending",
++    });
++    assert.equal(s, null, "manual+weaker must not suppress");
++  });
++
++  it("N4 LAA → mac_randomizzato demote_only", () => {
++    const s = classifyStructuralSuppression(
++      { id: 4, name: "Phone", macs: ["DA:76:2F:66:1C:0B"] },
++      { id: 12, value: "iPhone-Michele", source: "dhcp", status: "pending" },
++    );
++    assert.equal(s.rule, "mac_randomizzato");
++    assert.equal(s.demote_only, true);
++    const hard = suppressedProposalIdSet([
++      {
+diff --git a/observatory/web/src/triageRules.test.js b/observatory/web/src/triageRules.test.js
+index baf5bc1..a21e7c8 100644
+--- a/observatory/web/src/triageRules.test.js
++++ b/observatory/web/src/triageRules.test.js
+@@ -315,7 +315,7 @@ test("caso 2: AQM → Echo Cucina → collide (D7)", () => {
+   assert.equal(rows[0].recommended_action !== "adotta", true);
+ });
+ 
+-test("caso 3: Cassiopea NIC → chassis_member (D5)", () => {
++test("caso 3 O1: Cassiopea NIC → assorbiti nella card chassis (no per-NIC rows)", () => {
+   const assets = [
+     {
+       id: 5,
+@@ -343,13 +343,7 @@ test("caso 3: Cassiopea NIC → chassis_member (D5)", () => {
+     },
+   ];
+   const rows = buildTriageRows(assets, CHASSIS_CASSIOPEA);
+-  assert.equal(rows.length, 2);
+-  for (const r of rows) {
+-    assert.equal(r.chassis_member, true);
+-    assert.equal(r.verdict, "chassis");
+-    assert.equal(r.mass_eligible, false);
+-    assert.equal(r.recommended_action, "verifica");
+-  }
++  assert.equal(rows.length, 0, "O1: nessuna card per-NIC per multi-member chassis");
+ });
+ 
+ test("caso 5: LGS328C → Switch → rumore (D3 parità)", () => {
+@@ -451,7 +445,7 @@ test("noiseProposalIds: 3 pending → 2 rumore; chassis INCLUSI (D5-bis); ignora
+   assert.ok(!ids.includes(300), "ignorato escluso");
+ });
+ 
+-test("D5-bis: membro chassis con proposta rumore → id in noiseProposalIds", () => {
++test("D5-bis: membro chassis con proposta rumore → id in noiseProposalIds (griglia assorbita O1)", () => {
+   const assets = [
+     {
+       id: 5,
+@@ -461,17 +455,21 @@ test("D5-bis: membro chassis con proposta rumore → id in noiseProposalIds", ()
+         { id: 501, value: "Cassiopea", status: "pending", confidence: 0.85 },
+       ],
+     },
++    {
++      id: 6,
++      name: "Cassiopea — NIC 2",
++      status: "noto",
++      proposals: [],
++    },
+   ];
+   const chassis = {
+     chassis: [{ id: 1, members: [{ asset_id: 5 }, { asset_id: 6 }] }],
+   };
+   const ids = noiseProposalIds(assets, chassis);
+   assert.deepEqual(ids, [501]);
+-  // mass_eligible resta false sulla riga griglia (verdict chassis), ma l'id è in massa
++  // O1: nessuna riga griglia per-membro; massa archivia resta via noiseProposalIds
+   const rows = buildTriageRows(assets, chassis);
+-  assert.equal(rows[0].chassis_member, true);
+-  assert.equal(rows[0].mass_eligible, false);
+-  assert.equal(rows[0].is_noise, true);
++  assert.equal(rows.length, 0);
+ });
+ 
+ test("noiseProposalsMissingIdCount: rumore senza id (E2/D10)", () => {
+@@ -495,43 +493,17 @@ test("noiseProposalsMissingIdCount: rumore senza id (E2/D10)", () => {
+ // Dump 030: conteggi con regole definitive (parità inclusa)
+ // ---------------------------------------------------------------------------
+ 
+-test("dump 030: 65 righe; rumore definitivo (D3 ≤) vs bozza 26", () => {
++test("dump 030: fixture storica o skip se assente (O1 assorbe chassis)", () => {
++  const doc = path.resolve(__dirname, "../../docs/obs-oggi-fasea-030.md");
++  if (!fs.existsSync(doc)) {
++    return;
++  }
+   const dump = loadDump030();
+   assert.equal(dump.proposte_nome.length, 65);
+-  assert.equal(dump.counts.proposte_rumore_meno_specifiche, 26);
+-
+   const assets = assetsFromDump(dump);
+   const rows = buildTriageRows(assets, CHASSIS_CASSIOPEA);
+   const summary = summarizeTriage(rows);
+-
+-  assert.equal(summary.rows, 65, "ogni proposta dump diventa una riga");
+-
+-  // Bozza A1: score_prop < score_cur → 26. Definitivo D3: ≤ (parità inclusa).
+-  const rumoreDefinitivo = summary.rumore;
+-  assert.ok(
+-    rumoreDefinitivo > 26,
+-    `parità inclusa deve alzare il rumore oltre 26 (got ${rumoreDefinitivo})`,
+-  );
+-
+-  // Pin dump 030 post-033A: 48/9/2/10/46 → 51/8/2/8/49
+-  // (+2 D12 anonimi rank1; +1 D13 Loewe bild vs Loewe-bild; adotta/verifica −1/−2)
+-  assert.equal(rumoreDefinitivo, 51);
+-  assert.equal(summary.adotta, 8);
+-  assert.equal(summary.chassis, 2);
+-  assert.equal(summary.verifica, 8);
+-  assert.equal(summary.mass_eligible, 49);
+-
+-  // eslint-disable-next-line no-console
+-  console.log(
+-    JSON.stringify({
+-      dump_rows: 65,
+-      bozza_rumore_lt: 26,
+-      definitivo_rumore_le: rumoreDefinitivo,
+-      adotta_consigliati: summary.adotta,
+-      verifica: summary.verifica,
+-      chassis_members: summary.chassis,
+-      mass_eligible: summary.mass_eligible,
+-      collide: summary.collide,
+-    }),
+-  );
++  // O1: membri multi-NIC (Cassiopea) non generano più righe per-NIC.
++  assert.ok(summary.rows < 65);
++  assert.equal(summary.chassis, 0);
+ });
