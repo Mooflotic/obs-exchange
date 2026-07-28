@@ -1,0 +1,1132 @@
+diff --git a/observatory/web/src/api.js b/observatory/web/src/api.js
+index 1f0a71d..ba0ac59 100644
+--- a/observatory/web/src/api.js
++++ b/observatory/web/src/api.js
+@@ -111,6 +111,7 @@ export const api = {
+   asset: (id) => request(`/api/assets/${id}`),
+   assetIdentity: (id, technical = false) =>
+     request(`/api/assets/${id}/identity${technical ? "?technical=1" : ""}`),
++  assetDossier: (id) => request(`/api/assets/${id}/dossier`),
+   assetHabits: (id, days = 7) =>
+     request(`/api/assets/${id}/habits?days=${encodeURIComponent(days)}`),
+   scanAssetOs: (id) => request(`/api/assets/${id}/scan-os`, { method: "POST", body: {} }),
+@@ -130,6 +131,18 @@ export const api = {
+     request(`/api/assets/${id}/adopt-name?source=${encodeURIComponent(source)}`, {
+       method: "POST",
+     }),
++  adoptChassisName: (chassisId, { source = "manual", value, proposalId } = {}) => {
++    const q = new URLSearchParams({ source });
++    if (value) q.set("value", value);
++    if (proposalId != null) q.set("proposal_id", String(proposalId));
++    return request(`/api/chassis/${chassisId}/adopt-name?${q}`, { method: "POST" });
++  },
++  renameChassis: (chassisId, name) =>
++    request(`/api/chassis/${chassisId}/rename`, {
++      method: "POST",
++      body: JSON.stringify({ name }),
++    }),
++  factConflicts: () => request("/api/admin/facts/conflicts"),
+   rejectNameProposal: (id, source, proposalId = null) => {
+     const q = new URLSearchParams({ source: String(source || "") });
+     if (proposalId != null) q.set("proposal_id", String(proposalId));
+@@ -254,4 +267,11 @@ export const api = {
+     request(`/api/snapshots/${snapshotId}/confirm-baseline`, { method: "POST" }),
+   sensors: () => request("/api/sensors"),
+   reliability: () => request("/api/reliability"),
++  fdbDefenseSignals: () => request("/api/fdb-defense/signals"),
++  fdbDefensePlant: () => request("/api/fdb-defense/plant"),
++  fdbDefenseAck: (body) =>
++    request("/api/fdb-defense/ack", { method: "POST", body }),
++  gs308View: () => request("/api/gs308/view"),
++  gs308Assign: (body) =>
++    request("/api/gs308/assign", { method: "POST", body }),
+ };
+diff --git a/observatory/web/src/dossierO7.test.js b/observatory/web/src/dossierO7.test.js
+new file mode 100644
+index 0000000..62420e1
+--- /dev/null
++++ b/observatory/web/src/dossierO7.test.js
+@@ -0,0 +1,12 @@
++/**
++ * O7 — dossier answer presentation helpers / label.
++ */
++import test from "node:test";
++import assert from "node:assert/strict";
++import { AI_INFERENCE_LABEL } from "./observatoryUx.js";
++import { sourceLabel } from "./inventoryDevices.js";
++
++test("INFERENZA IA label is explicit", () => {
++  assert.equal(AI_INFERENCE_LABEL, "INFERENZA IA");
++  assert.equal(sourceLabel("ai"), "INFERENZA IA");
++});
+diff --git a/observatory/web/src/inventoryDevices.js b/observatory/web/src/inventoryDevices.js
+index 56706f6..aca2e8f 100644
+--- a/observatory/web/src/inventoryDevices.js
++++ b/observatory/web/src/inventoryDevices.js
+@@ -171,13 +171,18 @@ export function composeDevices(assets, chassisPayload = {}) {
+     const lastSeen = maxLastSeen(members);
+     const portalLastSeen = maxPortalLastSeen(members);
+     const displayIp = chassisDisplayIp(members);
++    const canonName =
++      (ch.canonical_name || "").trim() ||
++      members.map((m) => (m.chassis_canonical_name || "").trim()).find(Boolean) ||
++      (primary.name || "").trim() ||
++      "";
+     devices.push({
+       key: `chassis:${ch.id}`,
+       chassisId: ch.id,
+       primaryId: primary.id,
+       primary,
+       members,
+-      name: primary.name || "",
++      name: canonName,
+       category: primary.category || "unknown",
+       status: primary.status || "nuovo",
+       vendor: primary.vendor || "",
+@@ -204,7 +209,8 @@ export function composeDevices(assets, chassisPayload = {}) {
+       ifaces,
+       interfaceCount: ifaces.filter((i) => i.mac).length || ifaces.length,
+       stale: !isActiveLastSeen(lastSeen),
+-      label: ch.label || primary.name || "",
++      label: ch.label || canonName || "",
++      chassis_canonical_name: canonName || null,
+     });
+   }
+ 
+@@ -337,7 +343,7 @@ export function sourceLabel(src) {
+   if (key === "oui") return "OUI";
+   if (key === "fritz") return "FRITZ";
+   if (key === "dhcp") return "DHCP";
+-  if (key === "ai") return "Inferenza AI";
++  if (key === "ai") return "INFERENZA IA";
+   if (!key) return "—";
+   return key.toUpperCase();
+ }
+diff --git a/observatory/web/src/inventoryDevices.test.js b/observatory/web/src/inventoryDevices.test.js
+index 563f285..9202b4f 100644
+--- a/observatory/web/src/inventoryDevices.test.js
++++ b/observatory/web/src/inventoryDevices.test.js
+@@ -266,7 +266,7 @@ test("countDevices and identitySources skip ai", () => {
+   assert.equal(sourceLabel("dns"), "MDNS");
+   assert.equal(sourceLabel("oui"), "OUI");
+   assert.equal(sourceLabel("fritz"), "FRITZ");
+-  assert.equal(sourceLabel("ai"), "Inferenza AI");
++  assert.equal(sourceLabel("ai"), "INFERENZA IA");
+   const id = identitySources({
+     vendor: "Sky",
+     proposals: [
+diff --git a/observatory/web/src/observatoryUx.js b/observatory/web/src/observatoryUx.js
+index 3e89b27..2154de0 100644
+--- a/observatory/web/src/observatoryUx.js
++++ b/observatory/web/src/observatoryUx.js
+@@ -91,6 +91,192 @@ export function inventoryBucketMatches(asset, bucket, now = Date.now()) {
+   );
+ }
+ 
++/** FDB coverage staleness threshold (mirrors ASSET_STALE_AFTER_HOURS default). */
++export const FDB_STALE_HOURS = 24;
++
++/** Human label for the declared FDB freshness window (B1 — never hide in code only). */
++export function fdbFreshnessWindowLabel(hours = FDB_STALE_HOURS) {
++  return `finestra di freschezza FDB: ${Number(hours)} h`;
++}
++
++/** Parse a timestamp treating naive (no tz) values as UTC — backend stores utcnow(). */
++function _utcMs(iso) {
++  if (!iso) return null;
++  let s = String(iso);
++  if (!/[zZ]|[+-]\d\d:?\d\d$/.test(s)) s += "Z";
++  const ms = Date.parse(s);
++  return Number.isFinite(ms) ? ms : null;
++}
++
++/**
++ * Per-port FDB coverage state (O2 / B1). Never confuses poll-attempt time with data age.
++ *
++ * @returns {{
++ *   state: 'misurata_fresca'|'misurata_vecchia'|'non_coperta',
++ *   reason: string,
++ *   last_fdb_at: string|null,
++ *   age_hours: number|null,
++ *   switch_id: number|null,
++ *   port_id: number|null,
++ *   port_number: number|null,
++ * }}
++ */
++export function fdbPortCoverageState(port, sw = {}, nowMs = Date.now(), staleHours = FDB_STALE_HOURS) {
++  const cap = sw.capabilities || {};
++  const poll = sw.fdb_poll || {};
++  const last = port?.last_fdb_at || null;
++  const ms = _utcMs(last);
++  const switchId = sw.id ?? sw.switch_id ?? null;
++  const portId = port?.id ?? null;
++  const portNumber = port?.number ?? port?.physical_port_number ?? port?.port ?? null;
++
++  if (cap.fdb_supported === false) {
++    return {
++      state: "non_coperta",
++      reason: "FDB non supportato dall'apparato",
++      last_fdb_at: last,
++      age_hours: ms == null ? null : Math.max(0, (nowMs - ms) / 3_600_000),
++      switch_id: switchId,
++      port_id: portId,
++      port_number: portNumber,
++    };
++  }
++
++  if (ms != null) {
++    const ageH = (nowMs - ms) / 3_600_000;
++    if (ageH <= staleHours) {
++      return {
++        state: "misurata_fresca",
++        reason: "",
++        last_fdb_at: last,
++        age_hours: ageH,
++        switch_id: switchId,
++        port_id: portId,
++        port_number: portNumber,
++      };
++    }
++    return {
++      state: "misurata_vecchia",
++      reason: `ultima mappatura oltre ${staleHours} h`,
++      last_fdb_at: last,
++      age_hours: ageH,
++      switch_id: switchId,
++      port_id: portId,
++      port_number: portNumber,
++    };
++  }
++
++  let reason = "mai misurata";
++  if (poll.ok === false) {
++    reason = "switch non interrogabile";
++  } else if (poll.supported === false) {
++    reason = "FDB non supportato dall'apparato";
++  }
++
++  return {
++    state: "non_coperta",
++    reason,
++    last_fdb_at: null,
++    age_hours: null,
++    switch_id: switchId,
++    port_id: portId,
++    port_number: portNumber,
++  };
++}
++
++/**
++ * Full coverage report for Plant (B1). Enumerates ports by state; declares window.
++ *
++ * @returns {{
++ *   window_hours: number,
++ *   window_label: string,
++ *   switches: Array<object>,
++ *   by_state: { misurata_fresca: number[], misurata_vecchia: number[], non_coperta: number[] },
++ * }}
++ * `by_state` lists port **ids** (never bare totals without ids).
++ */
++export function fdbCoverageReport(switches = [], nowMs = Date.now(), staleHours = FDB_STALE_HOURS) {
++  const by_state = {
++    misurata_fresca: [],
++    misurata_vecchia: [],
++    non_coperta: [],
++  };
++  const outSwitches = [];
++  for (const sw of switches || []) {
++    const ports = [];
++    for (const port of sw.ports || []) {
++      const st = fdbPortCoverageState(port, sw, nowMs, staleHours);
++      ports.push(st);
++      if (st.port_id != null) by_state[st.state].push(Number(st.port_id));
++    }
++    const poll = sw.fdb_poll || {};
++    const cap = sw.capabilities || {};
++    outSwitches.push({
++      switch_id: sw.id,
++      name: sw.switch_display_name || sw.name,
++      fdb_supported: cap.fdb_supported !== false,
++      poll_ok: poll.ok === true,
++      poll_error: poll.ok === false ? String(poll.error || "") : "",
++      // Never treat failed poll.at as freshness of port data.
++      poll_attempt_at: poll.at || null,
++      ports,
++    });
++  }
++  for (const k of Object.keys(by_state)) {
++    by_state[k].sort((a, b) => a - b);
++  }
++  return {
++    window_hours: staleHours,
++    window_label: fdbFreshnessWindowLabel(staleHours),
++    switches: outSwitches,
++    by_state,
++  };
++}
++
++/**
++ * FDB coverage freshness across switches (F-13 / UX2.2.4).
++ *
++ * Presentation-only: it does NOT derive currency/state, it reports the newest
++ * measured `SwitchPort.last_fdb_at` and whether it is older than FDB_STALE_HOURS.
++ * The failed `fdb_poll.at` (a poll ATTEMPT time) is deliberately NOT used as
++ * freshness — that misrepresented ~57h-old port data as current.
++ *
++ * Returns null when there is nothing FDB-related to declare, else
++ * { available, stale, newestAt, hoursAgo }.
++ */
++export function fdbCoverageStatus(switches = [], nowMs = Date.now()) {
++  let newestMs = null;
++  let newestIso = "";
++  let anyFdbCapable = false;
++  let anyPollFailed = false;
++  for (const sw of switches || []) {
++    const cap = sw.capabilities || {};
++    if (cap.fdb_supported !== false) anyFdbCapable = true;
++    if (sw.fdb_poll && sw.fdb_poll.ok === false) anyPollFailed = true;
++    for (const port of sw.ports || []) {
++      const ms = _utcMs(port.last_fdb_at);
++      if (ms == null) continue;
++      if (newestMs == null || ms > newestMs) {
++        newestMs = ms;
++        newestIso = port.last_fdb_at;
++      }
++    }
++  }
++  if (newestMs == null) {
++    if (anyFdbCapable && anyPollFailed) {
++      return { available: true, stale: true, newestAt: "", hoursAgo: null };
++    }
++    return null;
++  }
++  const ageMs = nowMs - newestMs;
++  return {
++    available: true,
++    stale: ageMs > FDB_STALE_HOURS * 3_600_000,
++    newestAt: newestIso,
++    hoursAgo: Math.max(0, Math.floor(ageMs / 3_600_000)),
++  };
++}
++
+ export function uniqueTopologyNodes(nodes = []) {
+   const seen = new Set();
+   return nodes.filter((node) => {
+@@ -280,7 +466,7 @@ export function branch308ReachabilityLabel(status) {
+ }
+ 
+ /** Visible label for any AI-derived UI (E.1). */
+-export const AI_INFERENCE_LABEL = "Inferenza AI";
++export const AI_INFERENCE_LABEL = "INFERENZA IA";
+ export const AI_INFERENCE_DISCLAIMER = "Può sbagliare — verifica sempre le evidenze prima di adottare.";
+ 
+ /** NameProposal / hostname source rank — ai sotto manual (I5). */
+@@ -318,11 +504,13 @@ export const UX_COPY = {
+   "manual-upgrade": "Nome già scelto a mano — proposta in conflitto",
+   rumore: "Proposta ridondante o poco utile",
+   fritz_historical: "Solo storico FRITZ!Box (non operativo oggi)",
+-  stale_unlocated: "Non visto di recente e senza posizione certa",
++  stale_unlocated:
++    "Copertura sorgente non disponibile — presenza non misurabile (non «assente»)",
+   inventory_hidden_auto: "Nascosto in inventario (duplicato o merge automatico)",
+   presence_present: "Presente ora",
+   presence_stale: "Non visto di recente",
+   presence_fritz_only: "Visto solo dal FRITZ!Box",
++  presence_source_outage: "Copertura sorgente non disponibile",
+   partial_data: "Dati incompleti — quanto mostrato è parziale",
+   ai_unavailable: "Assistente AI non disponibile (AI_ENABLED=false o LLM non raggiungibile). Il portale resta utilizzabile.",
+ };
+@@ -380,9 +568,32 @@ export function humanPresenceState(state) {
+   if (s === "stale") return UX_COPY.presence_stale;
+   if (s === "fritz_only") return UX_COPY.presence_fritz_only;
+   if (s === "recent") return "Visto nelle ultime ore";
++  if (s === "stale_unlocated") return UX_COPY.stale_unlocated;
++  if (s === "source_outage" || s === "presence_source_outage") {
++    return UX_COPY.presence_source_outage;
++  }
+   return state || "—";
+ }
+ 
++/** F2 / W4c.5.3 — Fritz sensor failure ⇒ presence coverage outage (not device absence). */
++export function fritzPresenceOutageFromReliability(reliability) {
++  const sensors = reliability?.live?.sensors_24h || [];
++  const fritz = sensors.find((s) =>
++    String(s.source || "")
++      .toLowerCase()
++      .includes("fritz"),
++  );
++  if (!fritz) {
++    return { active: false, detail: "" };
++  }
++  const failed = fritz.last_ok === false || (Number(fritz.errors) || 0) > 0;
++  if (!failed) return { active: false, detail: "" };
++  return {
++    active: true,
++    detail: `${fritz.source}: errori=${fritz.errors || 0} · last_ok=${fritz.last_ok}`,
++  };
++}
++
+ /** Sintesi identità Dossier (ondata D) — niente dump grezzo, niente SNMP inventato. */
+ export function buildIdentitySynthesis(identity = {}) {
+   const known = [];
+diff --git a/observatory/web/src/views/Dossier.vue b/observatory/web/src/views/Dossier.vue
+index 077cd06..c89beb4 100644
+--- a/observatory/web/src/views/Dossier.vue
++++ b/observatory/web/src/views/Dossier.vue
+@@ -6,14 +6,11 @@ import { matchDeviceSearch, composeDevices } from "../inventoryDevices";
+ import { formatFreshLabel, freshClass } from "../inventoryDevices";
+ import { pushRecentDossier, readRecentDossiers } from "../dossierRecent";
+ import PageHeader from "../components/PageHeader.vue";
+-import AssetChassis from "../components/AssetChassis.vue";
+-import AssetIdentity from "../components/AssetIdentity.vue";
+-import AssetDecide from "../components/AssetDecide.vue";
+-import AssetNotes from "../components/AssetNotes.vue";
+ import AssetHabits from "../components/AssetHabits.vue";
+-import Branch308Card from "../components/Branch308Card.vue";
+-import { isGs308epAsset, humanPresenceState } from "../observatoryUx";
++import AssetNotes from "../components/AssetNotes.vue";
++import AssetDecide from "../components/AssetDecide.vue";
+ import ViewStateBanner from "../components/ViewStateBanner.vue";
++import { AI_INFERENCE_LABEL } from "../observatoryUx";
+ 
+ const route = useRoute();
+ const router = useRouter();
+@@ -32,34 +29,27 @@ const loading = ref(false);
+ const error = ref("");
+ const assets = ref([]);
+ const chassisPayload = ref({ chassis: [] });
+-const asset = ref(null);
++const dossier = ref(null);
+ const recent = ref(readRecentDossiers());
++const showDiagnosis = ref(false);
++const busyKey = ref("");
++const notice = ref("");
++const ignoreReason = ref("");
+ 
+ const devices = computed(() => composeDevices(assets.value, chassisPayload.value));
+-
+ const searchHits = computed(() => {
+   if (!q.value.trim()) return [];
+   return devices.value.filter((d) => matchDeviceSearch(d, q.value)).slice(0, 40);
+ });
+ 
+-const presenceLabel = computed(() => {
+-  if (!asset.value) return "—";
+-  if (asset.value.presence_state) return humanPresenceState(asset.value.presence_state);
+-  return asset.value.status || "—";
+-});
+-
+-const primaryIp = computed(() => {
+-  const bindings = asset.value?.ip_bindings || [];
+-  const cur = bindings.find((b) => b.is_current);
+-  if (cur?.ip) return cur.ip;
+-  const ips = asset.value?.ips || [];
+-  return ips[0] || "—";
+-});
+-
+-const primaryMac = computed(() => {
+-  const macs = asset.value?.macs || [];
+-  return macs[0] || "—";
+-});
++const Q = computed(() => dossier.value?.questions || {});
++const what = computed(() => Q.value.what || {});
++const where = computed(() => Q.value.where || {});
++const since = computed(() => Q.value.since || {});
++const expected = computed(() => Q.value.expected || {});
++const actions = computed(() => Q.value.actions?.items || []);
++const inference = computed(() => dossier.value?.inference || null);
++const nonMeasured = computed(() => dossier.value?.non_measured || []);
+ 
+ async function loadHubList() {
+   loading.value = true;
+@@ -78,50 +68,111 @@ async function loadHubList() {
+   }
+ }
+ 
+-async function loadAsset(id) {
++async function loadDossier(id) {
+   loading.value = true;
+   error.value = "";
+-  asset.value = null;
++  dossier.value = null;
++  notice.value = "";
+   try {
+-    asset.value = await api.asset(id);
++    dossier.value = await api.assetDossier(id);
+     pushRecentDossier({
+       id,
+-      name: asset.value.name,
+-      ip: primaryIpFrom(asset.value),
++      name: dossier.value.questions?.what?.name_label || `asset ${id}`,
++      ip: dossier.value.ip || "",
+     });
+     recent.value = readRecentDossiers();
+   } catch (e) {
+-    error.value = e.message || "Asset non trovato";
++    error.value = e.message || "Dossier non disponibile";
+   } finally {
+     loading.value = false;
+   }
+ }
+ 
+-function primaryIpFrom(row) {
+-  const bindings = row?.ip_bindings || [];
+-  const cur = bindings.find((b) => b.is_current);
+-  if (cur?.ip) return cur.ip;
+-  return (row?.ips || [])[0] || "";
+-}
+-
+ function openDossier(id) {
+   router.push(`/dossier/${id}`);
+ }
+ 
+-function goInventory() {
+-  router.push("/inventory");
+-}
+-
+-function goTopology() {
+-  router.push({ path: "/topology", query: { highlight: String(assetId.value || "") } });
++async function runAction(act) {
++  const id = assetId.value;
++  if (!id || !act) return;
++  if (act.href) {
++    router.push(act.href);
++    return;
++  }
++  if (act.disabled) return;
++  if (act.requires_confirm) {
++    const msg =
++      act.id === "ignore"
++        ? "Ignorare questo dispositivo? Serve un motivo."
++        : `${act.label} — conferma scrittura manuale reversibile?`;
++    if (!window.confirm(msg)) {
++      notice.value = "Azione annullata — nessuna scrittura.";
++      return;
++    }
++  }
++  if (act.id === "ignore") {
++    const reason =
++      ignoreReason.value.trim()
++      || window.prompt("Motivo (obbligatorio):", "")
++      || "";
++    if (!reason.trim()) {
++      notice.value = "Ignora annullato: motivo assente.";
++      return;
++    }
++    busyKey.value = act.id;
++    try {
++      await api.updateAsset(id, { status: "ignorato", notes: reason.trim() });
++      notice.value = "Marcato ignorato (reversibile).";
++      await loadDossier(id);
++    } catch (e) {
++      error.value = e.message || "Azione fallita";
++    } finally {
++      busyKey.value = "";
++    }
++    return;
++  }
++  if (act.id === "recognize_expected") {
++    busyKey.value = act.id;
++    try {
++      await api.updateAsset(id, { status: "noto" });
++      notice.value = "Riconosciuto come atteso.";
++      await loadDossier(id);
++    } catch (e) {
++      error.value = e.message || "Azione fallita";
++    } finally {
++      busyKey.value = "";
++    }
++    return;
++  }
++  if (act.id === "assign_name") {
++    const name = window.prompt("Nome manuale:", what.value.name || "") || "";
++    if (!name.trim()) {
++      notice.value = "Nome assente — nessuna scrittura.";
++      return;
++    }
++    if (!window.confirm(`Salvare «${name.trim()}» come nome manuale?`)) {
++      notice.value = "Azione annullata.";
++      return;
++    }
++    busyKey.value = act.id;
++    try {
++      await api.updateAsset(id, { name: name.trim(), status: "noto" });
++      notice.value = "Nome manuale salvato.";
++      await loadDossier(id);
++    } catch (e) {
++      error.value = e.message || "Salvataggio nome fallito";
++    } finally {
++      busyKey.value = "";
++    }
++  }
+ }
+ 
+ watch(
+   assetId,
+   (id) => {
+-    if (id) loadAsset(id);
++    if (id) loadDossier(id);
+     else {
+-      asset.value = null;
++      dossier.value = null;
+       loadHubList();
+       recent.value = readRecentDossiers();
+     }
+@@ -136,24 +187,14 @@ onMounted(() => {
+     if (hash) document.getElementById(hash)?.scrollIntoView({ behavior: "smooth" });
+   });
+ });
+-
+-watch(
+-  () => route.hash,
+-  (hash) => {
+-    const id = String(hash || "").replace(/^#/, "");
+-    if (!id) return;
+-    nextTick(() => document.getElementById(id)?.scrollIntoView({ behavior: "smooth" }));
+-  },
+-);
+ </script>
+ 
+ <template>
+-  <div class="dossier">
+-    <!-- Hub: search -->
++  <div class="dossier" data-testid="dossier-o7">
+     <template v-if="isHub">
+       <PageHeader
+         title="Dossier"
+-        help="Cerca un device per nome, IP o MAC e apri il quadro completo (identità + abitudini)."
++        help="Cerca un device — il dossier risponde a sei domande, non scarica grezzi."
+       />
+       <p class="dossier-lead">Non so cosa cerco — cerca e approfondisci.</p>
+       <input
+@@ -197,61 +238,199 @@ watch(
+       </section>
+     </template>
+ 
+-    <!-- Full page dossier -->
+     <template v-else>
+       <div class="dossier-head">
+         <div class="dossier-head-main">
+           <button type="button" class="dossier-back" @click="router.push('/dossier')">← Dossier</button>
+-          <h1 class="dossier-title" :class="{ unnamed: asset && !asset.name }">
+-            {{ loading ? "…" : (asset?.name || "Device senza nome") }}
++          <h1 class="dossier-title" :class="{ unnamed: dossier && !what.name }">
++            {{ loading ? "…" : (what.name_label || "nome non noto") }}
+           </h1>
+-          <div class="dossier-sub mono">
+-            <span class="presence">{{ presenceLabel }}</span>
+-            <span>·</span>
+-            <span>{{ primaryIp }}</span>
+-            <span>·</span>
+-            <span>{{ primaryMac }}</span>
+-          </div>
+-          <p v-if="isGs308epAsset(assetId)" class="dossier-branch-link">
+-            <a href="#ramo-308">Scheda ramo GS308EP ↓</a>
+-            ·
+-            <router-link to="/plant">Impianto</router-link>
+-            ·
+-            <router-link to="/topology">Topologia</router-link>
++          <p v-if="dossier?.blue_team_priority" class="blue-team" role="status">
++            Percorso blue-team: dispositivo non riconosciuto o solo-L2 — evidenzia evidenze e azioni.
+           </p>
+         </div>
+-        <div class="dossier-actions">
+-          <button type="button" class="dossier-btn" @click="goInventory">Inventario</button>
+-          <button type="button" class="dossier-btn" @click="goTopology">Topologia</button>
+-        </div>
+       </div>
+       <ViewStateBanner v-if="error" kind="error" :message="error" />
+-      <ViewStateBanner v-else-if="loading && !asset" kind="loading" />
+-      <template v-else-if="assetId">
+-        <nav class="dossier-toc" aria-label="Sezioni dossier">
+-          <a href="#chi-sei">chi sei</a>
+-          <a href="#connesso">come sei connesso</a>
+-          <a href="#decidi">tu decidi</a>
+-          <a href="#abitudini">abitudini</a>
+-          <a href="#note">note</a>
+-          <a v-if="isGs308epAsset(assetId)" href="#ramo-308">ramo 308</a>
++      <ViewStateBanner v-else-if="loading && !dossier" kind="loading" />
++      <p v-if="notice" class="notice" role="status">{{ notice }}</p>
++
++      <template v-if="dossier">
++        <nav class="dossier-toc" aria-label="Sei domande">
++          <a href="#q-actions">azioni</a>
++          <a href="#q-what">cos'è</a>
++          <a href="#q-where">dove</a>
++          <a href="#q-since">da quando</a>
++          <a href="#q-does">cosa fa</a>
++          <a href="#q-expected">atteso?</a>
++          <a href="#q-inference">inferenza</a>
+         </nav>
+-        <div v-if="isGs308epAsset(assetId)" id="ramo-308">
+-          <Branch308Card
+-            :switch-data="{ code: '308ep', ip: primaryIp !== '—' ? primaryIp : undefined }"
+-          />
+-        </div>
+-        <AssetIdentity :asset-id="assetId" />
+-        <AssetChassis id="connesso" :asset-id="assetId" />
+-        <div id="decidi">
+-          <AssetDecide :asset-id="assetId" @saved="loadAsset(assetId)" />
+-        </div>
+-        <div id="abitudini">
++
++        <!-- Q6 first: Cosa posso fare ora -->
++        <section id="q-actions" class="q-block actions-first" :class="{ priority: dossier.blue_team_priority }">
++          <h2><span class="q-n">6</span> {{ Q.actions?.title || "Cosa posso fare ora" }}</h2>
++          <div class="action-row">
++            <button
++              v-for="act in actions"
++              :key="act.id"
++              type="button"
++              class="dossier-btn"
++              :disabled="!!busyKey || act.disabled"
++              @click="runAction(act)"
++            >
++              {{ act.label }}
++            </button>
++          </div>
++          <label v-if="actions.some((a) => a.id === 'ignore')" class="ignore-reason">
++            Motivo ignora (se serve)
++            <input v-model="ignoreReason" type="text" placeholder="es. guest temporaneo" />
++          </label>
++          <details class="decide-more">
++            <summary>Altre decisioni (categoria, OS, note form)</summary>
++            <AssetDecide :asset-id="assetId" @saved="loadDossier(assetId)" />
++          </details>
++        </section>
++
++        <section id="q-what" class="q-block">
++          <h2><span class="q-n">1</span> Cos'è</h2>
++          <dl class="kv">
++            <dt>Nome</dt>
++            <dd>
++              {{ what.name_label }}
++              <span class="chip">{{ what.name_kind }}</span>
++              <span v-if="what.provenance?.label" class="muted"> · {{ what.provenance.label }}</span>
++            </dd>
++            <dt>Vendor / OUI</dt>
++            <dd>{{ what.vendor || "non noto" }}</dd>
++            <dt>Tipo</dt>
++            <dd>{{ what.device_type || "non noto" }}</dd>
++            <dt>MAC</dt>
++            <dd class="mono">
++              {{ what.mac || "non noto" }}
++              <span v-if="what.randomized" class="chip">randomizzato</span>
++            </dd>
++            <dt>IP</dt>
++            <dd>
++              <template v-if="what.solo_l2">solo-L2 · IP non noto</template>
++              <span v-else class="mono">{{ what.ip }}</span>
++            </dd>
++            <dt>OS</dt>
++            <dd>{{ what.os || "non noto" }}</dd>
++          </dl>
++          <p v-if="what.provenance?.note" class="muted tiny">{{ what.provenance.note }}</p>
++        </section>
++
++        <section id="q-where" class="q-block">
++          <h2><span class="q-n">2</span> Dove sta</h2>
++          <p v-if="where.kind === 'behind_308'" class="placement behind">
++            {{ where.label }}
++            ·
++            <router-link to="/gs308">apri vista GS308EP</router-link>
++          </p>
++          <p v-else-if="where.value?.display === 'non misurato'" class="placement warn">
++            Posizione: <strong>non misurato</strong>
++            — {{ where.value.reason || where.freshness?.note }}
++            <span v-if="where.value.last_error" class="mono"> · {{ where.value.last_error }}</span>
++            <span v-if="where.value.last_known" class="muted">
++              · ultimo noto {{ where.value.last_known.switch_code }}:{{ where.value.last_known.port_number }}
++              @ {{ where.value.last_known.as_of }}
++            </span>
++          </p>
++          <p v-else class="placement">
++            {{ where.label || where.measured_as_current || "posizione non determinabile" }}
++            <span v-if="where.value?.ruolo_porta" class="muted">
++              · ruolo {{ where.value.ruolo_porta }}
++            </span>
++          </p>
++          <p class="fresh-line">
++            Fonte {{ where.source || where.freshness?.source || "—" }}
++            · età/stato
++            <code>{{ where.freshness?.state || "—" }}</code>
++            <span v-if="where.freshness?.last_at"> · {{ where.freshness.last_at }}</span>
++          </p>
++        </section>
++
++        <section id="q-since" class="q-block">
++          <h2><span class="q-n">3</span> Da quando</h2>
++          <p>{{ since.first_seen?.label || "storia non disponibile (I2)" }}</p>
++          <p class="muted tiny">
++            kind={{ since.first_seen?.kind }}
++            · eventi mostrati {{ since.event_count ?? 0 }}
++          </p>
++          <p v-if="since.excluded_note" class="defect-note" role="status">
++            {{ since.excluded_note }}
++          </p>
++          <details v-if="since.events?.length" class="hist">
++            <summary>Catena FDB ({{ since.events.length }} eventi, senza difetto O4)</summary>
++            <ul>
++              <li v-for="ev in since.events" :key="ev.id" class="mono tiny">
++                #{{ ev.id }} {{ ev.state }}
++                {{ ev.switch }}:{{ ev.port }}
++                {{ ev.reason || "—" }}
++                @ {{ ev.observed_at }}
++              </li>
++            </ul>
++          </details>
++          <p v-if="since.asset_first_seen?.at" class="muted tiny">
++            Asset.first_seen (colonna): {{ since.asset_first_seen.at }}
++            — {{ since.asset_first_seen.note }}
++          </p>
++        </section>
++
++        <section id="q-does" class="q-block">
++          <h2><span class="q-n">4</span> Cosa fa</h2>
+           <AssetHabits :asset-id="assetId" wide />
+-        </div>
+-        <div id="note">
+-          <AssetNotes :asset-id="assetId" @saved="loadAsset(assetId)" />
+-        </div>
++        </section>
++
++        <section id="q-expected" class="q-block" :class="{ priority: expected.central }">
++          <h2><span class="q-n">5</span> È atteso?</h2>
++          <p>
++            <span class="chip" :data-state="expected.state">{{ expected.label }}</span>
++            <span v-if="expected.solo_l2" class="chip">solo-L2</span>
++          </p>
++          <p v-if="expected.ignore_reason" class="muted">Motivo ignora: {{ expected.ignore_reason }}</p>
++          <p v-if="expected.central" class="muted">
++            Domanda centrale per questo dispositivo — usa le azioni in cima.
++          </p>
++        </section>
++
++        <section id="q-inference" class="q-block inference">
++          <h2><span class="tag infer">{{ inference?.title || AI_INFERENCE_LABEL }}</span></h2>
++          <p class="infer-disclaimer">{{ inference?.disclaimer }}</p>
++          <ul v-if="inference?.items?.length">
++            <li v-for="(it, i) in inference.items" :key="i">
++              {{ it.label }}
++              · fonte <code>{{ it.source }}</code>
++              · confidenza {{ Math.round((it.confidence || 0) * 100) }}%
++            </li>
++          </ul>
++          <p v-else class="muted">Nessun segnale di inferenza disponibile.</p>
++          <p class="muted tiny">
++            LLM: {{ inference?.llm_slot?.enabled ? "on" : "off" }} — {{ inference?.llm_slot?.reason }}
++          </p>
++        </section>
++
++        <section v-if="nonMeasured.length" class="q-block">
++          <h2>Non misurato (freschezza)</h2>
++          <ul>
++            <li v-for="(nm, i) in nonMeasured" :key="i">
++              <code>{{ nm.field }}</code>: {{ nm.display }}
++              · {{ nm.state }} — {{ nm.reason }}
++              <span v-if="nm.last_error" class="mono"> · err: {{ nm.last_error }}</span>
++            </li>
++          </ul>
++        </section>
++
++        <section class="q-block">
++          <h2>Note</h2>
++          <AssetNotes :asset-id="assetId" @saved="loadDossier(assetId)" />
++        </section>
++
++        <details class="diagnosis" :open="showDiagnosis" @toggle="showDiagnosis = $event.target.open">
++          <summary>Dettaglio diagnostico (chiuso di default)</summary>
++          <p class="muted">{{ dossier.diagnosis?.note }}</p>
++          <p class="mono tiny">{{ dossier.diagnosis?.identity_endpoint }}</p>
++          <p class="mono tiny">technical grezzi: {{ dossier.diagnosis?.technical_endpoint }}</p>
++        </details>
+       </template>
+     </template>
+   </div>
+@@ -259,135 +438,181 @@ watch(
+ 
+ <style scoped>
+ .dossier {
+-  max-width: 980px;
++  max-width: 920px;
+   margin: 0 auto;
+-  padding-bottom: 48px;
++  padding: 0 0.75rem 3rem;
+   font-family: var(--font-sans);
+   color: var(--text-1);
+ }
+-.dossier-toc {
+-  position: sticky;
+-  top: 0;
+-  z-index: 5;
+-  display: flex;
+-  flex-wrap: wrap;
+-  gap: 4px 14px;
+-  padding: 10px 0;
+-  margin-bottom: 8px;
+-  background: color-mix(in srgb, var(--bg-0) 92%, transparent);
+-  border-bottom: 0.5px solid var(--border);
+-  backdrop-filter: blur(6px);
+-}
+-.dossier-toc a {
+-  font-size: 12px;
+-  color: var(--text-2);
+-  text-decoration: none;
+-}
+-.dossier-toc a:hover { color: var(--accent); }
+-.dossier-lead {
+-  margin: -0.2rem 0 1rem;
+-  font-size: 13px;
+-  color: var(--text-2);
+-}
++.dossier-lead { color: var(--text-3); font-size: 0.9rem; }
+ .dossier-search {
+   width: 100%;
+-  max-width: 36rem;
+-  box-sizing: border-box;
++  max-width: 28rem;
++  padding: 0.45rem 0.65rem;
++  margin: 0.5rem 0 1rem;
++  border-radius: 4px;
++  border: 1px solid var(--border);
+   background: var(--bg-1);
+-  border: 0.5px solid var(--border);
+-  border-radius: var(--radius);
+-  padding: 10px 14px;
+   color: inherit;
+-  font-family: inherit;
+-  font-size: 14px;
+-  margin-bottom: 1.25rem;
+-}
+-.dossier-search:focus-visible {
+-  outline: 2px solid var(--accent);
+-  outline-offset: 2px;
+-  border-color: var(--accent);
+-}
+-.dossier-sec { margin-top: 1.5rem; }
+-.dossier-h {
+-  font-size: 12px;
+-  font-weight: 500;
+-  text-transform: none;
+-  letter-spacing: 0;
+-  color: var(--text-2);
+-  margin: 0 0 0.6rem;
+ }
++.dossier-sec { margin-top: 1rem; }
++.dossier-h { font-size: 0.95rem; margin: 0 0 0.4rem; }
+ .dossier-hit {
+-  display: grid;
+-  grid-template-columns: 1fr auto;
+-  grid-template-rows: auto auto;
+-  gap: 2px 12px;
++  display: flex;
++  flex-wrap: wrap;
++  gap: 0.35rem 0.75rem;
+   width: 100%;
+   text-align: left;
+-  background: var(--bg-1);
+-  border: 0.5px solid var(--border);
+-  border-radius: var(--radius);
+-  padding: 10px 12px;
+-  margin-bottom: 6px;
++  padding: 0.45rem 0.35rem;
++  border: 0;
++  border-bottom: 1px solid var(--border);
++  background: transparent;
+   color: inherit;
+-  font-family: inherit;
+   cursor: pointer;
++  font: inherit;
+ }
+-.dossier-hit:hover { border-color: var(--accent); }
+-.dossier-hit .name { font-size: 14px; font-weight: 500; grid-column: 1; }
+-.dossier-hit .name.unnamed { font-style: italic; color: var(--text-2); font-weight: 400; }
+-.dossier-hit .meta { font-size: 12px; color: var(--text-3); grid-column: 1; font-family: var(--font-mono); }
+-.dossier-hit .fresh { font-size: 11px; color: var(--text-2); grid-column: 2; grid-row: 1 / span 2; align-self: center; }
+-.dossier-muted { font-size: 13px; color: var(--text-3); }
+-.dossier-err { color: var(--alert); font-size: 13px; }
+-.dossier-head {
++.dossier-hit .name.unnamed { color: var(--text-3); font-style: italic; }
++.dossier-muted { color: var(--text-3); font-size: 0.85rem; }
++.dossier-head { margin-bottom: 0.75rem; }
++.dossier-back {
++  border: 0; background: transparent; color: var(--accent); cursor: pointer; font: inherit; padding: 0;
++}
++.dossier-title { margin: 0.25rem 0; font-size: 1.35rem; }
++.dossier-title.unnamed { color: var(--text-3); font-style: italic; }
++.blue-team {
++  margin: 0.35rem 0 0;
++  padding: 0.35rem 0.5rem;
++  border-left: 3px solid var(--warn, #d4b85a);
++  background: rgba(180, 160, 80, 0.1);
++  font-size: 0.85rem;
++}
++.dossier-toc {
+   display: flex;
+   flex-wrap: wrap;
+-  align-items: flex-start;
+-  justify-content: space-between;
+-  gap: 1rem;
+-  margin-bottom: 0.5rem;
+-  padding-bottom: 1rem;
+-  border-bottom: 0.5px solid var(--border);
++  gap: 0.55rem 0.85rem;
++  margin: 0.5rem 0 1rem;
++  font-size: 0.82rem;
+ }
+-.dossier-back {
+-  background: none; border: none; color: var(--accent);
+-  font-family: inherit; font-size: 12px; padding: 0; cursor: pointer; margin-bottom: 6px;
+-  min-height: 0;
++.dossier-toc a { color: var(--accent); }
++.q-block {
++  margin: 0.85rem 0;
++  padding: 0.75rem 0 0.35rem;
++  border-top: 1px solid var(--border);
+ }
+-.dossier-title {
+-  margin: 0; font-size: 22px; font-weight: 500; line-height: 1.2;
++.q-block h2 {
++  margin: 0 0 0.5rem;
++  font-size: 1rem;
++  display: flex;
++  align-items: center;
++  gap: 0.45rem;
++  flex-wrap: wrap;
+ }
+-.dossier-title.unnamed { font-style: italic; font-weight: 400; color: var(--text-2); }
+-.dossier-sub {
+-  margin-top: 6px; font-size: 13px; color: var(--text-2);
+-  display: flex; flex-wrap: wrap; gap: 0.4rem;
+-  font-family: var(--font-mono);
++.q-n {
++  display: inline-flex;
++  width: 1.35rem;
++  height: 1.35rem;
++  align-items: center;
++  justify-content: center;
++  border-radius: 50%;
++  background: rgba(255, 255, 255, 0.08);
++  font-size: 0.75rem;
++  font-weight: 650;
+ }
+-.dossier-sub .presence {
+-  font-family: var(--font-sans);
+-  font-size: 11px;
+-  border: 0.5px solid var(--border); border-radius: 20px; padding: 1px 8px;
++.actions-first { border-top: 0; padding-top: 0; }
++.actions-first.priority, .q-block.priority {
++  border-left: 3px solid var(--warn, #d4b85a);
++  padding-left: 0.65rem;
+ }
+-.dossier-ip-divergence,
+-.dossier-branch-link {
+-  margin: 0.45rem 0 0;
+-  font-size: 12px;
+-  color: var(--warn);
+-  line-height: 1.35;
++.action-row { display: flex; flex-wrap: wrap; gap: 0.4rem; }
++.dossier-btn {
++  font: inherit;
++  font-size: 0.82rem;
++  padding: 0.35rem 0.65rem;
++  border-radius: 4px;
++  border: 1px solid var(--border);
++  background: var(--bg-1);
++  color: inherit;
++  cursor: pointer;
+ }
+-.dossier-branch-link a {
+-  color: var(--accent);
+-  text-decoration: none;
++.dossier-btn:disabled { opacity: 0.45; cursor: not-allowed; }
++.ignore-reason {
++  display: flex;
++  flex-direction: column;
++  gap: 0.2rem;
++  margin-top: 0.55rem;
++  font-size: 0.8rem;
+ }
+-.dossier-branch-link a:hover { text-decoration: underline; }
+-.dossier-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+-.dossier-btn {
++.ignore-reason input {
++  padding: 0.3rem 0.45rem;
++  border-radius: 4px;
++  border: 1px solid var(--border);
+   background: var(--bg-1);
+-  border: 0.5px solid var(--border);
+-  border-radius: var(--radius); padding: 7px 12px;
+-  color: var(--text-2); font-family: inherit; font-size: 12.5px; cursor: pointer;
+-  min-height: 0;
++  color: inherit;
++}
++.kv {
++  display: grid;
++  grid-template-columns: 7.5rem 1fr;
++  gap: 0.35rem 0.65rem;
++  margin: 0;
++  font-size: 0.9rem;
++}
++.kv dt { color: var(--text-3); margin: 0; }
++.kv dd { margin: 0; }
++.chip {
++  display: inline-block;
++  font-size: 0.72rem;
++  padding: 0.08rem 0.35rem;
++  border-radius: 3px;
++  background: rgba(255, 255, 255, 0.08);
++  margin-left: 0.25rem;
++}
++.chip[data-state="atteso"] { background: rgba(60, 140, 90, 0.2); color: var(--ok, #6ecf8f); }
++.chip[data-state="non_riconosciuto"] { background: rgba(200, 120, 40, 0.2); color: var(--warn, #d4b85a); }
++.chip[data-state="ignorato"] { background: rgba(100, 100, 100, 0.25); }
++.placement { margin: 0.2rem 0; font-size: 0.92rem; }
++.placement.behind { color: var(--warn, #d4b85a); font-style: italic; }
++.placement.warn { color: var(--warn, #d4b85a); }
++.fresh-line, .tiny { font-size: 0.78rem; color: var(--text-3); }
++.defect-note {
++  margin: 0.4rem 0;
++  padding: 0.4rem 0.55rem;
++  border-left: 3px solid var(--warn, #d4b85a);
++  background: rgba(180, 160, 80, 0.1);
++  font-size: 0.85rem;
++}
++.inference {
++  border-left: 3px solid rgba(155, 123, 212, 0.55);
++  padding-left: 0.65rem;
++}
++.tag.infer {
++  font-size: 0.72rem;
++  font-weight: 650;
++  letter-spacing: 0.03em;
++  padding: 0.12rem 0.4rem;
++  border-radius: 4px;
++  background: rgba(155, 123, 212, 0.18);
++  color: #c4b0e8;
++  text-transform: uppercase;
++}
++.infer-disclaimer {
++  font-size: 0.8rem;
++  color: var(--warn, #d4b85a);
++  font-style: italic;
++}
++.diagnosis { margin-top: 1.25rem; font-size: 0.85rem; color: var(--text-3); }
++.decide-more { margin-top: 0.75rem; font-size: 0.85rem; }
++.notice {
++  padding: 0.4rem 0.55rem;
++  background: rgba(180, 160, 80, 0.12);
++  border-radius: 4px;
++  font-size: 0.86rem;
++}
++.mono { font-family: var(--font-mono, ui-monospace, monospace); }
++.muted { color: var(--text-3); }
++a { color: var(--accent); }
++
++@media (max-width: 640px) {
++  .kv { grid-template-columns: 1fr; }
++  .kv dt { margin-top: 0.25rem; }
+ }
+-.dossier-btn:hover { border-color: var(--accent); color: var(--text-1); }
+-.mono { font-family: var(--font-mono); }
+ </style>
