@@ -20,6 +20,14 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
 - **Stato nel gate:** sanato in `TEMPORARY_ALLOWLIST` di `w8_currency_gate.py` con `debt=DEBT-WPGATE-CURRENCY-COUNT-LOCAL` (stampato in testa all'output; l'esito è `PASS (con 1 eccezione temporanea)`).
 - **Vietato:** dichiararlo chiuso allowlistandolo in **permanenza**; introdurre altre letture `state=="current"` grezze fuori dal resolver.
 
+## DEBT-G8-ENDPOINT-LEG-UNEXERCISED
+
+- **Priorità:** bassa — aperto W8-fix2 / 0.10.63.
+- **Cosa:** la leg endpoint di G8 (`GET /api/assets/{id}`, superficie consumer reale) resta **SKIP** in produzione perché richiede `OBS_G8_TOKEN`, che è una **credenziale di sessione** (STOP legittimo: informazione/segreto che non va cablato nel gate).
+- **Conseguenza:** su produzione la discriminazione di G8 poggia sul **solo `--mutate-probe`**, dato che la leg `asset.name` interna è **tautologica** (T1: `presentation_name_for_asset` ripiega su `Asset.name` quando il fatto è assente) e la leg `os.guess` è prevista **vacua** (T5a: nessun os.guess fact corrente). Il controllo negativo è ora onesto (rimosso il caso speciale `MUTATE_SENTINEL`, aggiunta la pre-condizione R!=None).
+- **Ripresa:** esercitare la leg endpoint con un token fornito a runtime (non versionato), oppure con un client interno autenticato, per confrontare la correntezza del resolver con la superficie HTTP reale.
+- **Vietato:** dichiarare G8 «copertura completa» finché la leg endpoint non è esercitata; cablare `OBS_G8_TOKEN` nel repo o nel gate.
+
 ## PRESIDIO-CURRENCY-GATE (presidio permanente, non debito)
 
 - **Natura:** presidio, non debito da chiudere — istituito W8 / 0.10.63; indurito W8-fix / W8-fix2.
