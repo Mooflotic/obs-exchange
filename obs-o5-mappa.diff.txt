@@ -1,0 +1,1822 @@
+# obs-o5-mappa.diff.txt
+# SOLO mappa Impianto + plant API + helpers/test
+# Esclusioni: bonifica F0, shadow hotfix, KNOWN_DEBT, VERSION
+
+##### api/app/services/fdb_defense.py :: build_plant_fdb_view
++def build_plant_fdb_view(db: Session, *, now: datetime | None = None) -> dict[str, Any]:
++    """O5 M2–M4 — per-port FDB truth for Impianto (facts via helpers, not ORM outside facts/)."""
++    from app.services.switch_capabilities import switch_capabilities
++
++    now = now or utcnow()
++    roles = classify_port_roles(db)
++    with_ip = _macs_with_current_ip(db)
++    currents = list_current_port_fdb_mac(db)
++    ports = {p.id: p for p in db.scalars(select(SwitchPort)).all()}
++    switches = {s.id: s for s in db.scalars(select(Switch)).all()}
++
++    # MAC → inventory name (Interface.mac join; name is presentation not ownership)
++    mac_iface = {
++        normalize_mac(m): iface
++        for iface in db.scalars(select(Interface).where(Interface.mac.isnot(None))).all()
++        for m in [iface.mac]
++        if normalize_mac(m)
++    }
++
++    by_port: dict[int, list[dict[str, Any]]] = {}
++    for fa in currents:
++        pid = int(fa["subject_id"])
++        vj = dict(fa.get("value_json") or {})
++        mac = normalize_mac(fa.get("value_norm") or vj.get("mac") or "")
++        if not mac:
++            continue
++        iface = mac_iface.get(mac)
++        asset = iface.asset if iface else None
++        name = (asset.name or "").strip() if asset else ""
++        quality = "absent"
++        if vj.get("baseline"):
++            quality = "verified"
++        elif vj.get("baseline_reconstructed"):
++            quality = "reconstructed"
++        by_port.setdefault(pid, []).append(
++            {
++                "mac": mac,
++                "name": name or None,
++                "name_label": name if name else "nome non noto",
++                "asset_id": int(asset.id) if asset else None,
++                "solo_l2": mac not in with_ip,
++                "randomized": bool(vj.get("randomized") or is_locally_administered(mac)),
++                "baseline_quality": quality,
++                "baseline_at": vj.get("baseline_at"),
++                "oui": _oui_vendor_label(mac),
++                "inference": _offline_inference(db, mac),
++                "fact_id": fa["id"],
++            }
++        )
++
++    port_rows: list[dict[str, Any]] = []
++    empty_measured: list[int] = []
++    non_coperta: list[int] = []
++    non_fresca: list[int] = []
++
++    for p in sorted(ports.values(), key=lambda x: (x.switch_id, x.number or 0)):
++        sw = switches.get(p.switch_id)
++        role = roles.get(p.id, {})
++        cap = switch_capabilities(getattr(sw, "model", None) or (sw.name if sw else ""))
++        fdb_supported = cap.get("fdb_supported") is not False
++        last = p.last_fdb_at
++        age_h = None
++        freshness = "assente"
++        if not fdb_supported:
++            freshness = "non_coperta"
++            empty_state = "non_coperta"
++            non_coperta.append(int(p.id))
++        elif last is None:
++            freshness = "sorgente_non_disponibile"
++            empty_state = "sorgente_non_fresca"
++            non_fresca.append(int(p.id))
++        else:
++            ref = now.replace(tzinfo=None) if getattr(now, "tzinfo", None) else now
++            nt = last.replace(tzinfo=None) if getattr(last, "tzinfo", None) else last
++            age_h = (ref - nt).total_seconds() / 3600.0
++            if age_h > FDB_STALE_HOURS:
++                freshness = "sorgente_non_fresca"
++                empty_state = "sorgente_non_fresca"
++                non_fresca.append(int(p.id))
++            else:
++                freshness = "misurata_fresca"
++                macs = by_port.get(p.id) or []
++                if not macs and not (p.observed_macs or []):
++                    empty_state = "misurata_senza_dispositivi"
++                    empty_measured.append(int(p.id))
++                else:
++                    empty_state = None
++
++        # Prefer fact bindings; fall back to observed_macs snapshot for display
++        mac_list = by_port.get(p.id)
++        if mac_list is None:
++            mac_list = []
++            for raw in p.observed_macs or []:
++                mac = normalize_mac(raw)
++                if not mac:
++                    continue
++                iface = mac_iface.get(mac)
++                asset = iface.asset if iface else None
++                name = (asset.name or "").strip() if asset else ""
++                mac_list.append(
++                    {
++                        "mac": mac,
++                        "name": name or None,
++                        "name_label": name if name else "nome non noto",
++                        "asset_id": int(asset.id) if asset else None,
++                        "solo_l2": mac not in with_ip,
++                        "randomized": is_locally_administered(mac),
++                        "baseline_quality": "absent",
++                        "baseline_at": None,
++                        "oui": _oui_vendor_label(mac),
++                        "inference": _offline_inference(db, mac),
++                        "fact_id": None,
++                    }
++                )
++
++        qualities = {m["baseline_quality"] for m in mac_list}
++        if "verified" in qualities:
++            port_bq = "verified"
++        elif "reconstructed" in qualities:
++            port_bq = "reconstructed"
++        elif mac_list:
++            port_bq = "absent"
++        else:
++            port_bq = "absent"
++
++        meta = sw.meta if sw and isinstance(sw.meta, dict) else {}
++        fp = dict(meta.get("fdb_poll") or {})
++        link = None
++        if p.link_to_port_id:
++            remote = ports.get(p.link_to_port_id)
++            rsw = switches.get(remote.switch_id) if remote else None
++            link = {
++                "kind": "fact",
++                "to_port_id": p.link_to_port_id,
++                "to_switch_code": rsw.code if rsw else None,
++                "to_port_number": remote.number if remote else None,
++                "label": "link_to_port_id",
++            }
++
++        port_rows.append(
++            {
++                "port_id": int(p.id),
++                "switch_id": int(p.switch_id),
++                "switch_code": sw.code if sw else "",
++                "switch_name": sw.name if sw else "",
++                "port_number": int(p.number or 0),
++                "ruolo_porta": role.get("ruolo_porta", "non_determinato"),
++                "ruolo_rule": role.get("rule", ""),
++                "macs": mac_list,
++                "mac_count": len(mac_list),
++                "baseline_quality": port_bq,
++                "freshness": freshness,
++                "empty_state": empty_state,
++                "last_fdb_at": last.isoformat() + "Z" if last else None,
++                "age_hours": None if age_h is None else round(age_h, 2),
++                "fdb_supported": fdb_supported,
++                "poll_ok": fp.get("ok"),
++                "poll_error": str(fp.get("error") or "") or None,
++                "link": link,
++                "actions": [
++                    {"id": "dossier", "label": "Apri dossier"},
++                    {"id": "acknowledge", "label": "Riconosci come atteso"},
++                    {"id": "ignore", "label": "Ignora con motivo"},
++                ],
++            }
++        )
++
++    links = [
++        {
++            "from_port_id": r["port_id"],
++            "to_port_id": r["link"]["to_port_id"],
++            "from": f"{r['switch_code']}:{r['port_number']}",
++            "to": f"{r['link']['to_switch_code']}:{r['link']['to_port_number']}",
++            "kind": "fact",
++            "rule": "link_to_port_id",
++        }
++        for r in port_rows
++        if r.get("link")
++    ]
++    # dedupe undirected
++    seen = set()
++    links_u = []
++    for L in links:
++        key = tuple(sorted((L["from_port_id"], L["to_port_id"])))
++        if key in seen:
++            continue
++        seen.add(key)
++        links_u.append(L)
++
++    return {
++        "window_hours": FDB_STALE_HOURS,
++        "ports": port_rows,
++        "links": links_u,
++        "empty_measured_port_ids": empty_measured,
++        "non_coperta_port_ids": non_coperta,
++        "non_fresca_port_ids": non_fresca,
++        "discarded_moves": {
++            "count": count_o4_defect_moves(db),
++            "debt": "DEBT-O4-SPURIOUS-MOVES",
++            "reason": "o4_defect_concurrent_presence_move",
++            "note": (
++                "Supersession spurie O4 marcate, non cancellate; escluse da S-B e conteggio mac_move attivo."
++            ),
++        },
++    }
++
++
+
+##### api/app/routers/fdb_defense.py
++"""O4 FDB defensive signals API."""
++
++from __future__ import annotations
++
++from fastapi import APIRouter, Depends, Request
++from pydantic import BaseModel
++from sqlalchemy.orm import Session
++
++from app.auth import check_csrf, require_user
++from app.config import Settings, get_settings
++from app.db import get_db
++from app.models import User
++from app.services.fdb_defense import (
++    acknowledge_signal,
++    build_fdb_defense_signals,
++    build_plant_fdb_view,
++    classify_port_roles,
++)
++
++router = APIRouter(prefix="/api/fdb-defense", tags=["fdb-defense"])
++
++
++class AckBody(BaseModel):
++    uid: str
++    action: str = "acknowledge"
++    reason: str = ""
++    signal_key: str = ""
++
++
++@router.get("/signals")
++def get_signals(db: Session = Depends(get_db), user: User = Depends(require_user)):
++    return build_fdb_defense_signals(db)
++
++
++@router.get("/plant")
++def get_plant(db: Session = Depends(get_db), user: User = Depends(require_user)):
++    return build_plant_fdb_view(db)
++
++
++@router.get("/port-roles")
++def get_port_roles(db: Session = Depends(get_db), user: User = Depends(require_user)):
++    return {"roles": list(classify_port_roles(db).values())}
++
++
++@router.post("/ack")
++def post_ack(
++    body: AckBody,
++    request: Request,
++    db: Session = Depends(get_db),
++    user: User = Depends(require_user),
++    settings: Settings = Depends(get_settings),
++):
++    check_csrf(request, settings)
++    row = acknowledge_signal(
++        db,
++        uid=body.uid,
++        action=body.action,
++        reason=body.reason,
++        user_id=user.id,
++        signal_key=body.signal_key,
++    )
++    db.commit()
++    return {"ok": True, "uid": row.uid, "status": row.status, "kind": row.kind}
+
+##### web/src/plantFdb.js
++/**
++ * O5 — Impianto FDB presentation helpers (facts vs empty states, I2).
++ */
++
++/** @param {object|null|undefined} plantPort from /api/fdb-defense/plant ports[] */
++export function plantEmptyStateLabel(plantPort) {
++  const st = plantPort?.empty_state;
++  if (st === "misurata_senza_dispositivi") {
++    return {
++      code: st,
++      label: "misurata · senza dispositivi",
++      hint: "FDB fresco, zero MAC — porta senza dispositivo (≠ non coperta).",
++    };
++  }
++  if (st === "non_coperta") {
++    return {
++      code: st,
++      label: "non coperta · FDB non supportato",
++      hint: "Limite strutturale dell'apparato (I7) — nessuna telemetria inventata.",
++    };
++  }
++  if (st === "sorgente_non_fresca") {
++    return {
++      code: st,
++      label: "sorgente non fresca",
++      hint: plantPort?.poll_error
++        ? `sorgente_non_disponibile — ${plantPort.poll_error}`
++        : "sorgente_non_disponibile (≠ dispositivo_assente).",
++    };
++  }
++  return null;
++}
++
++/** @param {string} quality */
++export function baselineQualityLabel(quality) {
++  if (quality === "verified") return "baseline verificata";
++  if (quality === "reconstructed") {
++    return "baseline ricostruita — storia precedente non disponibile";
++  }
++  return "baseline assente";
++}
++
++/**
++ * @param {object[]} plantPorts
++ * @param {string} q
++ */
++export function filterPlantPortsByQuery(plantPorts, q) {
++  const needle = String(q || "")
++    .trim()
++    .toLowerCase();
++  if (!needle) return plantPorts || [];
++  return (plantPorts || []).filter((p) => {
++    const hay = [
++      p.switch_code,
++      p.switch_name,
++      String(p.port_number),
++      ...(p.macs || []).flatMap((m) => [m.mac, m.name_label, m.oui, m.name]),
++    ]
++      .filter(Boolean)
++      .join(" ")
++      .toLowerCase();
++    return hay.includes(needle);
++  });
++}
++
++/**
++ * @param {object} port
++ * @param {{ soloL2?: boolean, randomized?: boolean, reconstructed?: boolean, stale?: boolean }} filters
++ */
++export function plantPortMatchesFilters(port, filters = {}) {
++  const macs = port.macs || [];
++  if (filters.soloL2 && !macs.some((m) => m.solo_l2)) return false;
++  if (filters.randomized && !macs.some((m) => m.randomized)) return false;
++  if (filters.reconstructed && port.baseline_quality !== "reconstructed") return false;
++  if (filters.stale && port.freshness !== "sorgente_non_fresca" && port.empty_state !== "sorgente_non_fresca") {
++    return false;
++  }
++  return true;
++}
+
+##### web/src/plantFdb.test.js
++import assert from "node:assert/strict";
++import test from "node:test";
++import {
++  baselineQualityLabel,
++  filterPlantPortsByQuery,
++  plantEmptyStateLabel,
++  plantPortMatchesFilters,
++} from "./plantFdb.js";
++
++test("I2: empty states distinct labels", () => {
++  const a = plantEmptyStateLabel({ empty_state: "misurata_senza_dispositivi" });
++  const b = plantEmptyStateLabel({ empty_state: "non_coperta" });
++  const c = plantEmptyStateLabel({
++    empty_state: "sorgente_non_fresca",
++    poll_error: "Timeout: No Response",
++  });
++  assert.notEqual(a.label, b.label);
++  assert.notEqual(a.label, c.label);
++  assert.notEqual(b.label, c.label);
++  assert.ok(c.hint.includes("Timeout"));
++  assert.ok(b.hint.toLowerCase().includes("strutturale"));
++});
++
++test("baseline reconstructed ≠ verified", () => {
++  assert.ok(baselineQualityLabel("reconstructed").includes("ricostruita"));
++  assert.ok(baselineQualityLabel("verified").includes("verificata"));
++  assert.notEqual(baselineQualityLabel("reconstructed"), baselineQualityLabel("verified"));
++});
++
++test("search highlights by MAC", () => {
++  const ports = [
++    {
++      port_id: 33,
++      switch_code: "310c",
++      port_number: 5,
++      macs: [{ mac: "D4:52:EE:C3:25:16", name_label: "nome non noto" }],
++    },
++    {
++      port_id: 1,
++      switch_code: "328c",
++      port_number: 1,
++      macs: [{ mac: "AA:BB:CC:DD:EE:FF", name_label: "Cassiopea" }],
++    },
++  ];
++  const hit = filterPlantPortsByQuery(ports, "D4:52:EE:C3:25:16");
++  assert.equal(hit.length, 1);
++  assert.equal(hit[0].port_id, 33);
++});
++
++test("filters solo-L2 / reconstructed", () => {
++  const p = {
++    baseline_quality: "reconstructed",
++    freshness: "misurata_fresca",
++    macs: [{ solo_l2: true, randomized: false }],
++  };
++  assert.equal(plantPortMatchesFilters(p, { soloL2: true }), true);
++  assert.equal(plantPortMatchesFilters(p, { reconstructed: true }), true);
++  assert.equal(plantPortMatchesFilters(p, { stale: true }), false);
++});
+
+##### web/src/views/Plant.vue
++<script setup>
++import { computed, nextTick, onMounted, ref, watch } from "vue";
++import { useRoute, useRouter } from "vue-router";
++import { api } from "../api";
++import PageHeader from "../components/PageHeader.vue";
++import Branch308Card from "../components/Branch308Card.vue";
++import ViewStateBanner from "../components/ViewStateBanner.vue";
++import Drawer from "../components/Drawer.vue";
++import ToggleSwitch from "../components/ToggleSwitch.vue";
++import {
++  portCellPresentation,
++  portRoleTooltip,
++  rolePresentation,
++} from "../portPresentation";
++import {
++  FDB_STALE_HOURS,
++  fdbCoverageReport,
++  fdbCoverageStatus,
++  fdbFreshnessWindowLabel,
++  fdbPortCoverageState,
++  gs308epIpDivergenceNote,
++  isGs308epSwitch,
++} from "../observatoryUx";
++import { formatDateTime } from "../formatTime";
++import {
++  baselineQualityLabel,
++  filterPlantPortsByQuery,
++  plantEmptyStateLabel,
++  plantPortMatchesFilters,
++} from "../plantFdb";
++
++const route = useRoute();
++const router = useRouter();
++const switches = ref([]);
++const plantFdb = ref({ ports: [], links: [], discarded_moves: null });
++const searchQ = ref("");
++const filterSoloL2 = ref(false);
++const filterRandomized = ref(false);
++const filterReconstructed = ref(false);
++const filterStale = ref(false);
++const selected = ref(null);
++const form = ref({});
++const msg = ref("");
++const notice = ref("");
++const busyKey = ref("");
++const showUnreachable = ref(false);
++const loading = ref(true);
++const error = ref("");
++const hiddenDeviceCount = computed(() =>
++  switches.value.reduce(
++    (total, sw) =>
++      total +
++      sw.ports.filter((port) => port.asset_id && port.asset_visible_by_default === false)
++        .length,
++    0,
++  ),
++);
++
++const plantByPortId = computed(() => {
++  const m = new Map();
++  for (const p of plantFdb.value?.ports || []) m.set(Number(p.port_id), p);
++  return m;
++});
++const discardedMoves = computed(() => plantFdb.value?.discarded_moves || null);
++const matchedSearchPortIds = computed(() => {
++  const hits = filterPlantPortsByQuery(plantFdb.value?.ports || [], searchQ.value);
++  return new Set(hits.map((p) => Number(p.port_id)));
++});
++function plantFor(port) {
++  return plantByPortId.value.get(Number(port?.id)) || null;
++}
++function portHighlighted(port) {
++  if (!String(searchQ.value || "").trim()) return false;
++  return matchedSearchPortIds.value.has(Number(port.id));
++}
++function portFilteredOut(port) {
++  const pf = plantFor(port);
++  if (!pf) return false;
++  const filters = {
++    soloL2: filterSoloL2.value,
++    randomized: filterRandomized.value,
++    reconstructed: filterReconstructed.value,
++    stale: filterStale.value,
++  };
++  if (!filters.soloL2 && !filters.randomized && !filters.reconstructed && !filters.stale) {
++    return false;
++  }
++  return !plantPortMatchesFilters(pf, filters);
++}
++
++const plantPartial = computed(() => {
++  if (loading.value || error.value || !switches.value.length) return "";
++  const failed = switches.value.filter((sw) => sw.fdb_poll?.ok === false);
++  const ok = switches.value.filter((sw) => sw.fdb_poll?.ok === true);
++  if (failed.length && ok.length) {
++    return `Rilevamento FDB non riuscito su ${failed.length} switch; i dati mostrati sono parziali.`;
++  }
++  return "";
++});
++
++/** F-13 / UX2.2.4 — copertura FDB non aggiornata: dichiara la data reale (I2/I3). */
++const fdbCoverage = computed(() => fdbCoverageStatus(switches.value || []));
++const fdbCoverageMessage = computed(() => {
++  const c = fdbCoverage.value;
++  if (!c || !c.stale) return "";
++  if (!c.newestAt) {
++    return "Copertura FDB non disponibile: nessuna mappatura porte da FDB e ultimo rilevamento non riuscito. La collocazione delle porte può non essere corrente.";
++  }
++  return `Copertura FDB non aggiornata: ultima mappatura porte da FDB il ${fmtWhen(c.newestAt)} (circa ${c.hoursAgo} h fa). La collocazione delle porte mostrata può non essere corrente.`;
++});
++
++/** O2/B1 — report di copertura di prima classe (stati per porta + finestra dichiarata). */
++const coverageReport = computed(() => fdbCoverageReport(switches.value || []));
++const coverageWindowLabel = computed(() => fdbFreshnessWindowLabel(FDB_STALE_HOURS));
++
++async function load() {
++  loading.value = true;
++  error.value = "";
++  try {
++    const [sw, plant] = await Promise.all([
++      api.switches(),
++      api.fdbDefensePlant().catch(() => ({ ports: [], links: [] })),
++    ]);
++    switches.value = sw;
++    plantFdb.value = plant && typeof plant === "object" ? plant : { ports: [], links: [] };
++    await applyAssetDeepLink();
++    await applyMacDeepLink();
++  } catch (e) {
++    error.value = e.message || "Caricamento impianto fallito";
++  } finally {
++    loading.value = false;
++  }
++}
++
++/** Deep-link ?asset= / ?asset_id= → apri porta associata (F2.1). */
++async function applyAssetDeepLink() {
++  const raw = route.query.asset ?? route.query.asset_id;
++  if (raw == null || raw === "") return;
++  const id = Number(Array.isArray(raw) ? raw[0] : raw);
++  if (!Number.isFinite(id) || id <= 0) return;
++  for (const sw of switches.value || []) {
++    const port = (sw.ports || []).find((p) => Number(p.asset_id) === id);
++    if (port) {
++      pick(sw, port);
++      await nextTick();
++      document
++        .querySelector(`[data-port-id="${port.id}"]`)
++        ?.scrollIntoView({ behavior: "smooth", block: "center" });
++      return;
++    }
++  }
++}
++
++/** O5 M5 — ?fdb_mac= / search → evidenzia porta. */
++async function applyMacDeepLink() {
++  const raw = route.query.fdb_mac ?? route.query.mac;
++  if (raw == null || raw === "") return;
++  const mac = String(Array.isArray(raw) ? raw[0] : raw).trim().toUpperCase();
++  if (!mac) return;
++  searchQ.value = mac;
++  const hit = (plantFdb.value?.ports || []).find((p) =>
++    (p.macs || []).some((m) => String(m.mac || "").toUpperCase() === mac),
++  );
++  if (!hit) return;
++  for (const sw of switches.value || []) {
++    const port = (sw.ports || []).find((p) => Number(p.id) === Number(hit.port_id));
++    if (port) {
++      pick(sw, port);
++      await nextTick();
++      document
++        .querySelector(`[data-port-id="${port.id}"]`)
++        ?.scrollIntoView({ behavior: "smooth", block: "center" });
++      return;
++    }
++  }
++}
++
++async function plantAck(action, mac) {
++  const key = `plant-ack-${action}-${mac || ""}`;
++  busyKey.value = key;
++  notice.value = "";
++  try {
++    let reason = "";
++    if (action === "ignore") {
++      reason = window.prompt("Motivo (obbligatorio):", "") || "";
++      if (!reason.trim()) {
++        notice.value = "Ignora annullato.";
++        return;
++      }
++    }
++    // Reuse FDB ack surface with a plant-scoped uid
++    const uid = crypto.randomUUID?.() || String(Date.now());
++    await api.fdbDefenseAck({
++      uid,
++      action,
++      reason,
++      signal_key: `fdb:plant:${action}:${mac || selected.value?.port?.id || ""}`,
++    });
++    notice.value = `Azione ${action} registrata`;
++  } catch (e) {
++    error.value = e.message || "Azione fallita";
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++function openDossierFromMac(macEntry) {
++  if (macEntry?.asset_id) {
++    router.push({ path: `/dossier/${macEntry.asset_id}`, query: { from: "plant" } });
++    return;
++  }
++  notice.value = "Nessun dossier: MAC senza asset (nome non noto).";
++}
++
++watch(
++  () => [route.query.asset, route.query.asset_id],
++  () => {
++    if (switches.value.length) applyAssetDeepLink();
++  },
++);
++
++function pick(sw, port) {
++  selected.value = { sw, port };
++  form.value = {
++    patch_code: port.patch_code || "",
++    notes: port.notes || "",
++    warn: port.warn || "",
++    speed_mbps: port.speed_mbps || 0,
++    role: port.role_override ? port.role : "",
++  };
++  msg.value = "";
++}
++
++/** SNMP oper_status: se lo switch non lo espone, non mostrare un pallino grigio mute. */
++function snmpLiveSupported(sw) {
++  return sw?.capabilities?.snmp_supported !== false;
++}
++
++async function save() {
++  const payload = { ...form.value };
++  const currentOverride = selected.value.port.role_override
++    ? selected.value.port.role
++    : "";
++  if (payload.role === currentOverride) delete payload.role;
++  await api.updatePort(selected.value.port.id, payload);
++  await load();
++  const sw = switches.value.find((s) => s.id === selected.value.sw.id);
++  const port = sw.ports.find((p) => p.id === selected.value.port.id);
++  pick(sw, port);
++  msg.value = "Porta salvata";
++}
++
++function fdbBanner(sw) {
++  const capabilities = sw.capabilities || {};
++  if (capabilities.fdb_supported === false) {
++    return {
++      kind: "muted",
++      text: capabilities.fdb_message || "Rilevamento automatico non disponibile",
++    };
++  }
++  const poll = sw.fdb_poll || {};
++  if (!sw.ip) return { kind: "warn", text: "Nessun IP switch: rilevamento non disponibile" };
++  if (!sw.snmp_configured && !poll.at) {
++    return {
++      kind: "warn",
++      text: "Rilevamento automatico non configurato",
++    };
++  }
++  if (poll.at && poll.ok === false) {
++    return {
++      kind: "warn",
++      text: `Rilevamento non riuscito: ${poll.error || "switch non raggiungibile"}`,
++    };
++  }
++  if (poll.at && poll.ok) {
++    const when = fmtWhen(poll.at);
++    return {
++      kind: "ok",
++      text: `Rilevamento attivo · ${poll.entries || 0} device su ${poll.ports_touched || 0} porte · ${when}`,
++    };
++  }
++  return { kind: "muted", text: "In attesa del primo rilevamento automatico" };
++}
++
++/** Chip fonte capacità (GS308EP e switch senza SNMP/FDB). */
++function sourceChip(sw) {
++  const capabilities = sw.capabilities || {};
++  if (capabilities.fdb_supported === false || capabilities.snmp_supported === false) {
++    return "mappa manuale / FDB·LLDP upstream";
++  }
++  return "";
++}
++
++/**
++ * Badge freschezza a livello switch (F-13).
++ * Un poll FALLITO (`fdb_poll.ok===false`) NON è freschezza: in quel caso la vera
++ * data dei dati di porta è l'ultima mappatura FDB riuscita (`port.last_fdb_at`),
++ * marcata «non aggiornata» se oltre la finestra. Mai spacciare l'ora del tentativo.
++ */
++function switchFreshness(sw) {
++  const poll = sw.fdb_poll || {};
++  if (poll.at && poll.ok) return { text: `dati al ${fmtWhen(poll.at)}`, kind: "ok" };
++  const cov = fdbCoverageStatus([sw]);
++  if (cov && cov.newestAt) {
++    return {
++      text: `mappa porte da FDB del ${fmtWhen(cov.newestAt)}${cov.stale ? " — non aggiornata" : ""}`,
++      kind: cov.stale ? "warn" : "muted",
++    };
++  }
++  const manualAt = sw.field_sources?.updated_at || sw.meta?.manual_edit_at;
++  if (manualAt) return { text: `dati al ${fmtWhen(manualAt)} (manuale)`, kind: "muted" };
++  if (sw.capabilities?.fdb_supported === false) {
++    return { text: "dati da mappa manuale", kind: "muted" };
++  }
++  return { text: "dati non ancora disponibili", kind: "muted" };
++}
++
++function closeDrawer() {
++  selected.value = null;
++  form.value = {};
++  msg.value = "";
++}
++
++function traffic(value) {
++  const n = Number(value || 0);
++  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)} Gb/s`;
++  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)} Mb/s`;
++  if (n >= 1_000) return `${(n / 1_000).toFixed(1)} Kb/s`;
++  return `${Math.round(n)} b/s`;
++}
++
++function fmtWhen(iso) {
++  return formatDateTime(iso);
++}
++
++function sourceBadge(port) {
++  return port.role_source || "";
++}
++
++function deviceName(port, sw) {
++  return portCellPresentation(port, { fdb: fdbPortCoverageState(port, sw) }).primary;
++}
++
++function deviceHidden(port) {
++  return !!port.asset_id && port.asset_visible_by_default === false && !showUnreachable.value;
++}
++
++function displayedDeviceName(port, sw) {
++  return deviceHidden(port) ? "Storico nascosto" : deviceName(port, sw);
++}
++
++function displayedDeviceParts(port, sw) {
++  if (deviceHidden(port)) return { primary: "storico nascosto", secondary: "" };
++  return portCellPresentation(port, { fdb: fdbPortCoverageState(port, sw) });
++}
++
++function portFdbBadge(port, sw) {
++  const st = fdbPortCoverageState(port, sw);
++  if (st.state === "misurata_fresca") {
++    return { text: "FDB fresca", kind: "ok", title: `ultima mappatura ${fmtWhen(st.last_fdb_at)}` };
++  }
++  if (st.state === "misurata_vecchia") {
++    return {
++      text: `FDB ${fmtWhen(st.last_fdb_at)}`,
++      kind: "warn",
++      title: `misurata_vecchia · ≈${Math.floor(st.age_hours || 0)} h · ${coverageWindowLabel.value}`,
++    };
++  }
++  return {
++    text: st.reason || "non coperta",
++    kind: "muted",
++    title: `non_coperta · ${st.reason}`,
++  };
++}
++
++function portTooltip(port) {
++  const evidence = port.asset_visibility_reason
++    ? `Mantenuto: ${port.asset_visibility_reason}`
++    : port.asset_hidden_reason
++      ? `Device storico nascosto: ${port.asset_hidden_reason}`
++      : "Nessuna associazione attiva";
++  return `${portRoleTooltip(port)}\n${evidence}`;
++}
++
++function portGridStyle(sw) {
++  const count = sw.ports?.length || 1;
++  return {
++    "--port-columns": Math.min(count, 14),
++    "--port-columns-medium": Math.min(count, 7),
++  };
++}
++
++function macOui(port) {
++  const mac = port.asset_mac || port.observed_macs?.[0] || "";
++  if (!mac) return "";
++  return port.asset_vendor ? `${mac} · ${port.asset_vendor}` : mac;
++}
++
++function statusLabel(value) {
++  return {
++    up: "attivo",
++    down: "non attivo",
++    lowerLayerDown: "non attivo",
++    notPresent: "non presente",
++    testing: "test",
++    dormant: "in attesa",
++  }[value] || "sconosciuto";
++}
++
++onMounted(load);
++</script>
++
++<template>
++  <PageHeader
++    title="Impianto"
++    help="Edit porte: patch, ruoli, note e override manuali. Non è la vista salute né la mappa di collocazione — usa Monitor per ping/SNMP e Topologia per dove è attaccato un device."
++  />
++  <p class="page-intro">
++    Mappa operativa delle porte switch — qui modifichi patch e ruoli. Per la collocazione fisica apri
++    <router-link to="/topology">Topologia</router-link>; per reachability e poll SNMP apri
++    <router-link to="/monitoring">Monitor</router-link>.
++  </p>
++
++  <ViewStateBanner v-if="error" kind="error" :message="error" />
++  <ViewStateBanner v-else-if="loading" kind="loading" />
++  <template v-else>
++  <ViewStateBanner v-if="!switches.length" kind="empty" message="Nessuno switch configurato." />
++  <template v-else>
++    <ViewStateBanner v-if="plantPartial" kind="partial" :message="plantPartial" />
++    <ViewStateBanner v-if="fdbCoverageMessage" kind="stale" :message="fdbCoverageMessage" />
++    <p v-if="notice" class="plant-notice" role="status">{{ notice }}</p>
++    <div
++      v-if="discardedMoves && discardedMoves.count"
++      class="plant-discarded"
++      data-testid="o4-discarded-moves"
++    >
++      <strong>{{ discardedMoves.count }} eventi mac_move scartati</strong>
++      — {{ discardedMoves.note || "difetto O4 noto" }}
++      (<code>{{ discardedMoves.debt }}</code>). Non cancellati.
++    </div>
++    <section class="card plant-ops" data-testid="plant-ops">
++      <h2>Ricerca e filtri FDB</h2>
++      <label class="plant-search">
++        MAC / IP / nome / vendor
++        <input
++          v-model="searchQ"
++          type="search"
++          placeholder="es. D4:52:EE:C3:25:16"
++          autocomplete="off"
++        />
++      </label>
++      <div class="plant-filters">
++        <label><input v-model="filterSoloL2" type="checkbox" /> solo-L2</label>
++        <label><input v-model="filterRandomized" type="checkbox" /> randomizzati</label>
++        <label><input v-model="filterReconstructed" type="checkbox" /> baseline ricostruita</label>
++        <label><input v-model="filterStale" type="checkbox" /> dato non fresco</label>
++      </div>
++      <div v-if="(plantFdb.links || []).length" class="plant-links">
++        <strong>Link fisici (fatto)</strong>
++        <ul>
++          <li v-for="L in plantFdb.links" :key="L.from_port_id + '-' + L.to_port_id">
++            {{ L.from }} ↔ {{ L.to }}
++            <span class="muted"> · {{ L.rule }}</span>
++          </li>
++        </ul>
++      </div>
++    </section>
++    <!-- O2/B1: superficie di copertura FDB di prima classe -->
++    <section v-if="switches.length" class="card fdb-coverage-panel" data-testid="fdb-coverage-panel">
++      <h2>Copertura FDB</h2>
++      <p class="muted">
++        {{ coverageWindowLabel }}.
++        Stati: <strong>misurata fresca</strong> · <strong>misurata vecchia</strong> (data sempre visibile) ·
++        <strong>non coperta</strong> (con motivo). Un poll fallito non è freschezza del dato.
++      </p>
++      <ul class="fdb-coverage-switches">
++        <li v-for="row in coverageReport.switches" :key="row.switch_id">
++          <div class="fdb-cov-head">
++            <strong>{{ row.name }}</strong>
++            <span v-if="!row.fdb_supported" class="fdb-cov-tag limit">
++              limite strutturale — FDB non supportato dall'apparato
++            </span>
++            <span v-else-if="row.poll_ok === false" class="fdb-cov-tag warn">
++              switch non interrogabile
++              <template v-if="row.poll_error"> — {{ row.poll_error }}</template>
++            </span>
++            <span v-else-if="row.poll_ok" class="fdb-cov-tag ok">poll FDB riuscito</span>
++          </div>
++          <div class="fdb-cov-ports">
++            <span
++              v-for="p in row.ports"
++              :key="p.port_id"
++              class="fdb-cov-port"
++              :class="p.state"
++              :title="p.state === 'misurata_vecchia'
++                ? `misurata_vecchia · ${p.last_fdb_at} · ≈${Math.floor(p.age_hours || 0)} h`
++                : p.state === 'non_coperta'
++                  ? `non_coperta · ${p.reason}`
++                  : `misurata_fresca · ${p.last_fdb_at}`"
++            >
++              P{{ p.port_number }}
++              <template v-if="p.state === 'misurata_vecchia'">
++                · {{ fmtWhen(p.last_fdb_at) }}
++              </template>
++              <template v-else-if="p.state === 'non_coperta'">
++                · {{ p.reason }}
++              </template>
++            </span>
++          </div>
++        </li>
++      </ul>
++    </section>
++  </template>
++  <div v-if="switches.length" class="switch-board">
++    <div class="plant-filter">
++      <ToggleSwitch v-model="showUnreachable" label="Mostra dispositivi non raggiungibili" />
++      <span>{{ hiddenDeviceCount }} nascosti; tutte le porte restano visibili</span>
++    </div>
++    <div class="port-legend" aria-label="Legenda ruoli porte">
++      <span class="role-badge uplink">↑ Uplink</span>
++      <span class="role-badge downlink">↓ Downlink</span>
++      <span class="role-badge ap">AP</span>
++      <span class="role-badge access">Accesso</span>
++      <span class="role-badge span">SPAN</span>
++      <span>colore + testo indicano il ruolo</span>
++    </div>
++    <section class="card switch-panel" v-for="sw in switches" :key="sw.id">
++      <div class="switch-head">
++        <h2>
++          {{ sw.switch_display_name || sw.name }}
++          <span class="switch-identity">{{ sw.model }} · {{ sw.ip }}</span>
++        </h2>
++        <span class="switch-role">{{ sw.location }} · {{ sw.role }}</span>
++      </div>
++      <div class="switch-status">
++        <span class="fdb-status" :class="fdbBanner(sw).kind" :title="fdbBanner(sw).text">
++          {{ fdbBanner(sw).text }}
++        </span>
++        <span
++          class="fresh-badge"
++          :class="switchFreshness(sw).kind"
++          :title="switchFreshness(sw).text"
++        >
++          {{ switchFreshness(sw).text }}
++        </span>
++        <span
++          v-if="sourceChip(sw)"
++          class="source-chip"
++          :title="sw.capabilities?.source || sourceChip(sw)"
++        >
++          {{ sourceChip(sw) }}
++        </span>
++        <span
++          class="poll-status muted"
++          v-if="sw.capabilities?.snmp_supported === false"
++          :title="sw.capabilities.message"
++        >
++          porte statiche
++        </span>
++        <span class="poll-status muted" v-else-if="sw.snmp_poll?.at">
++          poll {{ fmtWhen(sw.snmp_poll.at) }}
++          <template v-if="sw.snmp_poll.lldp?.length">
++            · LLDP {{ sw.snmp_poll.lldp.length }}
++          </template>
++        </span>
++        <span
++          v-if="isGs308epSwitch(sw)"
++          class="ip-divergence-note"
++          :title="gs308epIpDivergenceNote(sw)"
++        >
++          {{ gs308epIpDivergenceNote(sw) }}
++        </span>
++      </div>
++      <Branch308Card
++        v-if="isGs308epSwitch(sw)"
++        :switch-data="sw"
++        compact
++      />
++      <div class="ports" :style="portGridStyle(sw)">
++        <div
++          v-for="p in sw.ports"
++          :key="p.id"
++          class="port"
++          :data-port-id="p.id"
++          :class="{
++            active: selected?.port?.id === p.id,
++            warn: !!p.warn,
++            'historical-hidden': deviceHidden(p),
++            'port-hit': portHighlighted(p),
++            'port-filtered-out': portFilteredOut(p),
++            [`role-${rolePresentation(p).className}`]: true,
++            [`fdb-empty-${plantFor(p)?.empty_state || 'none'}`]: !!plantFor(p)?.empty_state,
++          }"
++          :title="portTooltip(p)"
++          :aria-label="`${p.port_path_label}: ${displayedDeviceName(p, sw)}`"
++          role="button"
++          tabindex="0"
++          @click="pick(sw, p)"
++          @keydown.enter.prevent="pick(sw, p)"
++          @keydown.space.prevent="pick(sw, p)"
++        >
++          <div class="port-head">
++            <span class="port-number">P{{ p.number }}</span>
++            <span
++              v-if="snmpLiveSupported(sw)"
++              class="dot"
++              :class="p.snmp?.oper_status"
++              :title="statusLabel(p.snmp?.oper_status)"
++              :aria-label="`Stato: ${statusLabel(p.snmp?.oper_status)}`"
++            ></span>
++            <span
++              v-else
++              class="dot-na"
++              title="Link SNMP non misurabile su questo switch"
++              aria-label="Link SNMP non misurabile"
++            >—</span>
++          </div>
++          <div class="dev">
++            <span :class="{ free: portCellPresentation(p, { fdb: fdbPortCoverageState(p, sw) }).free }">
++              {{ displayedDeviceParts(p, sw).primary }}
++            </span>
++            <span
++              class="fdb-port-badge"
++              :class="portFdbBadge(p, sw).kind"
++              :title="portFdbBadge(p, sw).title"
++            >{{ portFdbBadge(p, sw).text }}</span>
++          </div>
++          <div v-if="plantFor(p)" class="plant-fdb-meta">
++            <span
++              v-if="plantFor(p).ruolo_porta === 'uplink'"
++              class="tag uplink"
++              :title="plantFor(p).ruolo_rule"
++            >uplink · {{ plantFor(p).ruolo_rule }}</span>
++            <span
++              v-else
++              class="tag nd"
++              :title="plantFor(p).ruolo_rule"
++            >{{ plantFor(p).ruolo_porta }}</span>
++            <span
++              v-if="plantEmptyStateLabel(plantFor(p))"
++              class="tag empty"
++              :title="plantEmptyStateLabel(plantFor(p)).hint"
++            >{{ plantEmptyStateLabel(plantFor(p)).label }}</span>
++            <span
++              v-if="(plantFor(p).macs || []).some((m) => m.solo_l2)"
++              class="tag l2"
++            >solo-L2</span>
++            <span
++              v-if="(plantFor(p).macs || []).some((m) => m.randomized)"
++              class="tag laa"
++            >LAA</span>
++            <span
++              v-if="plantFor(p).baseline_quality === 'reconstructed'"
++              class="tag bl-recon"
++              :title="baselineQualityLabel('reconstructed')"
++            >baseline ricostruita</span>
++            <span
++              v-else-if="plantFor(p).baseline_quality === 'verified'"
++              class="tag bl-ok"
++            >baseline verificata</span>
++          </div>
++          <div class="port-foot">
++            <span class="patch">{{ p.patch_code || "" }}</span>
++            <span
++              v-if="rolePresentation(p).label"
++              class="role-badge"
++              :class="rolePresentation(p).className"
++            >
++              {{ rolePresentation(p).label }}
++            </span>
++          </div>
++        </div>
++      </div>
++    </section>
++  </div>
++
++  <Drawer
++    :open="!!selected"
++    :title="selected ? selected.port.port_path_label : ''"
++    @close="closeDrawer"
++  >
++    <div v-if="selected">
++      <Branch308Card
++        v-if="isGs308epSwitch(selected.sw)"
++        :switch-data="selected.sw"
++        compact
++      />
++      <div v-if="form.warn" class="callout warn">{{ form.warn }}</div>
++      <div v-if="form.notes" class="callout">{{ form.notes }}</div>
++      <details
++        v-if="selected.port.warning_history?.length"
++        class="resolved-history"
++      >
++        <summary>Storico risolto ({{ selected.port.warning_history.length }})</summary>
++        <ul>
++          <li v-for="(warning, index) in selected.port.warning_history" :key="index">
++            {{ warning.text }}
++            <small>
++              · risolto {{ fmtWhen(warning.resolved_at) }}
++              · {{ warning.resolution_source || warning.source || "storico" }}
++            </small>
++          </li>
++        </ul>
++      </details>
++
++      <div class="port-summary">
++        <div class="summary-row">
++          <span>Switch e porta</span>
++          <strong>{{ selected.port.port_path_label }}</strong>
++        </div>
++        <div class="summary-row" v-if="selected.port.interface_label">
++          <span>Interfaccia</span>
++          <strong>{{ selected.port.interface_label }}</strong>
++        </div>
++        <template v-if="selected.sw.capabilities?.snmp_supported !== false">
++        <div class="summary-row">
++          <span>Link / amministrazione</span>
++          <strong>
++            {{ statusLabel(selected.port.snmp?.oper_status) }}
++            · {{ statusLabel(selected.port.snmp?.admin_status) }}
++          </strong>
++        </div>
++        <div class="summary-row">
++          <span>Velocità / duplex</span>
++          <strong>
++            {{ selected.port.snmp?.speed_mbps || selected.port.speed_mbps || "—" }} Mb/s
++            · {{ selected.port.snmp?.duplex || "—" }}
++          </strong>
++        </div>
++        <div class="summary-row">
++          <span>VLAN / PVID</span>
++          <strong>{{ selected.port.snmp?.pvid || "—" }}</strong>
++        </div>
++        <div class="summary-row">
++          <span>Traffico</span>
++          <strong>
++            RX {{ traffic(selected.port.snmp?.rx_bps) }}
++            · TX {{ traffic(selected.port.snmp?.tx_bps) }}
++          </strong>
++        </div>
++        <div class="summary-row">
++          <span>Errori / scarti</span>
++          <strong>
++            {{ (selected.port.snmp?.in_errors || 0) + (selected.port.snmp?.out_errors || 0) }}
++            · {{ (selected.port.snmp?.in_discards || 0) + (selected.port.snmp?.out_discards || 0) }}
++          </strong>
++        </div>
++        </template>
++        <div
++          v-else
++          class="summary-row"
++        >
++          <span>SNMP live</span>
++          <strong class="muted">
++            non supportato · porte statiche
++            <template v-if="sourceChip(selected.sw)">
++              · {{ sourceChip(selected.sw) }}
++            </template>
++          </strong>
++        </div>
++        <div class="summary-row" v-if="selected.port.speed_mbps && selected.sw.capabilities?.snmp_supported === false">
++          <span>Velocità configurata</span>
++          <strong>{{ selected.port.speed_mbps }} Mb/s</strong>
++        </div>
++        <div class="summary-row">
++          <span>Dispositivo</span>
++          <strong>{{ deviceName(selected.port, selected.sw) }}</strong>
++        </div>
++        <div class="summary-row">
++          <span>Ruolo porta</span>
++          <strong>
++            {{ rolePresentation(selected.port).label || "Non identificato" }}
++            <template v-if="selected.port.neighbor_name">
++              · {{ selected.port.neighbor_name }}
++              <template v-if="selected.port.peer_port_label">
++                · {{ selected.port.peer_port_label }}
++              </template>
++            </template>
++          </strong>
++        </div>
++        <div class="summary-row" v-if="selected.port.asset_visibility_reason || selected.port.asset_hidden_reason">
++          <span>Regola visibilità</span>
++          <strong>
++            {{ selected.port.asset_visibility_reason
++              ? `Mantenuto: ${selected.port.asset_visibility_reason}`
++              : `Storico nascosto: ${selected.port.asset_hidden_reason}` }}
++          </strong>
++        </div>
++        <div class="summary-row" v-if="selected.port.asset_ip">
++          <span>IP</span>
++          <strong class="mono">{{ selected.port.asset_ip }}</strong>
++        </div>
++        <div class="summary-row" v-if="macOui(selected.port)">
++          <span>MAC / OUI</span>
++          <strong class="mono">{{ macOui(selected.port) }}</strong>
++        </div>
++        <div class="summary-row">
++          <span>Fonte / confidenza ruolo</span>
++          <strong>
++            {{ sourceBadge(selected.port) || "non disponibile" }}
++            · {{ Math.round((selected.port.role_confidence || 0) * 100) }}%
++          </strong>
++        </div>
++        <div class="summary-row" v-if="selected.port.asset_printer?.model || selected.port.asset_printer?.service?.length">
++          <span>Indizio stampante</span>
++          <strong>
++            {{ selected.port.asset_printer.model || "Servizio di stampa" }}
++            <template v-if="selected.port.asset_printer.service?.length">
++              · {{ selected.port.asset_printer.service.join(", ") }}
++            </template>
++          </strong>
++        </div>
++        <div class="summary-row" v-if="selected.port.asset_last_seen || selected.port.last_fdb_at">
++          <span>Ultima presenza</span>
++          <strong>{{ fmtWhen(selected.port.asset_last_seen || selected.port.last_fdb_at) }}</strong>
++        </div>
++        <div class="summary-row" v-if="selected.port.observed_macs?.length">
++          <span>Indirizzi appresi</span>
++          <strong class="mono">{{ selected.port.observed_macs.join(", ") }}</strong>
++        </div>
++        <div v-if="plantFor(selected.port)" class="plant-drawer-fdb" data-testid="plant-drawer-fdb">
++          <h3>Verità FDB</h3>
++          <p>
++            Ruolo: <strong>{{ plantFor(selected.port).ruolo_porta }}</strong>
++            <span class="muted"> · {{ plantFor(selected.port).ruolo_rule }}</span>
++          </p>
++          <p>
++            Baseline:
++            <strong>{{ baselineQualityLabel(plantFor(selected.port).baseline_quality) }}</strong>
++          </p>
++          <p v-if="plantEmptyStateLabel(plantFor(selected.port))">
++            Stato vuoto:
++            <strong>{{ plantEmptyStateLabel(plantFor(selected.port)).label }}</strong>
++            — {{ plantEmptyStateLabel(plantFor(selected.port)).hint }}
++          </p>
++          <p v-if="plantFor(selected.port).poll_error" class="callout warn">
++            Errore poll: {{ plantFor(selected.port).poll_error }}
++          </p>
++          <p v-if="plantFor(selected.port).link">
++            Link fisico:
++            → {{ plantFor(selected.port).link.to_switch_code }}:{{ plantFor(selected.port).link.to_port_number }}
++            (fatto {{ plantFor(selected.port).link.label }})
++          </p>
++          <ul class="plant-mac-list">
++            <li v-for="m in (plantFor(selected.port).macs || [])" :key="m.mac">
++              <div class="mono">{{ m.mac }}</div>
++              <div>{{ m.name_label }} · {{ m.oui }}</div>
++              <div class="plant-mac-tags">
++                <span v-if="m.solo_l2" class="tag l2">solo-L2</span>
++                <span v-if="m.randomized" class="tag laa">randomizzato</span>
++                <span
++                  v-if="m.baseline_quality === 'reconstructed'"
++                  class="tag bl-recon"
++                >presente alla ricostruzione{{ m.baseline_at ? ` del ${m.baseline_at}` : "" }}; storia precedente non disponibile</span>
++              </div>
++              <div v-if="m.inference" class="plant-inference" data-kind="inference">
++                <strong>{{ m.inference.label || "INFERENZA" }}</strong>
++                <p class="muted">{{ m.inference.disclaimer }}</p>
++                <ul>
++                  <li v-for="(it, idx) in (m.inference.items || [])" :key="idx">
++                    {{ it.label }}
++                    <span class="mono"> · {{ it.source }} · {{ it.confidence }}</span>
++                  </li>
++                </ul>
++              </div>
++              <div class="plant-mac-actions">
++                <button type="button" class="ghost" @click="openDossierFromMac(m)">Apri dossier</button>
++                <button
++                  type="button"
++                  class="ghost"
++                  :disabled="!!busyKey"
++                  @click="plantAck('acknowledge', m.mac)"
++                >Riconosci come atteso</button>
++                <button
++                  type="button"
++                  class="ghost"
++                  :disabled="!!busyKey"
++                  @click="plantAck('ignore', m.mac)"
++                >Ignora con motivo</button>
++              </div>
++            </li>
++          </ul>
++        </div>
++      </div>
++
++      <details class="manual-editor">
++        <summary>Annotazioni e override manuali</summary>
++        <label class="field">
++          <span>Patch</span>
++          <input v-model="form.patch_code" placeholder="override opzionale" />
++        </label>
++        <label class="field">
++          <span>Velocità configurata</span>
++          <input type="number" v-model.number="form.speed_mbps" />
++        </label>
++        <label class="field">
++          <span>Ruolo porta</span>
++          <select v-model="form.role">
++            <option value="">Automatico ({{ rolePresentation(selected.port).label || "non identificato" }})</option>
++            <option value="uplink">Uplink</option>
++            <option value="downlink">Downlink</option>
++            <option value="access">Accesso</option>
++            <option value="ap">AP</option>
++            <option value="trunk/aggregate">Trunk / aggregata</option>
++            <option value="span">SPAN (port-mirror)</option>
++            <option value="unknown">Non identificato</option>
++            <option value="free">Libera</option>
++          </select>
++        </label>
++        <label class="field">
++          <span>Avviso</span>
++          <textarea v-model="form.warn" rows="3"></textarea>
++        </label>
++        <label class="field">
++          <span>Note</span>
++          <textarea v-model="form.notes" rows="4"></textarea>
++        </label>
++        <button class="primary" style="width: 100%" @click="save">Salva</button>
++        <p class="muted" v-if="msg" style="margin-top: 0.5rem">{{ msg }}</p>
++      </details>
++    </div>
++  </Drawer>
++  </template>
++</template>
++
++<style scoped>
++.plant-head {
++  margin-bottom: 0.65rem;
++}
++.plant-filter {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 0.6rem;
++  padding: 0.35rem 0.55rem;
++  border: 1px solid var(--line);
++  border-radius: 8px;
++  color: var(--muted);
++  font-size: 0.875rem;
++}
++.port-legend {
++  display: flex;
++  align-items: center;
++  gap: 0.35rem;
++  margin: 0.28rem 0;
++  color: var(--muted);
++  font-size: 0.61rem;
++  white-space: nowrap;
++  overflow-x: auto;
++}
++.role-badge {
++  display: inline-flex;
++  flex: 0 0 auto;
++  padding: 0.04rem 0.22rem;
++  border: 1px solid currentColor;
++  border-radius: 999px;
++  font-size: 0.53rem;
++  font-weight: 650;
++  line-height: 1.2;
++}
++.role-badge.uplink {
++  color: #e4b866;
++}
++.role-badge.downlink {
++  color: #75b9e8;
++}
++.role-badge.ap {
++  color: #c99ee8;
++}
++.role-badge.access {
++  color: #83c99c;
++}
++.role-badge.trunk {
++  color: #d6a37b;
++}
++.role-badge.span {
++  color: #9aa8b8;
++  border-style: dashed;
++}
++.source-chip {
++  flex: 0 0 auto;
++  padding: 0.08rem 0.35rem;
++  border: 1px solid var(--line);
++  border-radius: 999px;
++  color: var(--muted);
++  font-size: 0.58rem;
++  white-space: nowrap;
++}
++.fresh-badge {
++  flex: 0 0 auto;
++  color: var(--muted);
++  white-space: nowrap;
++}
++.fresh-badge.ok {
++  color: var(--ok, #6ecf8e);
++}
++.plant-head .page-intro {
++  margin-top: 0.25rem;
++  font-size: 0.78rem;
++  line-height: 1.3;
++}
++.switch-board {
++  max-width: 1280px;
++  gap: 0.55rem;
++}
++.switch-panel {
++  padding: 0.55rem 0.65rem 0.65rem;
++}
++.switch-head {
++  display: flex;
++  align-items: baseline;
++  justify-content: space-between;
++  gap: 0.5rem 1rem;
++  min-width: 0;
++}
++.switch-panel .switch-head h2 {
++  min-width: 0;
++  margin: 0;
++  font-size: 0.75rem;
++  white-space: nowrap;
++}
++.switch-identity,
++.switch-role {
++  color: var(--muted);
++  font-size: 0.67rem;
++  font-weight: 400;
++  letter-spacing: 0;
++  text-transform: none;
++}
++.switch-role {
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++}
++.switch-status {
++  display: flex;
++  align-items: center;
++  gap: 0.35rem 0.7rem;
++  min-width: 0;
++  margin: 0.18rem 0 0.38rem;
++  font-size: 0.63rem;
++  line-height: 1.2;
++}
++.fdb-status {
++  min-width: 0;
++  /* F-13: la data dell'ultima misura FDB non va mai troncata, a nessuna larghezza. */
++  overflow: visible;
++  text-overflow: clip;
++  white-space: normal;
++  overflow-wrap: anywhere;
++}
++.fdb-status::before {
++  content: "";
++  display: inline-block;
++  width: 0.38rem;
++  height: 0.38rem;
++  margin-right: 0.28rem;
++  border-radius: 50%;
++  background: currentColor;
++}
++.fdb-status.ok {
++  color: #9dceb0;
++}
++.fdb-status.warn {
++  color: var(--warn);
++}
++.fdb-status.muted {
++  color: var(--muted);
++}
++.poll-status {
++  flex: 0 0 auto;
++}
++.ip-divergence-note {
++  flex: 1 1 100%;
++  margin-top: 0.12rem;
++  color: var(--warn);
++  font-size: 0.62rem;
++  line-height: 1.25;
++}
++.ports {
++  grid-template-columns: repeat(var(--port-columns), minmax(0, 1fr));
++  gap: 0.3rem;
++}
++.port {
++  min-width: 0;
++  min-height: 62px;
++  padding: 0.28rem 0.34rem;
++  display: grid;
++  grid-template-rows: auto 1fr auto;
++  gap: 0.16rem;
++  border-radius: 6px;
++}
++.port.role-uplink {
++  border-left: 3px solid #e4b866;
++}
++.port.role-downlink {
++  border-left: 3px solid #75b9e8;
++}
++.port.role-ap {
++  border-left: 3px solid #c99ee8;
++}
++.port.role-access {
++  border-left: 3px solid #83c99c;
++}
++.port.role-trunk {
++  border-left: 3px solid #d6a37b;
++}
++.port.historical-hidden .dev {
++  opacity: 0.58;
++  font-style: italic;
++}
++.port:focus-visible {
++  outline: 2px solid var(--accent);
++  outline-offset: 2px;
++}
++.port-head,
++.port-foot {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 0.4rem;
++}
++.port-number {
++  display: inline-flex;
++  padding: 0.05rem 0.25rem;
++  border: 1px solid var(--line);
++  border-radius: 999px;
++  color: var(--muted);
++  font-size: 0.58rem;
++  line-height: 1.2;
++}
++.port .dev {
++  display: -webkit-box;
++  min-width: 0;
++  overflow: hidden;
++  color: var(--text);
++  white-space: normal;
++  overflow-wrap: anywhere;
++  -webkit-box-orient: vertical;
++  -webkit-line-clamp: 2;
++  line-clamp: 2;
++  font-size: 0.66rem;
++  line-height: 1.15;
++}
++.port .dev small {
++  display: block;
++  color: var(--muted);
++  font: inherit;
++}
++.port .dev .free {
++  color: var(--muted);
++}
++.port-foot {
++  min-height: 0.7rem;
++  color: var(--muted);
++  font-size: 0.56rem;
++}
++.port-foot .patch {
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++}
++.port .src {
++  font-size: 0.55rem;
++  opacity: 0.8;
++  margin-left: 0.2rem;
++}
++.port-health {
++  font-size: 0.65rem;
++  margin-top: 0.2rem;
++}
++.dot {
++  display: inline-block;
++  flex: 0 0 auto;
++  width: 0.38rem;
++  height: 0.38rem;
++  border-radius: 50%;
++  background: #777;
++}
++.dot-na {
++  display: inline-block;
++  flex: 0 0 auto;
++  font-size: 0.65rem;
++  line-height: 1;
++  color: var(--text-3);
++  font-family: var(--font-mono);
++}
++.dot.up {
++  background: #47b36b;
++}
++.dot.down, .dot.lowerLayerDown, .dot.notPresent {
++  background: #c55454;
++}
++@media (max-width: 1199px) {
++  .ports {
++    grid-template-columns: repeat(var(--port-columns-medium), minmax(0, 1fr));
++  }
++}
++@media (max-width: 700px) {
++  .plant-head .page-intro {
++    display: none;
++  }
++  .switch-head {
++    align-items: flex-start;
++    flex-direction: column;
++    gap: 0.1rem;
++  }
++  .switch-panel .switch-head h2 {
++    white-space: normal;
++  }
++  .switch-status {
++    flex-wrap: wrap;
++  }
++  /* D4: su mobile il testo informativo va a capo invece di troncarsi con ellissi. */
++  .switch-role,
++  .port-foot .patch {
++    overflow: visible;
++    text-overflow: clip;
++    white-space: normal;
++    overflow-wrap: anywhere;
++  }
++  .ports {
++    grid-template-columns: repeat(4, minmax(0, 1fr));
++  }
++}
++@media (max-width: 420px) {
++  .ports {
++    grid-template-columns: repeat(2, minmax(0, 1fr));
++  }
++}
++.port-summary {
++  display: grid;
++  gap: 0;
++  border: 1px solid var(--border, #444);
++  border-radius: 8px;
++  overflow: hidden;
++}
++.summary-row {
++  display: grid;
++  grid-template-columns: minmax(115px, 0.8fr) minmax(0, 1.2fr);
++  gap: 0.75rem;
++  padding: 0.55rem 0.65rem;
++  border-bottom: 1px solid var(--border, #333);
++  font-size: 0.78rem;
++}
++.summary-row > span {
++  color: var(--muted);
++}
++.summary-row > strong {
++  overflow-wrap: anywhere;
++}
++.provenance {
++  margin: 0;
++  padding: 0.5rem 0.65rem;
++  color: var(--muted);
++  font-size: 0.72rem;
++}
++.manual-editor {
++  margin-top: 0.8rem;
++  border-top: 1px solid var(--border, #333);
++  padding-top: 0.7rem;
++}
++.resolved-history {
++  margin: 0.55rem 0;
++  color: var(--muted);
++  font-size: 0.74rem;
++}
++.resolved-history summary {
++  cursor: pointer;
++}
++.resolved-history ul {
++  margin: 0.45rem 0 0;
++  padding-left: 1.1rem;
++}
++.resolved-history small {
++  color: var(--muted);
++}
++.manual-editor summary {
++  cursor: pointer;
++  color: var(--muted);
++  font-size: 0.78rem;
++  margin-bottom: 0.7rem;
++}
++.fdb-coverage-panel {
++  margin: 0.75rem 0 1rem;
++  padding: 0.75rem 1rem;
++}
++.fdb-coverage-panel h2 {
++  margin: 0 0 0.35rem;
++  font-size: 1rem;
++}
++.fdb-coverage-switches {
++  list-style: none;
++  margin: 0.5rem 0 0;
++  padding: 0;
++  display: grid;
++  gap: 0.65rem;
++}
++.fdb-cov-head {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 0.4rem;
++  align-items: baseline;
++  margin-bottom: 0.25rem;
++}
++.fdb-cov-tag {
++  font-size: 0.72rem;
++  color: var(--muted);
++}
++.fdb-cov-tag.warn { color: #e4b866; }
++.fdb-cov-tag.limit { color: #9aa8b8; }
++.fdb-cov-tag.ok { color: #83c99c; }
++.fdb-cov-ports {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 0.3rem;
++}
++.fdb-cov-port {
++  font-size: 0.68rem;
++  padding: 0.15rem 0.35rem;
++  border: 1px solid var(--line, #444);
++  border-radius: 4px;
++  /* F-13: date never truncated */
++  white-space: normal;
++  overflow: visible;
++  text-overflow: unset;
++}
++.fdb-cov-port.misurata_fresca { border-color: #83c99c; }
++.fdb-cov-port.misurata_vecchia { border-color: #e4b866; }
++.fdb-cov-port.non_coperta { border-color: #9aa8b8; color: var(--muted); }
++.fdb-port-badge {
++  display: block;
++  font-size: 0.55rem;
++  color: var(--muted);
++  white-space: normal;
++  overflow: visible;
++}
++.fdb-port-badge.warn { color: #e4b866; }
++.fdb-port-badge.ok { color: #83c99c; }
++.plant-ops { margin-bottom: 1rem; }
++.plant-search { display: flex; flex-direction: column; gap: 0.25rem; margin: 0.5rem 0; }
++.plant-search input {
++  padding: 0.45rem 0.6rem;
++  border: 0.5px solid var(--border, #444);
++  border-radius: var(--radius, 6px);
++  background: var(--bg-0, #111);
++  color: var(--text-1, #eee);
++}
++.plant-filters { display: flex; flex-wrap: wrap; gap: 0.75rem; font-size: 0.85rem; }
++.plant-links { margin-top: 0.75rem; font-size: 0.85rem; }
++.plant-discarded {
++  margin: 0.5rem 0 1rem;
++  padding: 0.6rem 0.75rem;
++  border-left: 3px solid #e4b866;
++  background: color-mix(in srgb, #e4b866 10%, transparent);
++  font-size: 0.85rem;
++}
++.plant-notice { color: var(--accent, #8cf); font-size: 0.85rem; }
++.plant-fdb-meta { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.25rem; }
++.plant-fdb-meta .tag, .plant-mac-tags .tag {
++  font-size: 0.58rem;
++  padding: 0.1rem 0.3rem;
++  border: 0.5px solid var(--border, #555);
++  border-radius: 3px;
++}
++.tag.uplink { border-color: #6ea8fe; color: #6ea8fe; }
++.tag.l2 { border-color: #e4b866; color: #e4b866; }
++.tag.laa { border-color: #9aa8b8; color: #9aa8b8; }
++.tag.bl-recon { border-color: #c9a227; color: #c9a227; }
++.tag.bl-ok { border-color: #83c99c; color: #83c99c; }
++.tag.empty { border-color: #b88; color: #dbb; }
++.port-hit { outline: 2px solid var(--accent, #6ea8fe); outline-offset: 1px; }
++.port-filtered-out { opacity: 0.28; }
++.port.fdb-empty-non_coperta { border-style: dashed; }
++.port.fdb-empty-misurata_senza_dispositivi { border-color: #83c99c; }
++.port.fdb-empty-sorgente_non_fresca { border-color: #e4b866; }
++.plant-drawer-fdb { margin-top: 1rem; font-size: 0.85rem; }
++.plant-mac-list { list-style: none; padding: 0; margin: 0.5rem 0 0; }
++.plant-mac-list > li {
++  border-top: 0.5px solid var(--border, #333);
++  padding: 0.6rem 0;
++}
++.plant-mac-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.35rem; }
++.plant-inference {
++  margin-top: 0.4rem;
++  padding: 0.4rem 0.5rem;
++  border-left: 3px solid color-mix(in srgb, var(--accent, #6ea8fe) 55%, var(--border, #444));
++  background: color-mix(in srgb, var(--accent, #6ea8fe) 6%, transparent);
++}
++@media (max-width: 720px) {
++  .plant-filters { flex-direction: column; }
++  .port-grid { --port-columns: 4 !important; }
++}
++</style>
+
+##### web/src/api.js (fdbDefensePlant)
++  fdbDefensePlant: () => request("/api/fdb-defense/plant"),
+
+##### web/src/views/Oggi.vue (discarded banner)
++banner discarded_moves + CSS oggi-discarded
+
