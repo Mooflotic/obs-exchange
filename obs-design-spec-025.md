@@ -557,35 +557,63 @@ per decidere «qual è il valore adesso». L'evidenza si scrive, lo stato si
 deriva (F-7): i consumatori leggono lo STATO derivato (`classify_asset`) o il
 resolver, mai un calcolo di correntezza per conto proprio.
 
-**Gate.** `scripts/w8_currency_gate.py` è il presidio ripetibile: scansiona
-`api/app/**` (escluso `api/app/facts/**`), usa come sentinella ogni riga che
-nomina `FactAssertion` e **fallisce** se compare un accesso non presente
-nell'allowlist. L'allowlist è **per (file, snippet esatto)** con motivazione —
-mai un pattern generico. Va eseguito, con output completo, a ogni ondata futura
-**insieme al gate I6**.
+**Gate (versione realmente consegnata, W8-fix / W8-fix2).**
+`scripts/w8_currency_gate.py` scansiona **`api/** · scripts/** · collector/****,
+escludendo `api/app/facts/**` (la FONTE protetta) e i due file d'ondata
+(`w8_currency_gate.py`, `w8_g8_equivalence.py`, che contengono le sentinelle come
+dato). Usa **tre sentinelle**:
+1. simbolo ORM `FactAssertion` (qualunque uso);
+2. tabella grezza `fact_assertions` **dentro una chiamata SQL** (`text(`/`.execute(`/
+   `.exec_driver_sql(`);
+3. **COMBO**: fact-token (`FactAssertion|fact_assertions|fact_key`) + valore di stato
+   **quotato** `'current'`.
+**Fallisce** su ogni accesso non giustificato. L'allowlist è **per (file, snippet, N)**
+con conteggio: N+1 occorrenze = violazione (atteso vs osservato in output). Esiste una
+sezione **TEMPORANEA** `(file, snippet, N, debt)` con `debt` OBBLIGATORIO: una voce
+senza debito è un errore di configurazione (exit 1); le temporanee sono stampate **in
+testa** e l'esito riporta `PASS (con n eccezioni temporanee)`. Ha `--selftest`
+(controllo negativo). Va eseguito, output completo, a ogni ondata **insieme a I6**.
 
-**Eccezioni giustificate (allowlist, W8.3.1).**
-- `api/app/models.py` — `class FactAssertion(Base):` (definizione ORM).
-- `api/app/bootstrap.py` — import per `create_all` (registrazione schema, no query).
-- `api/app/routers/admin.py` — `/facts/shadow-stats`: `COUNT(*)` righe (osservabilità
-  breaker, non un valore corrente); `/facts/conflicts`: elenco divergenze
-  `conflict_review` con `state="historical"` (I3, l'opposto di current), ordinate
-  per display.
+**Criterio del ruling (W8-fix2).** `api/app/facts/**` è escluso perché è la fonte
+protetta della correntezza. **Ogni altro consumatore — tooling di gate/diagnosi
+compreso — si allowlista riga per riga** (come `admin.py`), MAI per path intero:
+un'esclusione di file è più permissiva di un pattern generico, e i pattern generici
+sono vietati.
+
+**LIMITAZIONE DICHIARATA (R6): B1(i) è MITIGATO, non chiuso.** Una stringa SQL
+costruita su **più righe** e concatenata prima dell'esecuzione non è catturata da
+nessuna delle tre sentinelle. Non va dichiarato «chiuso» in alcun documento.
+
+**Eccezioni giustificate (allowlist permanente, stato W8-fix2: 17).**
+- api/: `models.py` (def ORM), `bootstrap.py` (import `create_all`), `admin.py`
+  (`/facts/shadow-stats` COUNT; `/facts/conflicts` divergenze `state="historical"` I3).
+- scripts/ (tooling read-only, riga per riga): `wp_gate.py` (import; COUNT totale) e
+  `wp_diagnose.py` (import; COUNT totale; distribuzione di stato; campione display;
+  enumerazione id per delta; get per id) — conteggi/diagnostica, **nessuna lettura del
+  valore corrente**.
+
+**Eccezione TEMPORANEA (1, con debito).** `wp_gate.py:103`
+(`COUNT(FactAssertion WHERE state=="current")`) è una **seconda definizione di
+«corrente»** nello strumento che certifica la produzione (il resolver applica
+TTL/`_maybe_stale`/R-E; un `state=="current"` grezzo può divergere). Sanata TEMPORANEAMENTE
+con `debt=DEBT-WPGATE-CURRENCY-COUNT-LOCAL`; risoluzione = helper di conteggio in
+`api/app/facts/` (micro-ondata runtime successiva). Vietato dichiararla chiusa
+allowlistandola in permanenza.
 
 **Falsi positivi legittimi non presidiati qui (criterio dichiarato).**
-- `ip_addresses.is_current` è il **meccanismo di elezione** dell'IP eletto
-  (F-15, W8.1.3), non correntezza dei fatti: il resolver non è fonte esclusiva
-  per gli IP finché il ruolo non entra nella `excl_key` (pre-condizione W3).
-- Colonne di stato derivate di `Asset` (name/os_guess/presence_state): STATO
-  derivato dall'unico derivatore (F-7), non ricalcolo.
-- Letture di evidenza grezza / oggetti di dominio (ObservationRaw, Event,
-  ScanRun, SpeedTestResult, Finding, Suggestion, Snapshot, ActionRequest): non
-  sono fatti del registry.
-- `resolver.history()` è codice **senza chiamanti**: il percorso storico è
-  previsto ma **NON ancora cablato** ad alcun endpoint (nessun `?history=true`
-  esiste — verificato W8-fix, `DEBT-HISTORY-PATH-UNWIRED`). L'API resta
-  **corrente per default** proprio perché lo storico non è esposto.
+- `ip_addresses.is_current` = **meccanismo di elezione** dell'IP eletto (F-15), non
+  correntezza dei fatti (pre-condizione W3).
+- Colonne di stato derivate di `Asset` (name/os_guess/presence_state): STATO derivato
+  dall'unico derivatore (F-7).
+- Evidenza grezza / oggetti di dominio (ObservationRaw, Event, ScanRun, SpeedTestResult,
+  Finding, Suggestion, Snapshot, ActionRequest): non sono fatti del registry.
+- `resolver.history()`: codice **senza chiamanti**, nessun `?history=true`
+  (`DEBT-HISTORY-PATH-UNWIRED`); l'API resta corrente per default perché lo storico non
+  è esposto.
 
-**Equivalenza.** `scripts/w8_g8_equivalence.py` (G8, read-only, mai commit)
-confronta a writer fermi la correntezza del nome prodotta dal resolver con la
-presentazione consumer-facing: `DIVERGE=0` è la condizione di non-regressione.
+**Equivalenza (G8).** `scripts/w8_g8_equivalence.py` è **read-only sulla TRANSAZIONE
+DB** (`db.rollback()` finale, nessun commit; il file È versionato). Confronta a writer
+fermi la correntezza di `asset.name` (resolver vs presentazione vs endpoint) e di
+`os.guess` (resolver vs colonna derivata `Asset.os_guess`, store diverso): `DIVERGE=0`
+è la non-regressione. `--mutate-probe <id>` è il controllo negativo (deve produrre
+`DIVERGE=1` e FAIL).
