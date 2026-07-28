@@ -1,0 +1,2417 @@
+diff --git a/observatory/web/src/api.js b/observatory/web/src/api.js
+index 1f0a71d..0c0b4ab 100644
+--- a/observatory/web/src/api.js
++++ b/observatory/web/src/api.js
+@@ -130,6 +130,18 @@ export const api = {
+     request(`/api/assets/${id}/adopt-name?source=${encodeURIComponent(source)}`, {
+       method: "POST",
+     }),
++  adoptChassisName: (chassisId, { source = "manual", value, proposalId } = {}) => {
++    const q = new URLSearchParams({ source });
++    if (value) q.set("value", value);
++    if (proposalId != null) q.set("proposal_id", String(proposalId));
++    return request(`/api/chassis/${chassisId}/adopt-name?${q}`, { method: "POST" });
++  },
++  renameChassis: (chassisId, name) =>
++    request(`/api/chassis/${chassisId}/rename`, {
++      method: "POST",
++      body: JSON.stringify({ name }),
++    }),
++  factConflicts: () => request("/api/admin/facts/conflicts"),
+   rejectNameProposal: (id, source, proposalId = null) => {
+     const q = new URLSearchParams({ source: String(source || "") });
+     if (proposalId != null) q.set("proposal_id", String(proposalId));
+@@ -254,4 +266,11 @@ export const api = {
+     request(`/api/snapshots/${snapshotId}/confirm-baseline`, { method: "POST" }),
+   sensors: () => request("/api/sensors"),
+   reliability: () => request("/api/reliability"),
++  fdbDefenseSignals: () => request("/api/fdb-defense/signals"),
++  fdbDefensePlant: () => request("/api/fdb-defense/plant"),
++  fdbDefenseAck: (body) =>
++    request("/api/fdb-defense/ack", { method: "POST", body }),
++  gs308View: () => request("/api/gs308/view"),
++  gs308Assign: (body) =>
++    request("/api/gs308/assign", { method: "POST", body }),
+ };
+diff --git a/observatory/web/src/components/Branch308Card.vue b/observatory/web/src/components/Branch308Card.vue
+index de155e3..dda9f63 100644
+--- a/observatory/web/src/components/Branch308Card.vue
++++ b/observatory/web/src/components/Branch308Card.vue
+@@ -79,6 +79,11 @@ const spanInference = {
+           FDB {{ caps.fdb_supported ? "sì" : "no" }},
+           poll <span class="mono">{{ caps.poll_method }}</span>
+         </li>
++        <li>
++          Vista operativa
++          <router-link to="/gs308">GS308EP · punto cieco</router-link>
++          (chi c’è dietro · assegnazione manuale · punti ciechi).
++        </li>
+         <li>
+           Mappa porte manuale in
+           <router-link to="/plant">Impianto</router-link>
+@@ -127,10 +132,11 @@ const spanInference = {
+     </div>
+ 
+     <div class="block gaps">
+-      <h3 class="block-title"><span class="tag gap">Non rilevato</span></h3>
++      <h3 class="block-title"><span class="tag gap">Non misurabile (I2 · I7)</span></h3>
+       <ul class="fact-list muted">
+-        <li>Porta interna non rilevabile (LLDP/FDB non espongono mapping fisico)</li>
+-        <li>Contatori porte, PoE, flapping e traffico switch-locale assenti</li>
++        <li>Porta interna sul GS308EP (nessun SNMP/FDB locale)</li>
++        <li>Contatori porte, PoE, NSDP, flapping, traffico switch-locale rx/tx</li>
++        <li>IP storico <span class="mono">.3.20</span> — non corrente (gestione: <span class="mono">{{ GS308EP_MGMT_IP }}</span>)</li>
+       </ul>
+     </div>
+ 
+diff --git a/observatory/web/src/gs308.test.js b/observatory/web/src/gs308.test.js
+new file mode 100644
+index 0000000..6bc2cc5
+--- /dev/null
++++ b/observatory/web/src/gs308.test.js
+@@ -0,0 +1,28 @@
++/**
++ * O6 — plant / gs308 search helpers.
++ */
++import test from "node:test";
++import assert from "node:assert/strict";
++import { matchBehind308 } from "./plantFdb.js";
++
++test("matchBehind308 returns dietro hit", () => {
++  const hit = matchBehind308(
++    {
++      devices: [
++        {
++          mac: "DC:A6:32:9C:A7:62",
++          name_label: "allsky3",
++          ip: "192.168.2.138",
++          oui: "Raspberry Pi",
++        },
++      ],
++    },
++    "allsky3",
++  );
++  assert.equal(hit.mac, "DC:A6:32:9C:A7:62");
++});
++
++test("matchBehind308 miss is null (not false invent)", () => {
++  assert.equal(matchBehind308({ devices: [] }, "zz"), null);
++  assert.equal(matchBehind308(null, "x"), null);
++});
+diff --git a/observatory/web/src/router.js b/observatory/web/src/router.js
+index 499c99d..8bcaf7f 100644
+--- a/observatory/web/src/router.js
++++ b/observatory/web/src/router.js
+@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from "vue-router";
+ import Dashboard from "./views/Dashboard.vue";
+ import Inventory from "./views/Inventory.vue";
+ import Plant from "./views/Plant.vue";
++import Gs308 from "./views/Gs308.vue";
+ import Topology from "./views/Topology.vue";
+ import Monitoring from "./views/Monitoring.vue";
+ import Incidents from "./views/Incidents.vue";
+@@ -19,8 +20,10 @@ import { auth } from "./auth";
+ 
+ const routes = [
+   { path: "/login", component: Login, meta: { public: true } },
+-  { path: "/", component: Dashboard },
++  // F-9: Oggi è il cardine → è la landing. Dashboard (Panoramica) è distinta e in nav.
++  { path: "/", redirect: "/oggi" },
+   { path: "/oggi", component: Oggi },
++  { path: "/dashboard", component: Dashboard },
+   {
+     path: "/osservatorio",
+     component: RadarStub,
+@@ -43,6 +46,7 @@ const routes = [
+   },
+   { path: "/inventory", component: Inventory },
+   { path: "/plant", component: Plant },
++  { path: "/gs308", component: Gs308 },
+   { path: "/topology", component: Topology },
+   { path: "/monitor", redirect: "/monitoring" },
+   { path: "/monitoring", component: Monitoring },
+diff --git a/observatory/web/src/views/Dossier.vue b/observatory/web/src/views/Dossier.vue
+index 077cd06..a15320f 100644
+--- a/observatory/web/src/views/Dossier.vue
++++ b/observatory/web/src/views/Dossier.vue
+@@ -48,6 +48,15 @@ const presenceLabel = computed(() => {
+   return asset.value.status || "—";
+ });
+ 
++/** Un apparato = un nome: interfacce mostrano il canonico chassis, non un secondo nome fisico. */
++const displayName = computed(() => {
++  if (!asset.value) return "";
++  const canon = (asset.value.chassis_canonical_name || "").trim();
++  const own = (asset.value.name || "").trim();
++  if (asset.value.chassis_role === "interface" && canon) return canon;
++  return own || canon;
++});
++
+ const primaryIp = computed(() => {
+   const bindings = asset.value?.ip_bindings || [];
+   const cur = bindings.find((b) => b.is_current);
+@@ -86,7 +95,7 @@ async function loadAsset(id) {
+     asset.value = await api.asset(id);
+     pushRecentDossier({
+       id,
+-      name: asset.value.name,
++      name: asset.value.display_name || asset.value.chassis_canonical_name || asset.value.name,
+       ip: primaryIpFrom(asset.value),
+     });
+     recent.value = readRecentDossiers();
+@@ -202,11 +211,14 @@ watch(
+       <div class="dossier-head">
+         <div class="dossier-head-main">
+           <button type="button" class="dossier-back" @click="router.push('/dossier')">← Dossier</button>
+-          <h1 class="dossier-title" :class="{ unnamed: asset && !asset.name }">
+-            {{ loading ? "…" : (asset?.name || "Device senza nome") }}
++          <h1 class="dossier-title" :class="{ unnamed: asset && !displayName }">
++            {{ loading ? "…" : (displayName || "Device senza nome") }}
+           </h1>
+           <div class="dossier-sub mono">
+             <span class="presence">{{ presenceLabel }}</span>
++            <span v-if="asset?.chassis_role === 'interface' && asset?.chassis_canonical_name">
++              · interfaccia di {{ asset.chassis_canonical_name }}
++            </span>
+             <span>·</span>
+             <span>{{ primaryIp }}</span>
+             <span>·</span>
+@@ -215,6 +227,8 @@ watch(
+           <p v-if="isGs308epAsset(assetId)" class="dossier-branch-link">
+             <a href="#ramo-308">Scheda ramo GS308EP ↓</a>
+             ·
++            <router-link to="/gs308">Vista punto cieco</router-link>
++            ·
+             <router-link to="/plant">Impianto</router-link>
+             ·
+             <router-link to="/topology">Topologia</router-link>
+diff --git a/observatory/web/src/views/Gs308.vue b/observatory/web/src/views/Gs308.vue
+new file mode 100644
+index 0000000..181d17d
+--- /dev/null
++++ b/observatory/web/src/views/Gs308.vue
+@@ -0,0 +1,575 @@
++<script setup>
++import { computed, onMounted, ref, watch } from "vue";
++import { useRoute, useRouter } from "vue-router";
++import { api } from "../api.js";
++import HelpTip from "../components/HelpTip.vue";
++import ViewStateBanner from "../components/ViewStateBanner.vue";
++import { GS308EP_MGMT_IP } from "../observatoryUx.js";
++
++const route = useRoute();
++const router = useRouter();
++
++const data = ref(null);
++const loading = ref(true);
++const error = ref("");
++const notice = ref("");
++const busyKey = ref("");
++const assignMac = ref("");
++const assignPortId = ref(null);
++const searchQ = ref("");
++
++const STATE_LABEL = {
++  assegnata: "Assegnata (manuale)",
++  proposta: "Proposta (inferenza)",
++  vuota_dichiarata: "Vuota dichiarata",
++  sconosciuta: "Sconosciuta",
++};
++
++async function load() {
++  loading.value = true;
++  error.value = "";
++  try {
++    data.value = await api.gs308View();
++  } catch (e) {
++    error.value = e.message || "Vista 308 non disponibile";
++    data.value = null;
++  } finally {
++    loading.value = false;
++  }
++}
++
++onMounted(load);
++watch(
++  () => route.query.refresh,
++  () => load(),
++);
++watch(
++  () => route.query.mac,
++  (mac) => {
++    if (mac) {
++      assignMac.value = String(mac);
++      searchQ.value = String(mac);
++    }
++  },
++  { immediate: true },
++);
++
++const att = computed(() => data.value?.attestation || {});
++const behind = computed(() => data.value?.behind?.devices || []);
++const ports = computed(() => data.value?.ports || []);
++const proposals = computed(() => data.value?.proposals || []);
++const conflicts = computed(() => data.value?.conflicts || []);
++const blindSpots = computed(() => data.value?.blind_spots || []);
++const counts = computed(() => data.value?.port_state_counts || {});
++
++const searchHit = computed(() => {
++  const q = String(searchQ.value || "").trim().toLowerCase();
++  if (!q) return null;
++  for (const d of behind.value) {
++    const blob = [d.mac, d.ip, d.name, d.name_label, d.oui]
++      .filter(Boolean)
++      .join(" ")
++      .toLowerCase();
++    if (blob.includes(q) || q.includes(String(d.mac || "").toLowerCase())) {
++      return d;
++    }
++  }
++  return null;
++});
++
++async function doAssign({ portId, mac, empty = false, clear = false }) {
++  const key = `${portId}:${clear ? "clear" : empty ? "empty" : mac}`;
++  if (!window.confirm(
++    clear
++      ? "Rimuovere l'assegnazione manuale su questa porta?"
++      : empty
++        ? "Dichiarare questa porta vuota (fatto manuale)?"
++        : `Assegnare ${mac} alla porta ${portId} come fatto manuale?`,
++  )) {
++    notice.value = "Azione annullata — nessuna scrittura.";
++    return;
++  }
++  busyKey.value = key;
++  notice.value = "";
++  error.value = "";
++  try {
++    await api.gs308Assign({
++      port_id: portId,
++      mac: mac || null,
++      empty,
++      clear,
++      confirm: true,
++    });
++    notice.value = clear
++      ? "Assegnazione rimossa"
++      : empty
++        ? "Porta dichiarata vuota"
++        : `Assegnato ${mac} → porta ${portId}`;
++    assignMac.value = "";
++    assignPortId.value = null;
++    await load();
++  } catch (e) {
++    error.value = e.message || "Assegnazione fallita";
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++function openDossier(assetId) {
++  if (!assetId) {
++    notice.value = "Nessun dossier: MAC senza asset (nome non noto).";
++    return;
++  }
++  router.push({ path: `/dossier/${assetId}`, query: { from: "gs308" } });
++}
++
++function startAssign(port) {
++  assignPortId.value = port.port_id;
++  assignMac.value = behind.value[0]?.mac || "";
++}
++
++function acceptProposal(prop) {
++  // Never auto-write: open assign UI with MAC prefilled — Michele confirms.
++  if (!ports.value.length) return;
++  const target = ports.value.find((p) => p.state === "sconosciuta") || ports.value[0];
++  assignPortId.value = target.port_id;
++  assignMac.value = prop.mac;
++  notice.value =
++    "INFERENZA accettata come candidato: conferma esplicita richiesta per scrivere il fatto manuale.";
++}
++</script>
++
++<template>
++  <div class="gs308-page" data-testid="gs308-view">
++    <header class="gs308-head">
++      <div>
++        <h1>GS308EP · punto cieco</h1>
++        <p class="lead">
++          Sappiamo <strong>chi</strong> c’è dietro il 308 (evidenza FDB a monte), non
++          <strong>su quale porta</strong> — finché non lo assegni tu.
++        </p>
++      </div>
++      <div class="head-links">
++        <router-link to="/plant">Impianto</router-link>
++        <router-link to="/topology">Topologia</router-link>
++        <router-link v-if="data?.switch?.id" :to="`/dossier/4`">Dossier 308</router-link>
++      </div>
++    </header>
++
++    <ViewStateBanner v-if="error" kind="error" :message="error" />
++    <ViewStateBanner v-else-if="loading && !data" kind="loading" />
++    <p v-if="notice" class="notice" role="status">{{ notice }}</p>
++
++    <template v-if="data">
++      <label class="search">
++        <span>Cerca MAC / IP / nome</span>
++        <input v-model="searchQ" type="search" placeholder="es. allsky3 o DC:A6:…" />
++      </label>
++      <p v-if="searchHit" class="search-hit" role="status">
++        <span class="mono">{{ searchHit.mac }}</span>
++        · {{ searchHit.name_label }}
++        <span v-if="searchHit.ip" class="mono"> · {{ searchHit.ip }}</span>
++        → <strong>dietro il 308</strong> (porta esatta non determinabile)
++      </p>
++      <p v-else-if="searchQ.trim()" class="search-miss muted">
++        Nessun match dietro il 308 per «{{ searchQ.trim() }}».
++      </p>
++
++      <!-- P1 attestation -->
++      <section class="block">
++        <h2>
++          <span class="tag fact">Fatto</span>
++          Porta di attestazione
++          <HelpTip text="Derivata dal MAC del GS308EP nella FDB degli switch gestiti — mai da un conteggio." />
++        </h2>
++        <p v-if="att.porta_di_attestazione === 'determinata'">
++          <span class="mono">{{ att.switch_code }}</span>
++          porta <span class="mono">{{ att.port_number }}</span>
++          (id={{ att.port_id }})
++          · IP gestione <span class="mono">{{ GS308EP_MGMT_IP }}</span>
++          · MAC <span class="mono">{{ att.mac_308 }}</span>
++        </p>
++        <p v-else class="warn">
++          porta_di_attestazione: <strong>non_determinata</strong> (I2)
++        </p>
++        <p class="muted rule">Regola: {{ att.rule }}</p>
++      </section>
++
++      <!-- P2 behind -->
++      <section class="block">
++        <h2>
++          <span class="tag fact">Fatto · fdb · auth 60</span>
++          Dietro il 308
++        </h2>
++        <p class="disclaimer">{{ data.behind?.disclaimer }}</p>
++        <ul v-if="behind.length" class="device-list">
++          <li v-for="d in behind" :key="d.mac">
++            <div class="dev-main">
++              <span class="mono">{{ d.mac }}</span>
++              <span>{{ d.name_label }}</span>
++              <span class="muted">{{ d.oui }}</span>
++              <span v-if="d.ip" class="mono">{{ d.ip }}</span>
++              <span v-else class="chip">solo-L2</span>
++              <span v-if="d.randomized" class="chip">MAC randomizzato</span>
++              <span v-if="d.freshness" class="muted tiny">{{ d.freshness }}</span>
++            </div>
++            <p class="placement">{{ d.placement }}</p>
++            <div class="row-actions">
++              <button
++                type="button"
++                class="btn"
++                :disabled="!d.asset_id"
++                @click="openDossier(d.asset_id)"
++              >
++                Apri dossier
++              </button>
++              <button
++                type="button"
++                class="btn"
++                @click="assignPortId = ports.find(p => p.state === 'sconosciuta')?.port_id || ports[0]?.port_id; assignMac = d.mac"
++              >
++                Assegna a porta…
++              </button>
++            </div>
++          </li>
++        </ul>
++        <p v-else class="muted">Nessun dispositivo enumerabile dietro il 308 in questo ciclo.</p>
++      </section>
++
++      <!-- P5 blind spots -->
++      <section class="block gaps">
++        <h2><span class="tag gap">Punti ciechi</span> {{ data.blind_spots_title }}</h2>
++        <ul>
++          <li v-for="(b, i) in blindSpots" :key="i">{{ b }}</li>
++        </ul>
++      </section>
++
++      <!-- I3 -->
++      <section v-if="conflicts.length" class="block">
++        <h2><span class="tag conflict">CONFLITTO (I3)</span></h2>
++        <ul>
++          <li v-for="(c, i) in conflicts" :key="i">{{ c.note }}</li>
++        </ul>
++      </section>
++
++      <!-- P3 ports -->
++      <section class="block">
++        <h2>
++          Porte GS308EP
++          <HelpTip text="Assegnata / proposta / vuota dichiarata / sconosciuta — non confonderle. Nessuna telemetria SNMP sul 308 (I7)." />
++        </h2>
++        <p class="muted counts">
++          assegnate {{ counts.assegnata || 0 }}
++          · proposte {{ counts.proposta || 0 }}
++          · vuote dichiarate {{ counts.vuota_dichiarata || 0 }}
++          · sconosciute {{ counts.sconosciuta || 0 }}
++          (id {{ ports.map(p => p.port_id).join(", ") }})
++        </p>
++        <div class="ports">
++          <article
++            v-for="p in ports"
++            :key="p.port_id"
++            class="port"
++            :data-state="p.state"
++          >
++            <header>
++              <strong>Porta {{ p.port_number }}</strong>
++              <span class="mono muted">id={{ p.port_id }}</span>
++              <span class="state" :data-state="p.state">{{ STATE_LABEL[p.state] || p.state }}</span>
++              <span v-if="p.source_label" class="chip">fonte {{ p.source_label }}</span>
++            </header>
++            <p v-if="p.assigned_device" class="assigned">
++              {{ p.assigned_mac }} · {{ p.assigned_device.name_label }}
++              <span v-if="p.assigned_device.ip" class="mono"> · {{ p.assigned_device.ip }}</span>
++            </p>
++            <p v-if="p.notes" class="muted tiny">Nota: {{ p.notes }}</p>
++            <p class="muted tiny">FDB locale: assente · telemetria: assente (I7)</p>
++            <div class="row-actions">
++              <button type="button" class="btn" :disabled="busyKey.startsWith(String(p.port_id))" @click="startAssign(p)">
++                Assegna dispositivo
++              </button>
++              <button
++                type="button"
++                class="btn"
++                :disabled="!!busyKey"
++                @click="doAssign({ portId: p.port_id, empty: true })"
++              >
++                Dichiara vuota
++              </button>
++              <button
++                type="button"
++                class="btn"
++                :disabled="!!busyKey || p.state === 'sconosciuta'"
++                @click="doAssign({ portId: p.port_id, clear: true })"
++              >
++                Rimuovi assegnazione
++              </button>
++            </div>
++            <div v-if="assignPortId === p.port_id" class="assign-box">
++              <label>
++                MAC
++                <input v-model="assignMac" class="mono" placeholder="AA:BB:…" list="behind-macs" />
++              </label>
++              <datalist id="behind-macs">
++                <option v-for="d in behind" :key="d.mac" :value="d.mac">
++                  {{ d.name_label }}
++                </option>
++              </datalist>
++              <button
++                type="button"
++                class="btn primary"
++                :disabled="!assignMac || !!busyKey"
++                @click="doAssign({ portId: p.port_id, mac: assignMac })"
++              >
++                Conferma assegnazione manuale
++              </button>
++              <button type="button" class="btn" @click="assignPortId = null">Annulla</button>
++            </div>
++          </article>
++        </div>
++      </section>
++
++      <!-- P4 inference -->
++      <section class="block inference">
++        <h2><span class="tag infer">INFERENZA</span> Proposte (non fatti)</h2>
++        <p class="muted">
++          Visivamente separate dai fatti · fonte + confidenza · nessuna azione autonoma ·
++          slot LLM /ai disattivato.
++        </p>
++        <ul v-if="proposals.length" class="prop-list">
++          <li v-for="prop in proposals" :key="prop.mac">
++            <div class="dev-main">
++              <span class="mono">{{ prop.mac }}</span>
++              <span>{{ prop.device?.name_label }}</span>
++              <span class="chip">{{ prop.state }}</span>
++            </div>
++            <p class="placement">{{ prop.placement }}</p>
++            <p class="muted tiny">{{ prop.note }}</p>
++            <ul class="infer-items">
++              <li v-for="(it, i) in prop.inference?.items || []" :key="i">
++                {{ it.label }}
++                · fonte <code>{{ it.source }}</code>
++                · confidenza {{ Math.round((it.confidence || 0) * 100) }}%
++              </li>
++            </ul>
++            <p class="infer-disclaimer">{{ prop.inference?.disclaimer }}</p>
++            <p class="muted tiny">
++              LLM: {{ prop.inference?.llm_slot?.enabled ? "on" : "off" }}
++              — {{ prop.inference?.llm_slot?.reason }}
++            </p>
++            <button type="button" class="btn" @click="acceptProposal(prop)">
++              Usa come candidato assegnazione…
++            </button>
++          </li>
++        </ul>
++        <p v-else class="muted">Nessuna proposta in questo ciclo.</p>
++      </section>
++    </template>
++  </div>
++</template>
++
++<style scoped>
++.gs308-page {
++  max-width: 960px;
++  margin: 0 auto;
++  padding: 0.75rem 1rem 2rem;
++}
++.gs308-head {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 0.75rem;
++  justify-content: space-between;
++  align-items: flex-start;
++  margin-bottom: 0.75rem;
++}
++.gs308-head h1 {
++  margin: 0;
++  font-size: 1.25rem;
++}
++.lead {
++  margin: 0.35rem 0 0;
++  font-size: 0.9rem;
++  color: var(--muted, #999);
++  max-width: 42rem;
++}
++.head-links {
++  display: flex;
++  gap: 0.75rem;
++  flex-wrap: wrap;
++  font-size: 0.88rem;
++}
++.search {
++  display: flex;
++  flex-direction: column;
++  gap: 0.25rem;
++  margin: 0.5rem 0;
++  font-size: 0.82rem;
++}
++.search input {
++  padding: 0.4rem 0.55rem;
++  border-radius: 4px;
++  border: 1px solid rgba(255, 255, 255, 0.12);
++  background: rgba(0, 0, 0, 0.25);
++  color: inherit;
++}
++.search-hit {
++  margin: 0 0 0.75rem;
++  padding: 0.45rem 0.6rem;
++  border-left: 3px solid var(--ok, #6ecf8f);
++  background: rgba(60, 140, 90, 0.08);
++  font-size: 0.88rem;
++}
++.search-miss { margin: 0 0 0.75rem; font-size: 0.85rem; }
++.notice {
++  margin: 0.35rem 0;
++  padding: 0.4rem 0.55rem;
++  background: rgba(180, 160, 80, 0.12);
++  border-radius: 4px;
++  font-size: 0.86rem;
++}
++.block {
++  margin-top: 1rem;
++  padding-top: 0.75rem;
++  border-top: 1px solid rgba(255, 255, 255, 0.07);
++}
++.block h2 {
++  margin: 0 0 0.45rem;
++  font-size: 0.95rem;
++  font-weight: 560;
++  display: flex;
++  flex-wrap: wrap;
++  gap: 0.4rem;
++  align-items: center;
++}
++.tag {
++  display: inline-block;
++  font-size: 0.7rem;
++  font-weight: 650;
++  letter-spacing: 0.02em;
++  padding: 0.1rem 0.4rem;
++  border-radius: 4px;
++  text-transform: uppercase;
++}
++.tag.fact { background: rgba(60, 140, 90, 0.18); color: var(--ok, #6ecf8f); }
++.tag.gap { background: rgba(100, 100, 100, 0.22); color: var(--muted, #aaa); }
++.tag.infer { background: rgba(100, 120, 180, 0.22); color: #9ab0e0; }
++.tag.conflict { background: rgba(200, 120, 40, 0.2); color: var(--warn, #d4b85a); text-transform: none; }
++.disclaimer, .placement {
++  margin: 0.2rem 0 0.45rem;
++  font-size: 0.86rem;
++  font-style: italic;
++  color: var(--warn, #d4b85a);
++}
++.rule { font-size: 0.82rem; }
++.warn { color: var(--warn, #d4b85a); }
++.device-list, .prop-list, .gaps ul {
++  margin: 0;
++  padding-left: 0;
++  list-style: none;
++}
++.device-list li, .prop-list li {
++  padding: 0.55rem 0;
++  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
++}
++.dev-main {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 0.4rem 0.65rem;
++  align-items: baseline;
++  font-size: 0.9rem;
++}
++.chip {
++  font-size: 0.72rem;
++  padding: 0.08rem 0.35rem;
++  border-radius: 3px;
++  background: rgba(255, 255, 255, 0.06);
++}
++.row-actions {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 0.35rem;
++  margin-top: 0.35rem;
++}
++.btn {
++  font: inherit;
++  font-size: 0.8rem;
++  padding: 0.28rem 0.55rem;
++  border-radius: 4px;
++  border: 1px solid rgba(255, 255, 255, 0.14);
++  background: rgba(255, 255, 255, 0.04);
++  color: inherit;
++  cursor: pointer;
++}
++.btn:disabled { opacity: 0.45; cursor: not-allowed; }
++.btn.primary {
++  background: rgba(60, 140, 90, 0.22);
++  border-color: rgba(60, 140, 90, 0.4);
++}
++.ports {
++  display: grid;
++  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
++  gap: 0.65rem;
++}
++.port {
++  padding: 0.55rem 0.65rem;
++  border: 1px solid rgba(255, 255, 255, 0.08);
++  border-radius: 6px;
++  background: rgba(0, 0, 0, 0.15);
++}
++.port header {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 0.35rem 0.5rem;
++  align-items: center;
++  margin-bottom: 0.35rem;
++}
++.state {
++  font-size: 0.72rem;
++  font-weight: 600;
++  padding: 0.1rem 0.35rem;
++  border-radius: 3px;
++}
++.state[data-state="assegnata"] { background: rgba(60, 140, 90, 0.2); color: var(--ok, #6ecf8f); }
++.state[data-state="proposta"] { background: rgba(100, 120, 180, 0.2); color: #9ab0e0; }
++.state[data-state="vuota_dichiarata"] { background: rgba(180, 160, 80, 0.15); color: var(--warn, #d4b85a); }
++.state[data-state="sconosciuta"] { background: rgba(100, 100, 100, 0.2); color: var(--muted, #aaa); }
++.assign-box {
++  margin-top: 0.45rem;
++  display: flex;
++  flex-direction: column;
++  gap: 0.35rem;
++}
++.assign-box input {
++  width: 100%;
++  padding: 0.3rem 0.4rem;
++  border-radius: 4px;
++  border: 1px solid rgba(255, 255, 255, 0.12);
++  background: rgba(0, 0, 0, 0.25);
++  color: inherit;
++}
++.infer-items {
++  margin: 0.25rem 0;
++  padding-left: 1.1rem;
++  font-size: 0.82rem;
++}
++.infer-disclaimer {
++  margin: 0.25rem 0;
++  font-size: 0.78rem;
++  color: var(--warn, #d4b85a);
++  font-style: italic;
++}
++.inference {
++  border-left: 3px solid rgba(100, 120, 180, 0.45);
++  padding-left: 0.65rem;
++}
++.mono { font-family: var(--font-mono, ui-monospace, monospace); }
++.muted { color: var(--muted, #999); }
++.tiny { font-size: 0.75rem; }
++.counts { font-size: 0.82rem; }
++a { color: var(--accent); }
++
++@media (max-width: 640px) {
++  .gs308-page { padding: 0.5rem 0.65rem 1.5rem; }
++  .ports { grid-template-columns: 1fr; }
++}
++</style>
+diff --git a/observatory/web/src/views/Oggi.vue b/observatory/web/src/views/Oggi.vue
+index 02c5a44..49125f9 100644
+--- a/observatory/web/src/views/Oggi.vue
++++ b/observatory/web/src/views/Oggi.vue
+@@ -12,6 +12,7 @@ import {
+   noiseProposalIds,
+   noiseProposalsMissingIdCount,
+ } from "../triageRules";
++import { buildChassisNameCards } from "../oggiChassis";
+ import {
+   displayCurrentName,
+   displayIp,
+@@ -24,6 +25,8 @@ import {
+   verdictTone,
+ } from "../oggiTriage";
+ import {
++  chassisNameFields,
++  fdbDefenseFields,
+   humanVerificaLabel,
+   moveSuggestionFields,
+   nameProblemFields,
+@@ -35,7 +38,8 @@ import DenseRow from "../components/ui/DenseRow.vue";
+ import StatusBadge from "../components/ui/StatusBadge.vue";
+ import AiInferenceLabel from "../components/AiInferenceLabel.vue";
+ import ViewStateBanner from "../components/ViewStateBanner.vue";
+-import { isAiSource } from "../observatoryUx";
++import { isAiSource, fritzPresenceOutageFromReliability } from "../observatoryUx";
++import FritzOutageBanner from "../components/FritzOutageBanner.vue";
+ 
+ const router = useRouter();
+ const loading = ref(false);
+@@ -44,15 +48,27 @@ const assets = ref([]);
+ const chassisPayload = ref({ chassis: [] });
+ const monitors = ref([]);
+ const moveSuggestions = ref([]);
++const plantSwitches = ref([]);
++const factConflicts = ref([]);
++const fdbDefense = ref({ cards: [], baseline_at_by_port: {}, roles: [] });
+ const busyKey = ref("");
+ const rumoreExpanded = ref(false);
+ const rumorePreviewOpen = ref(false);
+ const massBusy = ref(false);
+ /** Esito massa: distinto da error; non azzerato da load(). */
+ const notice = ref("");
++const reliability = ref(null);
++const fritzOutage = computed(() => fritzPresenceOutageFromReliability(reliability.value));
++/** O1: draft rename per chassis_id */
++const renameDraft = ref({});
++const renameOpen = ref({});
+ 
+ const devices = computed(() => composeDevices(assets.value, chassisPayload.value));
+ 
++const chassisNameCards = computed(() =>
++  buildChassisNameCards(assets.value || [], chassisPayload.value || {}),
++);
++
+ const triageRows = computed(() =>
+   buildTriageRows(assets.value || [], chassisPayload.value || {}),
+ );
+@@ -111,11 +127,31 @@ const monitorItems = computed(() => {
+     }));
+ });
+ 
+-const moveItems = computed(() =>
+-  (moveSuggestions.value || [])
++const moveItems = computed(() => {
++  const portsById = new Map();
++  for (const sw of plantSwitches.value || []) {
++    for (const p of sw.ports || []) {
++      portsById.set(Number(p.id), { port: p, sw });
++    }
++  }
++  return (moveSuggestions.value || [])
+     .filter((s) => (s.kind || "") === "move" && (s.status || "pending") === "pending")
+-    .map(moveSuggestionFields),
+-);
++    .map((s) => {
++      const payload = s.payload || {};
++      const toId = Number(payload.to_port_id || payload.port_id || 0);
++      const fromId = Number(payload.from_port_id || 0);
++      const hit = portsById.get(toId) || portsById.get(fromId) || null;
++      return moveSuggestionFields(s, {
++        last_fdb_at: hit?.port?.last_fdb_at || payload.last_fdb_at || null,
++        switch_name: hit?.sw?.name || payload.switch_name || null,
++        port_label:
++          hit?.port?.port_path_label ||
++          payload.to_port_label ||
++          payload.from_port_label ||
++          null,
++      });
++    });
++});
+ 
+ const noisePreview = computed(() =>
+   noiseArchivePreview(assets.value || [], noiseIds.value || []),
+@@ -127,13 +163,18 @@ const secondaryQueue = computed(() => {
+   );
+ });
+ 
++const fdbDefenseCards = computed(() => fdbDefense.value?.cards || []);
++
+ const emptyAll = computed(
+   () =>
+     !triageRows.value.length &&
++    !chassisNameCards.value.length &&
+     !newItems.value.length &&
+     !monitorItems.value.length &&
+     !moveItems.value.length &&
+-    !noiseIds.value.length,
++    !noiseIds.value.length &&
++    !factConflicts.value.length &&
++    !fdbDefenseCards.value.length,
+ );
+ 
+ const verificaBlocks = computed(() => [
+@@ -164,16 +205,24 @@ async function load() {
+   error.value = "";
+   // notice NON azzerato qui (E1): sopravvive al reload post-massa
+   try {
+-    const [a, c, m, s] = await Promise.all([
++    const [a, c, m, s, fc, rel, sw, fdb] = await Promise.all([
+       api.assets({ include_historical: "true", all_proposals: "true" }),
+       api.chassis(),
+       api.monitors(),
+       api.suggestions().catch(() => []),
++      api.factConflicts().catch(() => ({ conflicts: [] })),
++      api.reliability().catch(() => null),
++      api.switches().catch(() => []),
++      api.fdbDefenseSignals().catch(() => ({ cards: [], roles: [] })),
+     ]);
+     assets.value = a;
+     chassisPayload.value = c;
+     monitors.value = Array.isArray(m) ? m : m?.monitors || [];
+     moveSuggestions.value = Array.isArray(s) ? s : [];
++    factConflicts.value = (fc && fc.conflicts) || [];
++    reliability.value = rel;
++    plantSwitches.value = Array.isArray(sw) ? sw : [];
++    fdbDefense.value = fdb && typeof fdb === "object" ? fdb : { cards: [] };
+   } catch (e) {
+     error.value = e.message || "Caricamento fallito";
+   } finally {
+@@ -204,10 +253,226 @@ function problemFields(row) {
+   return nameProblemFields(row);
+ }
+ 
++function chassisFields(card) {
++  return chassisNameFields(card);
++}
++
++function fdbFields(card) {
++  return fdbDefenseFields(card);
++}
++
++async function ackFdb(card, action) {
++  const key = `fdb-${card.uid}-${action}`;
++  busyKey.value = key;
++  notice.value = "";
++  try {
++    let reason = "";
++    if (action === "ignore") {
++      reason = window.prompt("Motivo (obbligatorio per Ignora):", "") || "";
++      if (!reason.trim()) {
++        notice.value = "Ignora annullato: motivo assente.";
++        return;
++      }
++    }
++    await api.fdbDefenseAck({
++      uid: card.uid,
++      action,
++      reason,
++      signal_key: card.signal_key || "",
++    });
++    notice.value = `FDB ${card.signal}: ${action}`;
++    await load();
++  } catch (e) {
++    error.value = e.message || "Ack FDB fallito";
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++function fdbActionClick(card, actionId) {
++  if (actionId === "dossier") {
++    if (card.signal === "P6" && card.device?.asset_id) {
++      router.push({ path: `/dossier/${card.device.asset_id}`, query: { from: "oggi" } });
++      return;
++    }
++    // FDB ≠ identity: open plant for port context; dossier when mac search later.
++    router.push({ path: "/plant", query: { from: "oggi", fdb_mac: card.mac || "" } });
++    return;
++  }
++  if (actionId === "assign") {
++    router.push({
++      path: "/gs308",
++      query: { from: "oggi", mac: card.mac || "", refresh: String(Date.now()) },
++    });
++    return;
++  }
++  if (actionId === "open_plant") {
++    router.push({ path: "/plant", query: { from: "oggi", switch: card.switch_code || "" } });
++    return;
++  }
++  return ackFdb(card, actionId);
++}
++
++function chassisDisplayName(card) {
++  if (card?.display_name == null || String(card.display_name).trim() === "") {
++    return "nome non noto";
++  }
++  return String(card.display_name).trim();
++}
++
++function chassisProvenanceLabel(card) {
++  if (card.name_kind === "absent") return "assenza dichiarata";
++  if (card.name_kind === "inference") {
++    const src = card.name_source || "sconosciuta";
++    const conf =
++      card.name_confidence != null
++        ? ` · ${formatConfidencePct(card.name_confidence)}`
++        : "";
++    return `inferenza ${src}${conf}`;
++  }
++  if (card.name_kind === "legacy_manual") {
++    return "manuale, registrato sull'interfaccia — non ancora fatto d'apparato";
++  }
++  if (card.name_kind === "fact") {
++    if (card.fact_is_manual || card.name_source === "manual") {
++      return "fatto manuale (apparato)";
++    }
++    return `fatto ${card.name_source || "?"} (apparato)`;
++  }
++  return `provenienza ${card.name_source || "?"}`;
++}
++
++function openRename(card) {
++  renameOpen.value = { ...renameOpen.value, [card.chassis_id]: true };
++  renameDraft.value = {
++    ...renameDraft.value,
++    [card.chassis_id]: card.display_name || "",
++  };
++}
++
++async function submitChassisRename(card) {
++  const cid = card.chassis_id;
++  const name = String(renameDraft.value[cid] || "").trim();
++  if (!name) {
++    error.value = "Serve un nome non vuoto.";
++    return;
++  }
++  const key = card.key;
++  busyKey.value = key;
++  error.value = "";
++  notice.value = "";
++  try {
++    // O1.2: always chassis subject — never member adopt.
++    await api.renameChassis(cid, name);
++    renameOpen.value = { ...renameOpen.value, [cid]: false };
++    await load();
++  } catch (e) {
++    error.value = friendlyChassisError(e);
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++async function adoptChassisProposal(card) {
++  if (!card.chassis_id || !card.proposed_name) return;
++  const key = card.key;
++  busyKey.value = key;
++  error.value = "";
++  notice.value = "";
++  try {
++    await api.adoptChassisName(card.chassis_id, {
++      source: card.proposed_source || "manual",
++      value: card.proposed_name,
++      proposalId: card.proposal_id,
++    });
++    await load();
++  } catch (e) {
++    error.value = friendlyChassisError(e);
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++async function confirmInferenceAsManual(card) {
++  if (!card.chassis_id || !card.display_name) return;
++  const key = card.key;
++  busyKey.value = key;
++  error.value = "";
++  notice.value = "";
++  try {
++    await api.adoptChassisName(card.chassis_id, {
++      source: "manual",
++      value: card.display_name,
++    });
++    await load();
++  } catch (e) {
++    error.value = friendlyChassisError(e);
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++async function keepManualRejectProposal(card) {
++  if (!card.proposal_asset_id || !card.proposed_source) {
++    error.value = "Proposta non archiviabile: manca l'id membro.";
++    return;
++  }
++  const key = card.key;
++  busyKey.value = key;
++  error.value = "";
++  notice.value = "";
++  try {
++    await api.rejectNameProposal(
++      card.proposal_asset_id,
++      card.proposed_source,
++      card.proposal_id,
++    );
++    await load();
++  } catch (e) {
++    error.value = friendlyChassisError(e);
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++/** O1.2: never surface raw 409 chassis_subject_required to the user. */
++function friendlyChassisError(e) {
++  const msg = e?.message || String(e);
++  if (/chassis_subject_required/i.test(msg)) {
++    return "Adozione sul membro non consentita: usa Correggi/Adotta sulla card apparato.";
++  }
++  return msg;
++}
++
+ async function adoptRow(row) {
+-  if (row.chassis_member) {
++  // W4b.2.9 / O1.2: if chassis-scoped, always call chassis API — never member.
++  const chassisId = row.chassis_id;
++  const needsChassis =
++    row.chassis_member ||
++    row.actionable_reason === "chassis_multi_nic_adopt_blocked" ||
++    (chassisId && row.verdict === "chassis");
++  if (needsChassis && chassisId && row.proposed_name) {
++    const key = row.key;
++    busyKey.value = key;
++    error.value = "";
++    notice.value = "";
++    try {
++      await api.adoptChassisName(chassisId, {
++        source: row.source || "manual",
++        value: row.proposed_name,
++        proposalId: row.proposal_id,
++      });
++      await load();
++    } catch (e) {
++      error.value = friendlyChassisError(e);
++    } finally {
++      busyKey.value = "";
++    }
++    return;
++  }
++  if (row.actionable === false || row.verdict === "unresolvable") {
+     error.value =
+-      "Adozione bloccata: membro di chassis multi-NIC. Serve rename a livello chassis.";
++      "Proposta non risolvibile: nessuna azione disponibile su questa card.";
+     return;
+   }
+   const key = row.key;
+@@ -218,12 +483,35 @@ async function adoptRow(row) {
+     await api.adoptName(row.asset_id, row.source);
+     await load();
+   } catch (e) {
+-    error.value = e.message || String(e);
++    error.value = friendlyChassisError(e);
+   } finally {
+     busyKey.value = "";
+   }
+ }
+ 
++function showAdoptButton(row) {
++  if (row.actionable === false || row.verdict === "unresolvable") {
++    return (
++      row.actionable_reason === "chassis_multi_nic_adopt_blocked" &&
++      !!row.chassis_id &&
++      !!row.proposed_name
++    );
++  }
++  // O1: chassis_member rows should not appear; if they do, still allow chassis adopt.
++  if (row.chassis_member) return !!row.chassis_id && !!row.proposed_name;
++  return true;
++}
++
++function adoptButtonLabel(row) {
++  if (
++    row.chassis_member ||
++    row.actionable_reason === "chassis_multi_nic_adopt_blocked"
++  ) {
++    return "adotta (apparato)";
++  }
++  return "adotta";
++}
++
+ async function rejectRow(row) {
+   const key = row.key;
+   busyKey.value = key;
+@@ -329,7 +617,14 @@ function presenceLabel(state) {
+   if (s === "present") return "presente";
+   if (s === "recent") return "recente";
+   if (s === "fritz_only") return "solo Fritz";
+-  if (s === "stale") return "non visto di recente";
++  if (s === "stale_unlocated" || s === "presence_source_outage" || s === "source_outage") {
++    return "copertura sorgente non disponibile";
++  }
++  if (s === "stale") {
++    return fritzOutage.value?.active
++      ? "copertura sorgente non disponibile"
++      : "non visto di recente";
++  }
+   return s;
+ }
+ 
+@@ -342,13 +637,168 @@ onMounted(load);
+       title="Oggi"
+       help="Coda unica di interventi: nomi, chassis multi-NIC, porte da confermare, device nuovi e monitor. Priorità e cause in italiano."
+     />
++    <FritzOutageBanner
++      :active="fritzOutage.active"
++      :detail="fritzOutage.detail"
++    />
+     <ViewStateBanner v-if="error" kind="error" :message="error" />
+     <ViewStateBanner v-else-if="notice && (notice.includes('saltate') || notice.includes('non trovate'))" kind="partial" :message="notice" />
+     <p v-else-if="notice" class="oggi-notice" role="status">{{ notice }}</p>
+     <ViewStateBanner v-if="loading" kind="loading" />
+     <template v-if="!loading">
++      <div
++        v-if="fdbDefense.discarded_moves && fdbDefense.discarded_moves.count"
++        class="oggi-discarded"
++        data-testid="o4-discarded-moves"
++      >
++        <strong>{{ fdbDefense.discarded_moves.count }} eventi mac_move scartati</strong>
++        — {{ fdbDefense.discarded_moves.note }}
++        (<code>{{ fdbDefense.discarded_moves.debt }}</code>). Non cancellati.
++      </div>
+       <ViewStateBanner v-if="emptyAll && !error" kind="empty" message="Niente in coda. La rete non richiede interventi adesso." />
+       <template v-if="!emptyAll">
++        <!-- W4b.2.6: R-H conflict review (no auto-rename) -->
++        <section v-if="factConflicts.length" class="oggi-section">
++          <div class="oggi-section-head">
++            <h2 class="oggi-h2">Conflitti da verificare</h2>
++            <span class="oggi-counts">{{ factConflicts.length }} · R-H</span>
++          </div>
++          <div
++            v-for="c in factConflicts"
++            :key="'cf-' + c.id"
++            class="oggi-grid-row oggi-problem"
++          >
++            <DenseRow metric-width="0" value-width="auto">
++              <div class="oggi-grid-main">
++                <div class="oggi-names">
++                  <span class="oggi-prop">{{ c.incumbent_value || "?" }}</span>
++                  <span class="oggi-vs">vs</span>
++                  <span class="oggi-cur">{{ c.value }}</span>
++                  <StatusBadge tone="attn" label="conflitto" />
++                </div>
++                <dl class="oggi-fields">
++                  <div>
++                    <dt>Priorità</dt>
++                    <dd>alta</dd>
++                  </div>
++                  <div>
++                    <dt>Causa ed evidenza</dt>
++                    <dd>
++                      Contraddizione forte tra
++                      «{{ c.incumbent_value }}» ({{ c.incumbent_source || "?" }},
++                      auth {{ c.incumbent_authority ?? "?" }}) e
++                      «{{ c.value }}» ({{ c.source }}, auth {{ c.authority }}).
++                      Occorrenze: {{ c.occurrences || 1 }}.
++                    </dd>
++                  </div>
++                  <div>
++                    <dt>Impatto</dt>
++                    <dd>Il current resta invariato; nessun auto-rename.</dd>
++                  </div>
++                  <div>
++                    <dt>Se ignori</dt>
++                    <dd>Il conflitto resta in coda R-H finché non scegli un lato o lo risolvi altrove.</dd>
++                  </div>
++                  <div>
++                    <dt>Se agisci</dt>
++                    <dd>Confermi quale valore è il current — l’altro resta storico/divergenza.</dd>
++                  </div>
++                  <div>
++                    <dt>Azione raccomandata</dt>
++                    <dd>Apri il Dossier e conferma a mano quale valore tenere.</dd>
++                  </div>
++                </dl>
++              </div>
++              <template #value>
++                <div class="oggi-actions">
++                  <button
++                    v-if="c.subject_type === 'asset' || c.subject_type === 'chassis'"
++                    type="button"
++                    class="oggi-btn primary"
++                    @click="openDossier(c.subject_id)"
++                  >
++                    apri Dossier
++                  </button>
++                </div>
++              </template>
++            </DenseRow>
++          </div>
++        </section>
++        <!-- O4: FDB defensive signals S-A..S-D -->
++        <section v-if="fdbDefenseCards.length" class="oggi-section">
++          <div class="oggi-section-head">
++            <h2 class="oggi-h2">FDB · sensore difensivo</h2>
++            <span class="oggi-counts">{{ fdbDefenseCards.length }} · S-A…S-D</span>
++          </div>
++          <div
++            v-for="card in fdbDefenseCards"
++            :key="'fdb-' + card.uid"
++            class="oggi-grid-row oggi-problem"
++          >
++            <DenseRow metric-width="0" value-width="auto">
++              <div class="oggi-grid-main">
++                <div class="oggi-names">
++                  <span class="oggi-prop">{{ fdbFields(card).title }}</span>
++                  <StatusBadge
++                    :tone="fdbFields(card).priority === 'alta' ? 'attn' : 'neutral'"
++                    :label="card.signal + ' · ' + fdbFields(card).priority"
++                  />
++                </div>
++                <div class="oggi-meta">
++                  <span v-if="card.mac" class="mono">{{ card.mac }}</span>
++                  <span v-if="card.switch_code">{{ card.switch_code }}:{{ card.port_number }}</span>
++                  <span v-if="card.ruolo_porta">ruolo {{ card.ruolo_porta }}</span>
++                  <span v-if="fdbFields(card).baseline_at">baseline {{ fdbFields(card).baseline_at }}</span>
++                </div>
++                <dl class="oggi-fields">
++                  <div><dt>Priorità</dt><dd>{{ fdbFields(card).priority }}</dd></div>
++                  <div><dt>Causa ed evidenza</dt><dd>{{ fdbFields(card).cause }}</dd></div>
++                  <div><dt>Impatto</dt><dd>{{ fdbFields(card).impact }}</dd></div>
++                  <div><dt>Azione raccomandata</dt><dd>{{ fdbFields(card).action }}</dd></div>
++                  <div><dt>Certezza</dt><dd>{{ fdbFields(card).certainty }}</dd></div>
++                </dl>
++                <div
++                  v-if="card.inference"
++                  class="oggi-inference"
++                  data-kind="inference"
++                >
++                  <strong>{{ card.inference.label || "INFERENZA" }}</strong>
++                  <p class="oggi-inference-disc">{{ card.inference.disclaimer }}</p>
++                  <ul>
++                    <li
++                      v-for="(it, idx) in (card.inference.items || [])"
++                      :key="'inf-' + card.uid + '-' + idx"
++                    >
++                      {{ it.label }}
++                      <span class="mono"> · fonte {{ it.source }} · confidenza {{ it.confidence }}</span>
++                    </li>
++                  </ul>
++                  <p
++                    v-if="card.inference.llm_slot && !card.inference.llm_slot.enabled"
++                    class="oggi-inference-disc"
++                  >
++                    Slot LLM disattivato: {{ card.inference.llm_slot.reason }}
++                  </p>
++                </div>
++              </div>
++              <template #value>
++                <div class="oggi-actions">
++                  <button
++                    v-for="act in (card.actions || [])"
++                    :key="act.id"
++                    type="button"
++                    class="oggi-btn"
++                    :class="{ primary: act.id === 'acknowledge' || act.id === 'dossier' }"
++                    :disabled="busyKey.startsWith('fdb-' + card.uid)"
++                    @click="fdbActionClick(card, act.id)"
++                  >
++                    {{ act.label }}
++                  </button>
++                </div>
++              </template>
++            </DenseRow>
++          </div>
++        </section>
+         <!-- Porte / FDB move (ex /suggestions) -->
+         <section v-if="moveItems.length" class="oggi-section">
+           <div class="oggi-section-head">
+@@ -360,7 +810,10 @@ onMounted(load);
+               <div class="oggi-grid-main">
+                 <div class="oggi-names">
+                   <span class="oggi-prop">{{ item.title }}</span>
+-                  <StatusBadge tone="attn" :label="verdictLabelIt('move')" />
++                  <StatusBadge
++                    :tone="item.priority === 'alta' ? 'attn' : 'neutral'"
++                    :label="verdictLabelIt('move')"
++                  />
+                 </div>
+                 <dl class="oggi-fields">
+                   <div><dt>Priorità</dt><dd>{{ item.priority }}</dd></div>
+@@ -404,6 +857,153 @@ onMounted(load);
+           </div>
+         </section>
+ 
++        <!-- O1: una card per apparato multi-interfaccia (soggetto chassis) -->
++        <section v-if="chassisNameCards.length" class="oggi-section">
++          <div class="oggi-section-head">
++            <h2 class="oggi-h2">Apparati multi-interfaccia</h2>
++            <span class="oggi-counts">{{ chassisNameCards.length }} · nome a livello apparato</span>
++          </div>
++          <div
++            v-for="card in chassisNameCards"
++            :key="card.key"
++            class="oggi-grid-row oggi-problem"
++          >
++            <DenseRow metric-width="0" value-width="auto">
++              <div class="oggi-grid-main">
++                <div class="oggi-names">
++                  <span
++                    class="oggi-cur"
++                    :class="{ 'oggi-name-absent': card.name_kind === 'absent' }"
++                  >{{ chassisDisplayName(card) }}</span>
++                  <template v-if="card.proposed_name && card.conflict">
++                    <span class="oggi-vs">vs</span>
++                    <span class="oggi-prop">{{ card.proposed_name }}</span>
++                  </template>
++                  <template v-else-if="card.proposed_name">
++                    <span class="oggi-arrow" aria-hidden="true">→</span>
++                    <span class="oggi-prop">{{ card.proposed_name }}</span>
++                  </template>
++                  <StatusBadge
++                    :tone="card.priority === 'alta' ? 'attn' : 'neutral'"
++                    :label="verdictLabelIt(card.verdict)"
++                  />
++                </div>
++                <div class="oggi-meta">
++                  <span>{{ chassisProvenanceLabel(card) }}</span>
++                  <span>{{ card.members.length }} interfacce</span>
++                  <span
++                    v-for="m in card.members"
++                    :key="'m-' + m.asset_id"
++                    class="mono"
++                  >#{{ m.asset_id }} {{ m.role || "" }} {{ (m.ips && m.ips[0]) || "—" }}</span>
++                </div>
++                <AiInferenceLabel
++                  v-if="card.name_kind === 'inference' || isAiSource(card.name_source) || isAiSource(card.proposed_source)"
++                  :source="card.name_kind === 'inference' ? (card.name_source || 'inferenza') : (card.proposed_source || card.name_source)"
++                  :confidence="card.name_confidence ?? card.proposed_confidence"
++                  :evidence="card.proposal_evidence || ''"
++                />
++                <dl class="oggi-fields">
++                  <div><dt>Priorità</dt><dd>{{ chassisFields(card).priority }}</dd></div>
++                  <div><dt>Causa ed evidenza</dt><dd>{{ chassisFields(card).cause }}</dd></div>
++                  <div><dt>Impatto</dt><dd>{{ chassisFields(card).impact }}</dd></div>
++                  <div><dt>Azione raccomandata</dt><dd>{{ chassisFields(card).action }}</dd></div>
++                  <div><dt>Certezza</dt><dd>{{ chassisFields(card).certainty }}</dd></div>
++                  <div><dt>Esito</dt><dd>{{ chassisFields(card).outcome }}</dd></div>
++                </dl>
++                <div v-if="renameOpen[card.chassis_id]" class="oggi-rename">
++                  <label class="oggi-rename-label">
++                    Nuovo nome
++                    <input
++                      v-model="renameDraft[card.chassis_id]"
++                      type="text"
++                      class="oggi-rename-input"
++                      :disabled="busyKey === card.key"
++                      @keyup.enter="submitChassisRename(card)"
++                    />
++                  </label>
++                  <button
++                    type="button"
++                    class="oggi-btn primary"
++                    :disabled="busyKey === card.key"
++                    @click="submitChassisRename(card)"
++                  >
++                    salva
++                  </button>
++                  <button
++                    type="button"
++                    class="oggi-btn"
++                    :disabled="busyKey === card.key"
++                    @click="renameOpen[card.chassis_id] = false"
++                  >
++                    annulla
++                  </button>
++                </div>
++              </div>
++              <template #value>
++                <div class="oggi-actions">
++                  <button
++                    v-if="card.actions.includes('correggi')"
++                    type="button"
++                    class="oggi-btn primary"
++                    :disabled="busyKey === card.key"
++                    @click="openRename(card)"
++                  >
++                    {{ card.name_kind === 'absent' ? 'assegna nome' : 'correggi nome' }}
++                  </button>
++                  <button
++                    v-if="card.actions.includes('conferma_manuale')"
++                    type="button"
++                    class="oggi-btn primary"
++                    :disabled="busyKey === card.key"
++                    @click="confirmInferenceAsManual(card)"
++                  >
++                    {{
++                      card.name_kind === "legacy_manual"
++                        ? "conferma come fatto d'apparato"
++                        : "conferma come manuale"
++                    }}
++                  </button>
++                  <button
++                    v-if="card.actions.includes('adotta_proposta')"
++                    type="button"
++                    class="oggi-btn primary"
++                    :disabled="busyKey === card.key"
++                    @click="adoptChassisProposal(card)"
++                  >
++                    adotta proposta
++                  </button>
++                  <button
++                    v-if="card.actions.includes('tieni_manuale')"
++                    type="button"
++                    class="oggi-btn"
++                    :disabled="busyKey === card.key"
++                    @click="keepManualRejectProposal(card)"
++                  >
++                    tieni manuale
++                  </button>
++                  <button
++                    v-if="card.actions.includes('sostituisci_proposta')"
++                    type="button"
++                    class="oggi-btn"
++                    :disabled="busyKey === card.key"
++                    @click="adoptChassisProposal(card)"
++                  >
++                    sostituisci con proposta
++                  </button>
++                  <button
++                    type="button"
++                    class="oggi-btn ghost"
++                    @click="openDossier(card.primary_asset_id)"
++                  >
++                    Dossier
++                  </button>
++                </div>
++              </template>
++            </DenseRow>
++          </div>
++        </section>
++
+         <!-- Proposte nome: ADOTTA → VERIFICA → rumore -->
+         <section v-if="triageRows.length || noiseIds.length" class="oggi-section">
+           <div class="oggi-section-head">
+@@ -546,13 +1146,18 @@ onMounted(load);
+                           apri Dossier
+                         </button>
+                         <button
++                          v-if="showAdoptButton(row)"
+                           type="button"
+                           class="oggi-btn"
+-                          :disabled="busyKey === row.key || row.chassis_member"
+-                          :title="row.chassis_member ? 'Bloccato: chassis multi-NIC' : ''"
++                          :disabled="busyKey === row.key"
++                          :title="
++                            row.actionable_reason === 'chassis_multi_nic_adopt_blocked'
++                              ? `Adotta a livello chassis ${row.chassis_id}`
++                              : ''
++                          "
+                           @click="adoptRow(row)"
+                         >
+-                          adotta
++                          {{ adoptButtonLabel(row) }}
+                         </button>
+                         <button
+                           type="button"
+@@ -775,6 +1380,42 @@ onMounted(load);
+ .oggi-fields dd {
+   margin: 0;
+   color: var(--text-1);
++  min-width: 0;
++  overflow-wrap: anywhere;
++}
++.oggi-names {
++  overflow-wrap: anywhere;
++}
++/* Le card di Oggi hanno contenuto MULTILINEA nello slot primario; lo stile generico
++   di DenseRow (nowrap + overflow hidden) lo troncava a ogni breakpoint (tablet incluso).
++   Qui il testo va a capo e resta visibile — sempre, non solo su mobile. */
++.oggi :deep(.dense-row__primary) {
++  white-space: normal;
++  overflow: visible;
++  text-overflow: clip;
++}
++/* UX2.1/UX2.5 — su mobile la card impila: azioni sotto, label sopra il valore,
++   nomi/MAC vanno a capo invece di troncare (fix responsive Oggi, il cardine). */
++@media (max-width: 640px) {
++  .oggi :deep(.dense-row) {
++    flex-direction: column;
++    align-items: stretch;
++    gap: 8px;
++  }
++  .oggi :deep(.dense-row__value) {
++    width: auto !important;
++    flex-basis: auto !important;
++    text-align: left;
++    white-space: normal;
++  }
++  .oggi-fields > div {
++    grid-template-columns: 1fr;
++    gap: 0;
++  }
++  .oggi-problem .oggi-actions {
++    max-width: none;
++    justify-content: flex-start;
++  }
+ }
+ .oggi-noise-preview {
+   margin-top: 10px;
+@@ -937,4 +1578,59 @@ onMounted(load);
+   background: transparent;
+ }
+ .oggi-btn:disabled { opacity: 0.5; cursor: not-allowed; }
++.oggi-name-absent {
++  font-style: italic;
++  color: var(--text-3);
++}
++.oggi-vs { color: var(--text-3); font-size: 12px; }
++.oggi-rename {
++  display: flex;
++  flex-wrap: wrap;
++  align-items: flex-end;
++  gap: 8px;
++  margin-top: 8px;
++}
++.oggi-rename-label {
++  display: flex;
++  flex-direction: column;
++  gap: 4px;
++  font-size: 11px;
++  color: var(--text-3);
++  min-width: 180px;
++  flex: 1;
++}
++.oggi-rename-input {
++  padding: 6px 8px;
++  font-size: 13px;
++  border: 0.5px solid var(--border);
++  border-radius: var(--radius);
++  background: var(--bg-0);
++  color: var(--text-1);
++}
++.oggi-inference {
++  margin-top: 10px;
++  padding: 8px 10px;
++  border-left: 3px solid color-mix(in srgb, var(--accent) 55%, var(--border));
++  background: color-mix(in srgb, var(--accent) 6%, var(--bg-0));
++  font-size: 12px;
++  color: var(--text-2);
++}
++.oggi-inference-disc {
++  margin: 4px 0 6px;
++  font-size: 11px;
++  color: var(--text-3);
++  font-style: italic;
++}
++.oggi-inference ul {
++  margin: 0;
++  padding-left: 1.1em;
++}
++.oggi-discarded {
++  margin: 0 0 1rem;
++  padding: 0.6rem 0.75rem;
++  border-left: 3px solid #e4b866;
++  background: color-mix(in srgb, #e4b866 10%, transparent);
++  font-size: 12px;
++  color: var(--text-2);
++}
+ </style>
+diff --git a/observatory/web/src/views/Plant.vue b/observatory/web/src/views/Plant.vue
+index a595934..be93df1 100644
+--- a/observatory/web/src/views/Plant.vue
++++ b/observatory/web/src/views/Plant.vue
+@@ -1,5 +1,6 @@
+ <script setup>
+-import { computed, onMounted, ref } from "vue";
++import { computed, nextTick, onMounted, ref, watch } from "vue";
++import { useRoute, useRouter } from "vue-router";
+ import { api } from "../api";
+ import PageHeader from "../components/PageHeader.vue";
+ import Branch308Card from "../components/Branch308Card.vue";
+@@ -12,27 +13,85 @@ import {
+   rolePresentation,
+ } from "../portPresentation";
+ import {
++  FDB_STALE_HOURS,
++  fdbCoverageReport,
++  fdbCoverageStatus,
++  fdbFreshnessWindowLabel,
++  fdbPortCoverageState,
+   gs308epIpDivergenceNote,
+   isGs308epSwitch,
+ } from "../observatoryUx";
+ import { formatDateTime } from "../formatTime";
++import {
++  baselineQualityLabel,
++  filterPlantPortsByQuery,
++  matchBehind308,
++  plantEmptyStateLabel,
++  plantPortMatchesFilters,
++} from "../plantFdb";
+ 
++const route = useRoute();
++const router = useRouter();
+ const switches = ref([]);
++const plantFdb = ref({ ports: [], links: [], discarded_moves: null });
++const searchQ = ref("");
++const filterSoloL2 = ref(false);
++const filterRandomized = ref(false);
++const filterReconstructed = ref(false);
++const filterStale = ref(false);
+ const selected = ref(null);
+ const form = ref({});
+ const msg = ref("");
++const notice = ref("");
++const busyKey = ref("");
+ const showUnreachable = ref(false);
+ const loading = ref(true);
+ const error = ref("");
+ const hiddenDeviceCount = computed(() =>
+   switches.value.reduce(
+-    (total, sw) => total + sw.ports.filter(
+-      (port) => port.asset_id && port.asset_visible_by_default === false,
+-    ).length,
++    (total, sw) =>
++      total +
++      sw.ports.filter((port) => port.asset_id && port.asset_visible_by_default === false)
++        .length,
+     0,
+   ),
+ );
+ 
++const plantByPortId = computed(() => {
++  const m = new Map();
++  for (const p of plantFdb.value?.ports || []) m.set(Number(p.port_id), p);
++  return m;
++});
++const discardedMoves = computed(() => plantFdb.value?.discarded_moves || null);
++const matchedSearchPortIds = computed(() => {
++  const hits = filterPlantPortsByQuery(plantFdb.value?.ports || [], searchQ.value);
++  return new Set(hits.map((p) => Number(p.port_id)));
++});
++const behind308Hit = computed(() =>
++  matchBehind308(plantFdb.value?.behind_308, searchQ.value),
++);
++function plantFor(port) {
++  return plantByPortId.value.get(Number(port?.id)) || null;
++}
++function portHighlighted(port) {
++  if (!String(searchQ.value || "").trim()) return false;
++  return matchedSearchPortIds.value.has(Number(port.id));
++}
++function portFilteredOut(port) {
++  const pf = plantFor(port);
++  if (!pf) return false;
++  const filters = {
++    soloL2: filterSoloL2.value,
++    randomized: filterRandomized.value,
++    reconstructed: filterReconstructed.value,
++    stale: filterStale.value,
++  };
++  if (!filters.soloL2 && !filters.randomized && !filters.reconstructed && !filters.stale) {
++    return false;
++  }
++  return !plantPortMatchesFilters(pf, filters);
++}
++
+ const plantPartial = computed(() => {
+   if (loading.value || error.value || !switches.value.length) return "";
+   const failed = switches.value.filter((sw) => sw.fdb_poll?.ok === false);
+@@ -43,11 +102,33 @@ const plantPartial = computed(() => {
+   return "";
+ });
+ 
++/** F-13 / UX2.2.4 — copertura FDB non aggiornata: dichiara la data reale (I2/I3). */
++const fdbCoverage = computed(() => fdbCoverageStatus(switches.value || []));
++const fdbCoverageMessage = computed(() => {
++  const c = fdbCoverage.value;
++  if (!c || !c.stale) return "";
++  if (!c.newestAt) {
++    return "Copertura FDB non disponibile: nessuna mappatura porte da FDB e ultimo rilevamento non riuscito. La collocazione delle porte può non essere corrente.";
++  }
++  return `Copertura FDB non aggiornata: ultima mappatura porte da FDB il ${fmtWhen(c.newestAt)} (circa ${c.hoursAgo} h fa). La collocazione delle porte mostrata può non essere corrente.`;
++});
++
++/** O2/B1 — report di copertura di prima classe (stati per porta + finestra dichiarata). */
++const coverageReport = computed(() => fdbCoverageReport(switches.value || []));
++const coverageWindowLabel = computed(() => fdbFreshnessWindowLabel(FDB_STALE_HOURS));
++
+ async function load() {
+   loading.value = true;
+   error.value = "";
+   try {
+-    switches.value = await api.switches();
++    const [sw, plant] = await Promise.all([
++      api.switches(),
++      api.fdbDefensePlant().catch(() => ({ ports: [], links: [] })),
++    ]);
++    switches.value = sw;
++    plantFdb.value = plant && typeof plant === "object" ? plant : { ports: [], links: [] };
++    await applyAssetDeepLink();
++    await applyMacDeepLink();
+   } catch (e) {
+     error.value = e.message || "Caricamento impianto fallito";
+   } finally {
+@@ -55,6 +136,93 @@ async function load() {
+   }
+ }
+ 
++/** Deep-link ?asset= / ?asset_id= → apri porta associata (F2.1). */
++async function applyAssetDeepLink() {
++  const raw = route.query.asset ?? route.query.asset_id;
++  if (raw == null || raw === "") return;
++  const id = Number(Array.isArray(raw) ? raw[0] : raw);
++  if (!Number.isFinite(id) || id <= 0) return;
++  for (const sw of switches.value || []) {
++    const port = (sw.ports || []).find((p) => Number(p.asset_id) === id);
++    if (port) {
++      pick(sw, port);
++      await nextTick();
++      document
++        .querySelector(`[data-port-id="${port.id}"]`)
++        ?.scrollIntoView({ behavior: "smooth", block: "center" });
++      return;
++    }
++  }
++}
++
++/** O5 M5 — ?fdb_mac= / search → evidenzia porta. */
++async function applyMacDeepLink() {
++  const raw = route.query.fdb_mac ?? route.query.mac;
++  if (raw == null || raw === "") return;
++  const mac = String(Array.isArray(raw) ? raw[0] : raw).trim().toUpperCase();
++  if (!mac) return;
++  searchQ.value = mac;
++  const hit = (plantFdb.value?.ports || []).find((p) =>
++    (p.macs || []).some((m) => String(m.mac || "").toUpperCase() === mac),
++  );
++  if (!hit) return;
++  for (const sw of switches.value || []) {
++    const port = (sw.ports || []).find((p) => Number(p.id) === Number(hit.port_id));
++    if (port) {
++      pick(sw, port);
++      await nextTick();
++      document
++        .querySelector(`[data-port-id="${port.id}"]`)
++        ?.scrollIntoView({ behavior: "smooth", block: "center" });
++      return;
++    }
++  }
++}
++
++async function plantAck(action, mac) {
++  const key = `plant-ack-${action}-${mac || ""}`;
++  busyKey.value = key;
++  notice.value = "";
++  try {
++    let reason = "";
++    if (action === "ignore") {
++      reason = window.prompt("Motivo (obbligatorio):", "") || "";
++      if (!reason.trim()) {
++        notice.value = "Ignora annullato.";
++        return;
++      }
++    }
++    // Reuse FDB ack surface with a plant-scoped uid
++    const uid = crypto.randomUUID?.() || String(Date.now());
++    await api.fdbDefenseAck({
++      uid,
++      action,
++      reason,
++      signal_key: `fdb:plant:${action}:${mac || selected.value?.port?.id || ""}`,
++    });
++    notice.value = `Azione ${action} registrata`;
++  } catch (e) {
++    error.value = e.message || "Azione fallita";
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++function openDossierFromMac(macEntry) {
++  if (macEntry?.asset_id) {
++    router.push({ path: `/dossier/${macEntry.asset_id}`, query: { from: "plant" } });
++    return;
++  }
++  notice.value = "Nessun dossier: MAC senza asset (nome non noto).";
++}
++
++watch(
++  () => [route.query.asset, route.query.asset_id],
++  () => {
++    if (switches.value.length) applyAssetDeepLink();
++  },
++);
++
+ function pick(sw, port) {
+   selected.value = { sw, port };
+   form.value = {
+@@ -67,6 +235,11 @@ function pick(sw, port) {
+   msg.value = "";
+ }
+ 
++/** SNMP oper_status: se lo switch non lo espone, non mostrare un pallino grigio mute. */
++function snmpLiveSupported(sw) {
++  return sw?.capabilities?.snmp_supported !== false;
++}
++
+ async function save() {
+   const payload = { ...form.value };
+   const currentOverride = selected.value.port.role_override
+@@ -122,12 +295,22 @@ function sourceChip(sw) {
+   return "";
+ }
+ 
+-/** Badge freschezza a livello switch: fdb_poll.at, snmp_poll.at, o edit manuale. */
++/**
++ * Badge freschezza a livello switch (F-13).
++ * Un poll FALLITO (`fdb_poll.ok===false`) NON è freschezza: in quel caso la vera
++ * data dei dati di porta è l'ultima mappatura FDB riuscita (`port.last_fdb_at`),
++ * marcata «non aggiornata» se oltre la finestra. Mai spacciare l'ora del tentativo.
++ */
+ function switchFreshness(sw) {
+-  const fdbAt = sw.fdb_poll?.at;
+-  if (fdbAt) return { text: `dati al ${fmtWhen(fdbAt)}`, kind: "ok" };
+-  const snmpAt = sw.snmp_poll?.at;
+-  if (snmpAt) return { text: `dati al ${fmtWhen(snmpAt)}`, kind: "ok" };
++  const poll = sw.fdb_poll || {};
++  if (poll.at && poll.ok) return { text: `dati al ${fmtWhen(poll.at)}`, kind: "ok" };
++  const cov = fdbCoverageStatus([sw]);
++  if (cov && cov.newestAt) {
++    return {
++      text: `mappa porte da FDB del ${fmtWhen(cov.newestAt)}${cov.stale ? " — non aggiornata" : ""}`,
++      kind: cov.stale ? "warn" : "muted",
++    };
++  }
+   const manualAt = sw.field_sources?.updated_at || sw.meta?.manual_edit_at;
+   if (manualAt) return { text: `dati al ${fmtWhen(manualAt)} (manuale)`, kind: "muted" };
+   if (sw.capabilities?.fdb_supported === false) {
+@@ -158,21 +341,40 @@ function sourceBadge(port) {
+   return port.role_source || "";
+ }
+ 
+-function deviceName(port) {
+-  return portCellPresentation(port).primary;
++function deviceName(port, sw) {
++  return portCellPresentation(port, { fdb: fdbPortCoverageState(port, sw) }).primary;
+ }
+ 
+ function deviceHidden(port) {
+   return !!port.asset_id && port.asset_visible_by_default === false && !showUnreachable.value;
+ }
+ 
+-function displayedDeviceName(port) {
+-  return deviceHidden(port) ? "Storico nascosto" : deviceName(port);
++function displayedDeviceName(port, sw) {
++  return deviceHidden(port) ? "Storico nascosto" : deviceName(port, sw);
+ }
+ 
+-function displayedDeviceParts(port) {
++function displayedDeviceParts(port, sw) {
+   if (deviceHidden(port)) return { primary: "storico nascosto", secondary: "" };
+-  return portCellPresentation(port);
++  return portCellPresentation(port, { fdb: fdbPortCoverageState(port, sw) });
++}
++
++function portFdbBadge(port, sw) {
++  const st = fdbPortCoverageState(port, sw);
++  if (st.state === "misurata_fresca") {
++    return { text: "FDB fresca", kind: "ok", title: `ultima mappatura ${fmtWhen(st.last_fdb_at)}` };
++  }
++  if (st.state === "misurata_vecchia") {
++    return {
++      text: `FDB ${fmtWhen(st.last_fdb_at)}`,
++      kind: "warn",
++      title: `misurata_vecchia · ≈${Math.floor(st.age_hours || 0)} h · ${coverageWindowLabel.value}`,
++    };
++  }
++  return {
++    text: st.reason || "non coperta",
++    kind: "muted",
++    title: `non_coperta · ${st.reason}`,
++  };
+ }
+ 
+ function portTooltip(port) {
+@@ -227,7 +429,107 @@ onMounted(load);
+   <ViewStateBanner v-else-if="loading" kind="loading" />
+   <template v-else>
+   <ViewStateBanner v-if="!switches.length" kind="empty" message="Nessuno switch configurato." />
+-  <ViewStateBanner v-else-if="plantPartial" kind="partial" :message="plantPartial" />
++  <template v-else>
++    <ViewStateBanner v-if="plantPartial" kind="partial" :message="plantPartial" />
++    <ViewStateBanner v-if="fdbCoverageMessage" kind="stale" :message="fdbCoverageMessage" />
++    <p v-if="notice" class="plant-notice" role="status">{{ notice }}</p>
++    <div
++      v-if="discardedMoves && discardedMoves.count"
++      class="plant-discarded"
++      data-testid="o4-discarded-moves"
++    >
++      <strong>{{ discardedMoves.count }} eventi mac_move scartati</strong>
++      — {{ discardedMoves.note || "difetto O4 noto" }}
++      (<code>{{ discardedMoves.debt }}</code>). Non cancellati.
++    </div>
++    <section class="card plant-ops" data-testid="plant-ops">
++      <h2>Ricerca e filtri FDB</h2>
++      <label class="plant-search">
++        MAC / IP / nome / vendor
++        <input
++          v-model="searchQ"
++          type="search"
++          placeholder="es. D4:52:EE:C3:25:16"
++          autocomplete="off"
++        />
++      </label>
++      <p v-if="behind308Hit" class="plant-behind-308" role="status" data-testid="plant-behind-308">
++        <span class="mono">{{ behind308Hit.mac }}</span>
++        · {{ behind308Hit.name_label || "nome non noto" }}
++        → <strong>dietro il 308</strong>
++        (porta esatta non determinabile) ·
++        <router-link to="/gs308">apri vista GS308EP</router-link>
++      </p>
++      <p
++        v-else-if="String(searchQ || '').trim() && !matchedSearchPortIds.size"
++        class="muted"
++      >
++        Nessuna porta Impianto · prova
++        <router-link to="/gs308">vista GS308EP</router-link>
++        se il device è dietro il 308.
++      </p>
++      <div class="plant-filters">
++        <label><input v-model="filterSoloL2" type="checkbox" /> solo-L2</label>
++        <label><input v-model="filterRandomized" type="checkbox" /> randomizzati</label>
++        <label><input v-model="filterReconstructed" type="checkbox" /> baseline ricostruita</label>
++        <label><input v-model="filterStale" type="checkbox" /> dato non fresco</label>
++      </div>
++      <div v-if="(plantFdb.links || []).length" class="plant-links">
++        <strong>Link fisici (fatto)</strong>
++        <ul>
++          <li v-for="L in plantFdb.links" :key="L.from_port_id + '-' + L.to_port_id">
++            {{ L.from }} ↔ {{ L.to }}
++            <span class="muted"> · {{ L.rule }}</span>
++          </li>
++        </ul>
++      </div>
++    </section>
++    <!-- O2/B1: superficie di copertura FDB di prima classe -->
++    <section v-if="switches.length" class="card fdb-coverage-panel" data-testid="fdb-coverage-panel">
++      <h2>Copertura FDB</h2>
++      <p class="muted">
++        {{ coverageWindowLabel }}.
++        Stati: <strong>misurata fresca</strong> · <strong>misurata vecchia</strong> (data sempre visibile) ·
++        <strong>non coperta</strong> (con motivo). Un poll fallito non è freschezza del dato.
++      </p>
++      <ul class="fdb-coverage-switches">
++        <li v-for="row in coverageReport.switches" :key="row.switch_id">
++          <div class="fdb-cov-head">
++            <strong>{{ row.name }}</strong>
++            <span v-if="!row.fdb_supported" class="fdb-cov-tag limit">
++              limite strutturale — FDB non supportato dall'apparato
++            </span>
++            <span v-else-if="row.poll_ok === false" class="fdb-cov-tag warn">
++              switch non interrogabile
++              <template v-if="row.poll_error"> — {{ row.poll_error }}</template>
++            </span>
++            <span v-else-if="row.poll_ok" class="fdb-cov-tag ok">poll FDB riuscito</span>
++          </div>
++          <div class="fdb-cov-ports">
++            <span
++              v-for="p in row.ports"
++              :key="p.port_id"
++              class="fdb-cov-port"
++              :class="p.state"
++              :title="p.state === 'misurata_vecchia'
++                ? `misurata_vecchia · ${p.last_fdb_at} · ≈${Math.floor(p.age_hours || 0)} h`
++                : p.state === 'non_coperta'
++                  ? `non_coperta · ${p.reason}`
++                  : `misurata_fresca · ${p.last_fdb_at}`"
++            >
++              P{{ p.port_number }}
++              <template v-if="p.state === 'misurata_vecchia'">
++                · {{ fmtWhen(p.last_fdb_at) }}
++              </template>
++              <template v-else-if="p.state === 'non_coperta'">
++                · {{ p.reason }}
++              </template>
++            </span>
++          </div>
++        </li>
++      </ul>
++    </section>
++  </template>
+   <div v-if="switches.length" class="switch-board">
+     <div class="plant-filter">
+       <ToggleSwitch v-model="showUnreachable" label="Mostra dispositivi non raggiungibili" />
+@@ -293,19 +595,26 @@ onMounted(load);
+         :switch-data="sw"
+         compact
+       />
++      <p v-if="isGs308epSwitch(sw)" class="gs308-view-link">
++        <router-link to="/gs308">Apri vista GS308EP · punto cieco →</router-link>
++      </p>
+       <div class="ports" :style="portGridStyle(sw)">
+         <div
+           v-for="p in sw.ports"
+           :key="p.id"
+           class="port"
++          :data-port-id="p.id"
+           :class="{
+             active: selected?.port?.id === p.id,
+             warn: !!p.warn,
+             'historical-hidden': deviceHidden(p),
++            'port-hit': portHighlighted(p),
++            'port-filtered-out': portFilteredOut(p),
+             [`role-${rolePresentation(p).className}`]: true,
++            [`fdb-empty-${plantFor(p)?.empty_state || 'none'}`]: !!plantFor(p)?.empty_state,
+           }"
+           :title="portTooltip(p)"
+-          :aria-label="`${p.port_path_label}: ${displayedDeviceName(p)}`"
++          :aria-label="`${p.port_path_label}: ${displayedDeviceName(p, sw)}`"
+           role="button"
+           tabindex="0"
+           @click="pick(sw, p)"
+@@ -315,16 +624,62 @@ onMounted(load);
+           <div class="port-head">
+             <span class="port-number">P{{ p.number }}</span>
+             <span
++              v-if="snmpLiveSupported(sw)"
+               class="dot"
+               :class="p.snmp?.oper_status"
+               :title="statusLabel(p.snmp?.oper_status)"
+               :aria-label="`Stato: ${statusLabel(p.snmp?.oper_status)}`"
+             ></span>
++            <span
++              v-else
++              class="dot-na"
++              title="Link SNMP non misurabile su questo switch"
++              aria-label="Link SNMP non misurabile"
++            >—</span>
+           </div>
+           <div class="dev">
+-            <span :class="{ free: portCellPresentation(p).free }">
+-              {{ displayedDeviceParts(p).primary }}
++            <span :class="{ free: portCellPresentation(p, { fdb: fdbPortCoverageState(p, sw) }).free }">
++              {{ displayedDeviceParts(p, sw).primary }}
+             </span>
++            <span
++              class="fdb-port-badge"
++              :class="portFdbBadge(p, sw).kind"
++              :title="portFdbBadge(p, sw).title"
++            >{{ portFdbBadge(p, sw).text }}</span>
++          </div>
++          <div v-if="plantFor(p)" class="plant-fdb-meta">
++            <span
++              v-if="plantFor(p).ruolo_porta === 'uplink'"
++              class="tag uplink"
++              :title="plantFor(p).ruolo_rule"
++            >uplink · {{ plantFor(p).ruolo_rule }}</span>
++            <span
++              v-else
++              class="tag nd"
++              :title="plantFor(p).ruolo_rule"
++            >{{ plantFor(p).ruolo_porta }}</span>
++            <span
++              v-if="plantEmptyStateLabel(plantFor(p))"
++              class="tag empty"
++              :title="plantEmptyStateLabel(plantFor(p)).hint"
++            >{{ plantEmptyStateLabel(plantFor(p)).label }}</span>
++            <span
++              v-if="(plantFor(p).macs || []).some((m) => m.solo_l2)"
++              class="tag l2"
++            >solo-L2</span>
++            <span
++              v-if="(plantFor(p).macs || []).some((m) => m.randomized)"
++              class="tag laa"
++            >LAA</span>
++            <span
++              v-if="plantFor(p).baseline_quality === 'reconstructed'"
++              class="tag bl-recon"
++              :title="baselineQualityLabel('reconstructed')"
++            >baseline ricostruita</span>
++            <span
++              v-else-if="plantFor(p).baseline_quality === 'verified'"
++              class="tag bl-ok"
++            >baseline verificata</span>
+           </div>
+           <div class="port-foot">
+             <span class="patch">{{ p.patch_code || "" }}</span>
+@@ -431,7 +786,7 @@ onMounted(load);
+         </div>
+         <div class="summary-row">
+           <span>Dispositivo</span>
+-          <strong>{{ deviceName(selected.port) }}</strong>
++          <strong>{{ deviceName(selected.port, selected.sw) }}</strong>
+         </div>
+         <div class="summary-row">
+           <span>Ruolo porta</span>
+@@ -485,6 +840,69 @@ onMounted(load);
+           <span>Indirizzi appresi</span>
+           <strong class="mono">{{ selected.port.observed_macs.join(", ") }}</strong>
+         </div>
++        <div v-if="plantFor(selected.port)" class="plant-drawer-fdb" data-testid="plant-drawer-fdb">
++          <h3>Verità FDB</h3>
++          <p>
++            Ruolo: <strong>{{ plantFor(selected.port).ruolo_porta }}</strong>
++            <span class="muted"> · {{ plantFor(selected.port).ruolo_rule }}</span>
++          </p>
++          <p>
++            Baseline:
++            <strong>{{ baselineQualityLabel(plantFor(selected.port).baseline_quality) }}</strong>
++          </p>
++          <p v-if="plantEmptyStateLabel(plantFor(selected.port))">
++            Stato vuoto:
++            <strong>{{ plantEmptyStateLabel(plantFor(selected.port)).label }}</strong>
++            — {{ plantEmptyStateLabel(plantFor(selected.port)).hint }}
++          </p>
++          <p v-if="plantFor(selected.port).poll_error" class="callout warn">
++            Errore poll: {{ plantFor(selected.port).poll_error }}
++          </p>
++          <p v-if="plantFor(selected.port).link">
++            Link fisico:
++            → {{ plantFor(selected.port).link.to_switch_code }}:{{ plantFor(selected.port).link.to_port_number }}
++            (fatto {{ plantFor(selected.port).link.label }})
++          </p>
++          <ul class="plant-mac-list">
++            <li v-for="m in (plantFor(selected.port).macs || [])" :key="m.mac">
++              <div class="mono">{{ m.mac }}</div>
++              <div>{{ m.name_label }} · {{ m.oui }}</div>
++              <div class="plant-mac-tags">
++                <span v-if="m.solo_l2" class="tag l2">solo-L2</span>
++                <span v-if="m.randomized" class="tag laa">randomizzato</span>
++                <span
++                  v-if="m.baseline_quality === 'reconstructed'"
++                  class="tag bl-recon"
++                >presente alla ricostruzione{{ m.baseline_at ? ` del ${m.baseline_at}` : "" }}; storia precedente non disponibile</span>
++              </div>
++              <div v-if="m.inference" class="plant-inference" data-kind="inference">
++                <strong>{{ m.inference.label || "INFERENZA" }}</strong>
++                <p class="muted">{{ m.inference.disclaimer }}</p>
++                <ul>
++                  <li v-for="(it, idx) in (m.inference.items || [])" :key="idx">
++                    {{ it.label }}
++                    <span class="mono"> · {{ it.source }} · {{ it.confidence }}</span>
++                  </li>
++                </ul>
++              </div>
++              <div class="plant-mac-actions">
++                <button type="button" class="ghost" @click="openDossierFromMac(m)">Apri dossier</button>
++                <button
++                  type="button"
++                  class="ghost"
++                  :disabled="!!busyKey"
++                  @click="plantAck('acknowledge', m.mac)"
++                >Riconosci come atteso</button>
++                <button
++                  type="button"
++                  class="ghost"
++                  :disabled="!!busyKey"
++                  @click="plantAck('ignore', m.mac)"
++                >Ignora con motivo</button>
++              </div>
++            </li>
++          </ul>
++        </div>
+       </div>
+ 
+       <details class="manual-editor">
+@@ -647,9 +1065,11 @@ onMounted(load);
+ }
+ .fdb-status {
+   min-width: 0;
+-  overflow: hidden;
+-  text-overflow: ellipsis;
+-  white-space: nowrap;
++  /* F-13: la data dell'ultima misura FDB non va mai troncata, a nessuna larghezza. */
++  overflow: visible;
++  text-overflow: clip;
++  white-space: normal;
++  overflow-wrap: anywhere;
+ }
+ .fdb-status::before {
+   content: "";
+@@ -779,6 +1199,14 @@ onMounted(load);
+   border-radius: 50%;
+   background: #777;
+ }
++.dot-na {
++  display: inline-block;
++  flex: 0 0 auto;
++  font-size: 0.65rem;
++  line-height: 1;
++  color: var(--text-3);
++  font-family: var(--font-mono);
++}
+ .dot.up {
+   background: #47b36b;
+ }
+@@ -805,6 +1233,14 @@ onMounted(load);
+   .switch-status {
+     flex-wrap: wrap;
+   }
++  /* D4: su mobile il testo informativo va a capo invece di troncarsi con ellissi. */
++  .switch-role,
++  .port-foot .patch {
++    overflow: visible;
++    text-overflow: clip;
++    white-space: normal;
++    overflow-wrap: anywhere;
++  }
+   .ports {
+     grid-template-columns: repeat(4, minmax(0, 1fr));
+   }
+@@ -867,4 +1303,122 @@ onMounted(load);
+   font-size: 0.78rem;
+   margin-bottom: 0.7rem;
+ }
++.fdb-coverage-panel {
++  margin: 0.75rem 0 1rem;
++  padding: 0.75rem 1rem;
++}
++.fdb-coverage-panel h2 {
++  margin: 0 0 0.35rem;
++  font-size: 1rem;
++}
++.fdb-coverage-switches {
++  list-style: none;
++  margin: 0.5rem 0 0;
++  padding: 0;
++  display: grid;
++  gap: 0.65rem;
++}
++.fdb-cov-head {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 0.4rem;
++  align-items: baseline;
++  margin-bottom: 0.25rem;
++}
++.fdb-cov-tag {
++  font-size: 0.72rem;
++  color: var(--muted);
++}
++.fdb-cov-tag.warn { color: #e4b866; }
++.fdb-cov-tag.limit { color: #9aa8b8; }
++.fdb-cov-tag.ok { color: #83c99c; }
++.fdb-cov-ports {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 0.3rem;
++}
++.fdb-cov-port {
++  font-size: 0.68rem;
++  padding: 0.15rem 0.35rem;
++  border: 1px solid var(--line, #444);
++  border-radius: 4px;
++  /* F-13: date never truncated */
++  white-space: normal;
++  overflow: visible;
++  text-overflow: unset;
++}
++.fdb-cov-port.misurata_fresca { border-color: #83c99c; }
++.fdb-cov-port.misurata_vecchia { border-color: #e4b866; }
++.fdb-cov-port.non_coperta { border-color: #9aa8b8; color: var(--muted); }
++.fdb-port-badge {
++  display: block;
++  font-size: 0.55rem;
++  color: var(--muted);
++  white-space: normal;
++  overflow: visible;
++}
++.fdb-port-badge.warn { color: #e4b866; }
++.fdb-port-badge.ok { color: #83c99c; }
++.plant-ops { margin-bottom: 1rem; }
++.plant-search { display: flex; flex-direction: column; gap: 0.25rem; margin: 0.5rem 0; }
++.plant-search input {
++  padding: 0.45rem 0.6rem;
++  border: 0.5px solid var(--border, #444);
++  border-radius: var(--radius, 6px);
++  background: var(--bg-0, #111);
++  color: var(--text-1, #eee);
++}
++.plant-filters { display: flex; flex-wrap: wrap; gap: 0.75rem; font-size: 0.85rem; }
++.plant-links { margin-top: 0.75rem; font-size: 0.85rem; }
++.plant-discarded {
++  margin: 0.5rem 0 1rem;
++  padding: 0.6rem 0.75rem;
++  border-left: 3px solid #e4b866;
++  background: color-mix(in srgb, #e4b866 10%, transparent);
++  font-size: 0.85rem;
++}
++.plant-notice { color: var(--accent, #8cf); font-size: 0.85rem; }
++.plant-behind-308 {
++  margin: 0.35rem 0 0.5rem;
++  padding: 0.4rem 0.55rem;
++  border-left: 3px solid var(--ok, #6ecf8f);
++  background: rgba(60, 140, 90, 0.08);
++  font-size: 0.86rem;
++}
++.gs308-view-link { margin: 0.35rem 0 0.5rem; font-size: 0.85rem; }
++.plant-fdb-meta { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.25rem; }
++.plant-fdb-meta .tag, .plant-mac-tags .tag {
++  font-size: 0.58rem;
++  padding: 0.1rem 0.3rem;
++  border: 0.5px solid var(--border, #555);
++  border-radius: 3px;
++}
++.tag.uplink { border-color: #6ea8fe; color: #6ea8fe; }
++.tag.l2 { border-color: #e4b866; color: #e4b866; }
++.tag.laa { border-color: #9aa8b8; color: #9aa8b8; }
++.tag.bl-recon { border-color: #c9a227; color: #c9a227; }
++.tag.bl-ok { border-color: #83c99c; color: #83c99c; }
++.tag.empty { border-color: #b88; color: #dbb; }
++.port-hit { outline: 2px solid var(--accent, #6ea8fe); outline-offset: 1px; }
++.port-filtered-out { opacity: 0.28; }
++.port.fdb-empty-non_coperta { border-style: dashed; }
++.port.fdb-empty-misurata_senza_dispositivi { border-color: #83c99c; }
++.port.fdb-empty-sorgente_non_fresca { border-color: #e4b866; }
++.plant-drawer-fdb { margin-top: 1rem; font-size: 0.85rem; }
++.plant-mac-list { list-style: none; padding: 0; margin: 0.5rem 0 0; }
++.plant-mac-list > li {
++  border-top: 0.5px solid var(--border, #333);
++  padding: 0.6rem 0;
++}
++.plant-mac-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.35rem; }
++.plant-inference {
++  margin-top: 0.4rem;
++  padding: 0.4rem 0.5rem;
++  border-left: 3px solid color-mix(in srgb, var(--accent, #6ea8fe) 55%, var(--border, #444));
++  background: color-mix(in srgb, var(--accent, #6ea8fe) 6%, transparent);
++}
++@media (max-width: 720px) {
++  .plant-filters { flex-direction: column; }
++  .port-grid { --port-columns: 4 !important; }
++}
+ </style>
