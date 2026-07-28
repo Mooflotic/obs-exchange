@@ -10,6 +10,14 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
 - **Ripresa:** quando un consumatore avrà bisogno dello storico dei fatti, cablare `resolver.history()` a un endpoint con `?history=true` (default corrente). Fino ad allora resta inerte.
 - **Vietato:** dichiarare `?history=true` come funzionante finché non è cablato; rimuovere `resolver.history()` o riclassificarlo silenziosamente come morto (è la superficie sanzionata per lo storico).
 
+## DEBT-PROD-SOURCE-DRIFT
+
+- **Priorità:** media — aperto W8-T7 / 0.10.63.
+- **Cosa:** il sorgente in produzione (`/volume1/Docker/observatory`, NO git) **non ha alcun controllo di integrità** contro il repo. Il conteggio `file scansionati` del currency gate è un **proxy debole**: misura solo un netto e **ignora** `api/app/facts/**` (escluso dallo scan perché è la fonte protetta). Un resolver divergente sul NAS sarebbe invisibile al gate e invaliderebbe G8.
+- **Evidenza (W8-T7 ripresa):** enumerazione gate-equivalente 175 (repo) vs 176 (NAS); unica differenza di path `scripts/_w4a_measure.py` (solo NAS). Hash sha256 di **tutto** l'albero `.py` (facts incluso): tutti i file condivisi **identici**; solo l'extra NAS. La corsa precedente si era fermata correttamente sul netto 176≠175.
+- **Risoluzione prevista:** confronto sha256 dell'intero albero `.py` (procedura FASE B di W8-T7) come **passo standard** di ogni ondata che tocchi la produzione — non solo il conteggio del currency gate.
+- **Vietato:** considerarlo chiuso perché «i conteggi coincidono»; escludere dal gate un file di drift per path (convertirebbe un drift rilevato in un punto cieco permanente).
+
 ## DEBT-WPGATE-CURRENCY-COUNT-LOCAL
 
 - **Priorità:** media — aperto W8-fix2 / 0.10.63.
