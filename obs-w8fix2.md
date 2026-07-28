@@ -89,6 +89,12 @@ Il quinto file sintetico (`file5_temp.py`) alimenta il config-check: una voce
 temporanea **senza `debt`** viene rilevata come errore di configurazione (1), una con
 `debt` valido no (0).
 
+**K4 (onestà, W8-fix2b):** SELFTEST/2 esercita `validate_temp` su **dizionari
+sintetici** (debt vuoto vs valido) e verifica la logica di rilevamento; **NON** esercita
+il percorso di uscita `return 1` di `run_repo` (che stampa l'errore ed esce quando
+`TEMPORARY_ALLOWLIST` reale contiene una voce senza debt). Quel ramo di uscita resta
+provato solo per equivalenza logica con `validate_temp`, non da un'esecuzione end-to-end.
+
 ### `python3 scripts/w8_currency_gate.py` (repo reale)
 ```
 == W8 CURRENCY GATE (indurito, W8-fix2) ==
