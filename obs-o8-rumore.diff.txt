@@ -1,0 +1,242 @@
+# obs-o8-rumore.diff.txt — soppressioni strutturali R1–R3 + test
+     167 web/src/oggiNoise.js
+     169 web/src/oggiO8.test.js
+     336 total
+
+diff --git a/web/src/oggiNoise.js b/web/src/oggiNoise.js
+new file mode 100644
+index 0000000..e15a2a2
+--- /dev/null
++++ b/web/src/oggiNoise.js
+@@ -0,0 +1,167 @@
++/**
++ * O8 FASE 2 — soppressioni strutturali dichiarate (nessuna soglia numerica nuova).
++ * scoreSpecificity resta importata da triageRules (I6).
++ */
++
++import { isLocallyAdministered } from "./inventoryDevices.js";
++import {
++  isManualName,
++  normalizeName,
++  scoreSpecificity,
++} from "./triageRules.js";
++
++/** @typedef {{ rule: string, reason: string, proposal_id: number|null, asset_id: number, value: string, source: string|null }} Suppression */
++
++/**
++ * Classifica una proposta pending. Null = non soppressa (resta in coda attiva).
++ * I3: manuale + proposta divergente più debole → NON soppressa (conflitto).
++ * Segnali S-A…S-D non passano di qui.
++ *
++ * @param {object} asset
++ * @param {object} proposal
++ * @param {Map<string, number>} [seenDupKeys] mutabile: value|source|asset → first id
++ * @returns {Suppression|null}
++ */
++export function classifyStructuralSuppression(asset, proposal, seenDupKeys = new Map()) {
++  const assetId = Number(asset?.id);
++  const propId = proposal?.id != null ? Number(proposal.id) : null;
++  const value = String(proposal?.value || "").trim();
++  const source = proposal?.source != null ? String(proposal.source) : null;
++  if (!value || !Number.isFinite(assetId)) return null;
++
++  const current = String(
++    asset?.chassis_canonical_name || asset?.display_name || asset?.name || "",
++  ).trim();
++
++  // R1 no-op: identica al nome corrente (exact o normalizzata).
++  if (current && (current === value || normalizeName(current) === normalizeName(value))) {
++    return {
++      rule: "noop_identico",
++      reason: `Proposta identica al nome corrente «${current}» — no-op.`,
++      proposal_id: propId,
++      asset_id: assetId,
++      value,
++      source,
++    };
++  }
++
++  // R1 duplicato: stesso valore + fonte + soggetto già visto.
++  const dupKey = `${assetId}|${normalizeName(value)}|${(source || "").toLowerCase()}`;
++  if (seenDupKeys.has(dupKey)) {
++    return {
++      rule: "duplicato",
++      reason: `Duplicato di proposta #${seenDupKeys.get(dupKey)} (stesso valore/fonte/soggetto).`,
++      proposal_id: propId,
++      asset_id: assetId,
++      value,
++      source,
++    };
++  }
++  if (propId != null) seenDupKeys.set(dupKey, propId);
++
++  // Manuale + proposta più debole e divergente → CONFLITTO (I3), mai soppressione.
++  if (
++    isManualName(asset) &&
++    current &&
++    normalizeName(value) !== normalizeName(current) &&
++    scoreSpecificity(value) <= scoreSpecificity(current)
++  ) {
++    return null;
++  }
++
++  // R1 MAC randomizzato (LAA): demote priorità, resta ispezionabile.
++  const macs = [
++    ...(asset?.macs || []),
++    ...((asset?.interfaces || []).map((i) => i?.mac).filter(Boolean) || []),
++  ];
++  const laa = macs.some((m) => isLocallyAdministered(m));
++  if (laa) {
++    return {
++      rule: "mac_randomizzato",
++      reason:
++        "MAC locally-administered (bit U/L): mai priorità alta — proposta in coda ispezionabile.",
++      proposal_id: propId,
++      asset_id: assetId,
++      value,
++      source,
++      demote_only: true,
++    };
++  }
++
++  // R1 vendor generico quando esiste già nome più specifico (non su manuale — sopra).
++  if (current && scoreSpecificity(value) === 2 && scoreSpecificity(current) > 2) {
++    return {
++      rule: "vendor_generico",
++      reason: `Proposta vendor/generica «${value}» (rank 2) mentre il nome «${current}» è più specifico.`,
++      proposal_id: propId,
++      asset_id: assetId,
++      value,
++      source,
++    };
++  }
++
++  return null;
++}
++
++/**
++ * Elenco soppressioni ispezionabile. demote_only non toglie dalla coda rumore/triage
++ * ma è contato e spiegato.
++ *
++ * @param {Array<object>} assets
++ * @param {{ includeDemote?: boolean }} [opts]
++ * @returns {Suppression[]}
++ */
++export function listStructuralSuppressions(assets, opts = {}) {
++  const includeDemote = opts.includeDemote !== false;
++  const seen = new Map();
++  const out = [];
++  for (const asset of assets || []) {
++    if ((asset?.status || "") === "ignorato") continue;
++    const proposals = (asset?.proposals || asset?.name_proposals || []).filter(
++      (p) => (p.status || "pending") === "pending" && p.value,
++    );
++    for (const p of proposals) {
++      const s = classifyStructuralSuppression(asset, p, seen);
++      if (!s) continue;
++      if (s.demote_only && !includeDemote) continue;
++      out.push(s);
++    }
++  }
++  return out;
++}
++
++/**
++ * Id proposta nascosti dalla coda attiva (non demote_only; non segnali FDB).
++ * @param {Array<object>} assets
++ * @param {Set<number>} [restoredIds] ripescati dall'operatore
++ * @returns {Set<number>}
++ */
++export function suppressedProposalIdSet(assets, restoredIds = new Set()) {
++  const ids = new Set();
++  for (const s of listStructuralSuppressions(assets, { includeDemote: false })) {
++    if (s.demote_only) continue;
++    if (s.proposal_id == null) continue;
++    if (restoredIds.has(Number(s.proposal_id))) continue;
++    // noop + duplicato + vendor_generico
++    if (s.rule === "noop_identico" || s.rule === "duplicato" || s.rule === "vendor_generico") {
++      ids.add(Number(s.proposal_id));
++    }
++  }
++  return ids;
++}
++
++/**
++ * Raggruppa per regola con id enumerati.
++ * @param {Suppression[]} list
++ */
++export function groupSuppressionsByRule(list) {
++  /** @type {Record<string, number[]>} */
++  const by = {};
++  for (const s of list || []) {
++    const k = s.rule || "altro";
++    if (!by[k]) by[k] = [];
++    if (s.proposal_id != null) by[k].push(Number(s.proposal_id));
++  }
++  for (const k of Object.keys(by)) by[k].sort((a, b) => a - b);
++  return by;
++}
+
+=== O8 rumore tests ===
+describe("O8 rumore strutturale", () => {
+  it("N2 noop classified", () => {
+    const s = classifyStructuralSuppression(
+      { id: 1, name: "A", proposals: [] },
+      { id: 10, value: "A", source: "dhcp", status: "pending" },
+    );
+    assert.equal(s.rule, "noop_identico");
+  });
+
+  it("N3 manual + weaker divergent → NOT suppressed (conflict path)", () => {
+    const asset = {
+      id: 3,
+      name: "LGS310C-Studio",
+      status: "noto",
+      field_sources: { name: { source: "manual", confidence: 1 } },
+    };
+    assert.equal(isManualName(asset), true);
+    const s = classifyStructuralSuppression(asset, {
+      id: 11,
+      value: "switch",
+      source: "dhcp",
+      status: "pending",
+    });
+    assert.equal(s, null, "manual+weaker must not suppress");
+  });
+
+  it("N4 LAA → mac_randomizzato demote_only", () => {
+    const s = classifyStructuralSuppression(
+      { id: 4, name: "Phone", macs: ["DA:76:2F:66:1C:0B"] },
+      { id: 12, value: "iPhone-Michele", source: "dhcp", status: "pending" },
+    );
+    assert.equal(s.rule, "mac_randomizzato");
+    assert.equal(s.demote_only, true);
+    const hard = suppressedProposalIdSet([
+      {
+        id: 4,
+        name: "Phone",
+        macs: ["DA:76:2F:66:1C:0B"],
+        status: "noto",
+        proposals: [
+          { id: 12, value: "iPhone-Michele", source: "dhcp", status: "pending" },
+        ],
+      },
+    ]);
+    assert.equal(hard.has(12), false, "LAA not hard-hidden");
+  });
+
+  it("duplicate same value/source/subject", () => {
+    const asset = {
+      id: 9,
+      name: "X",
+      status: "noto",
+      proposals: [
+        { id: 1, value: "X-Cucina", source: "dhcp", status: "pending" },
+        { id: 2, value: "X-Cucina", source: "dhcp", status: "pending" },
+      ],
+    };
+    const list = listStructuralSuppressions([asset]);
+    assert.ok(list.some((s) => s.rule === "duplicato" && s.proposal_id === 2));
+  });
+});
+
