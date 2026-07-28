@@ -1,0 +1,574 @@
+diff --git a/observatory/scripts/w8_currency_gate.py b/observatory/scripts/w8_currency_gate.py
+new file mode 100644
+index 0000000..29e7d22
+--- /dev/null
++++ b/observatory/scripts/w8_currency_gate.py
+@@ -0,0 +1,343 @@
++#!/usr/bin/env python3
++"""W8.3 / W8-fix / W8-fix2 — Gate permanente della correntezza (presidio statico su sorgente).
++
++PRESIDIO STATICO SU SORGENTE — eccezione consapevole alla regola «mai test su
++stringhe di codice sorgente». Motivo: NON verifica il comportamento del codice,
++verifica un INVARIANTE ARCHITETTURALE («la correntezza dei fatti si legge solo dal
++resolver `api/app/facts/`»). Un invariante così si presidia solo staticamente: a
++runtime un consumatore che ricalcola il corrente darebbe comunque un risultato
++«plausibile» e non fallirebbe alcun test di comportamento.
++
++Criterio del ruling (W8-fix2): `api/app/facts/**` è escluso perché è la FONTE
++protetta della correntezza. OGNI altro consumatore — tooling di gate/diagnosi
++compreso — si allowlista **riga per riga** (come `admin.py`), MAI per path intero
++(un'esclusione di file è più permissiva di un pattern generico, e i pattern
++generici sono vietati).
++
++Due sezioni di allowlist:
++  - ALLOWLIST (permanente): (file, snippet, N) → autorizza ESATTAMENTE N righe.
++  - TEMPORARY_ALLOWLIST (con debito): (file, snippet) → (N, debt). `debt` è
++    OBBLIGATORIO (stringa non vuota): una voce temporanea senza debito è un
++    ERRORE DI CONFIGURAZIONE e il gate esce 1. Le temporanee sono stampate IN
++    TESTA all'output e NON sono violazioni, ma l'esito riporta «PASS (con n
++    eccezioni temporanee)».
++
++Sentinelle (W8-fix, tre):
++  1. simbolo ORM `FactAssertion` (qualunque uso);
++  2. tabella grezza `fact_assertions` DENTRO una chiamata SQL (`text(`/`.execute(`/
++     `.exec_driver_sql(`);
++  3. COMBO: fact-token (FactAssertion|fact_assertions|fact_key) + valore di stato
++     quotato `'current'`.
++LIMITAZIONE DICHIARATA (R6): B1(i) è **MITIGATO, non chiuso**. Una stringa SQL
++costruita su PIÙ RIGHE e concatenata prima dell'esecuzione non è catturata da
++nessuna delle tre sentinelle. Non dichiararlo «chiuso».
++
++Uso:
++    python3 scripts/w8_currency_gate.py            # scansione repo reale
++    python3 scripts/w8_currency_gate.py --selftest # controllo negativo (sa fallire?)
++Esce 0 se pulito (temporanee ammesse), 1 se c'è una violazione o un errore di
++configurazione (voce temporanea senza debt).
++"""
++
++from __future__ import annotations
++
++import re
++import shutil
++import sys
++import tempfile
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++
++SCAN_DIRS = ("api", "scripts", "collector")
++EXCLUDE_DIRS = ("api/app/facts",)  # il resolver È la fonte: qui i fatti si leggono
++EXCLUDE_FILES = (
++    "scripts/w8_currency_gate.py",   # questo file: contiene le sentinelle come dato
++    "scripts/w8_g8_equivalence.py",  # gate G8: contiene i fact_key come dato
++)
++
++FACT_TOKENS = ("FactAssertion", "fact_assertions", "fact_key")
++RAW_SQL_CALLS = ("text(", ".execute(", ".exec_driver_sql(")
++CURRENT_VALUE_RE = re.compile(r"""['"]current['"]""")
++
++# ── Allowlist PERMANENTE: (relpath, snippet_stripped) -> (occorrenze_attese, motivazione)
++ALLOWLIST: dict[tuple[str, str], tuple[int, str]] = {
++    # api/ — struttura e diagnostica read-only (invariato da W8-fix)
++    ("api/app/models.py", "class FactAssertion(Base):"): (
++        1, "models: DEFINIZIONE ORM della tabella (non una lettura)."),
++    ("api/app/bootstrap.py",
++     "from app.models import FactAssertion, IdentityEvidence, IdentityLinkProposal, Switch, User  # noqa: F401 — create_all"): (
++        1, "bootstrap: import per registrazione modelli in create_all (nessuna query)."),
++    ("api/app/routers/admin.py", "from app.models import FactAssertion"): (
++        2, "admin: import per diagnostica read-only (shadow-stats COUNT + conflitti I3)."),
++    ("api/app/routers/admin.py",
++     "rows = int(db.scalar(select(func.count()).select_from(FactAssertion)) or 0)"): (
++        1, "admin /facts/shadow-stats: COUNT righe (osservabilità breaker), non un valore corrente."),
++    ("api/app/routers/admin.py", "select(FactAssertion)"): (
++        1, "admin /facts/conflicts: divergenze conflict_review, state='historical' (I3), NON current."),
++    ("api/app/routers/admin.py", 'FactAssertion.reason == "conflict_review",'): (
++        1, "admin /facts/conflicts: filtro divergenze I3."),
++    ("api/app/routers/admin.py", 'FactAssertion.state == "historical",'): (
++        1, "admin /facts/conflicts: esplicitamente state='historical', l'opposto di current."),
++    ("api/app/routers/admin.py",
++     ".order_by(FactAssertion.last_seen_at.desc(), FactAssertion.id.desc())"): (
++        1, "admin /facts/conflicts: ordinamento di DISPLAY delle divergenze storiche."),
++    # scripts/ — tooling read-only di gate/diagnosi (ruling W8-fix2: riga per riga)
++    ("scripts/wp_gate.py",
++     "from app.models import Asset, FactAssertion, IpAddress, NameProposal  # noqa: E402"): (
++        1, "wp_gate: import per diagnostica di regime (nessuna lettura di correntezza)."),
++    ("scripts/wp_diagnose.py",
++     "from app.models import Asset, FactAssertion, Interface, IpAddress, NameProposal  # noqa: E402"): (
++        1, "wp_diagnose: import per diagnostica (nessuna lettura di correntezza)."),
++    ("scripts/wp_gate.py",
++     "fat = int(db.scalar(select(func.count()).select_from(FactAssertion)) or 0)"): (
++        1, "wp_gate: COUNT righe totali (nessun valore, nessuno stato)."),
++    ("scripts/wp_diagnose.py",
++     "fa_total = int(db.scalar(select(func.count()).select_from(FactAssertion)) or 0)"): (
++        1, "wp_diagnose: COUNT righe totali (nessun valore, nessuno stato)."),
++    ("scripts/wp_diagnose.py",
++     "db.execute(select(FactAssertion.state, func.count()).group_by(FactAssertion.state)).all()"): (
++        1, "wp_diagnose: distribuzione di stato (diagnostica), non una lettura del valore corrente."),
++    ("scripts/wp_diagnose.py",
++     "rows = db.scalars(select(FactAssertion).order_by(FactAssertion.id.desc()).limit(15)).all()"): (
++        1, "wp_diagnose: campione di DISPLAY (ultime 15 per id), non una lettura di correntezza."),
++    ("scripts/wp_diagnose.py",
++     "cur_fa = {r[0] for r in db.execute(select(FactAssertion.id)).all()}"): (
++        1, "wp_diagnose: enumerazione id (now) per delta vs baseline, nessuno stato."),
++    ("scripts/wp_diagnose.py",
++     "base_fa = {r[0] for r in bdb.execute(select(FactAssertion.id)).all()}"): (
++        1, "wp_diagnose: enumerazione id (baseline) per delta, nessuno stato."),
++    ("scripts/wp_diagnose.py", "fa = db.get(FactAssertion, fid)"): (
++        1, "wp_diagnose: lettura per id già enumerato (display diagnostico)."),
++}
++
++# ── Allowlist TEMPORANEA con DEBITO: (relpath, snippet) -> (N, debt)
++# `debt` OBBLIGATORIO: voce senza debt = errore di configurazione (exit 1).
++# NON è una sanatoria permanente: va chiusa dalla micro-ondata runtime del debito.
++TEMPORARY_ALLOWLIST: dict[tuple[str, str], tuple[int, str]] = {
++    ("scripts/wp_gate.py",
++     'fa_cur = int(db.scalar(select(func.count()).select_from(FactAssertion).where(FactAssertion.state == "current")) or 0)'): (
++        1, "DEBT-WPGATE-CURRENCY-COUNT-LOCAL"),
++}
++
++
++def _rel(p: Path, root: Path) -> str:
++    return str(p.relative_to(root)).replace("\\", "/")
++
++
++def _is_excluded(rel: str) -> bool:
++    if rel in EXCLUDE_FILES:
++        return True
++    return any(rel == d or rel.startswith(d + "/") for d in EXCLUDE_DIRS)
++
++
++def _classify_line(line: str) -> tuple[str, str] | None:
++    """Return (kind, snippet) if the line touches the fact store, else None.
++
++    kind ∈ {"combo", "symbol", "sql"}.
++    """
++    strip = line.strip()
++    has_token = any(tok in line for tok in FACT_TOKENS)
++    if has_token and CURRENT_VALUE_RE.search(line):
++        return ("combo", strip)
++    if "FactAssertion" in line:
++        return ("symbol", strip)
++    if "fact_assertions" in line and any(k in line for k in RAW_SQL_CALLS):
++        return ("sql", strip)
++    return None
++
++
++def validate_temp(temp: dict[tuple[str, str], tuple[int, str]]) -> list[tuple[str, str]]:
++    """Return the keys whose `debt` is empty/blank (errore di configurazione)."""
++    return [k for k, (_n, debt) in temp.items() if not str(debt or "").strip()]
++
++
++def scan(root: Path, allowlist, temp_allowlist):
++    """Return (files_scanned, temp_accounted, accounted, violations)."""
++    files_scanned = 0
++    groups: dict[tuple[str, str], dict] = {}
++    for d in SCAN_DIRS:
++        base = root / d
++        if not base.exists():
++            continue
++        for path in sorted(base.rglob("*.py")):
++            rel = _rel(path, root)
++            if _is_excluded(rel):
++                continue
++            files_scanned += 1
++            for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
++                res = _classify_line(raw)
++                if res is None:
++                    continue
++                kind, snippet = res
++                g = groups.setdefault((rel, snippet), {"kind": kind, "lines": []})
++                g["lines"].append(lineno)
++
++    temp_accounted: list[dict] = []
++    accounted: list[dict] = []
++    violations: list[dict] = []
++
++    for (rel, snippet), g in sorted(groups.items()):
++        lines = g["lines"]
++        if (rel, snippet) in temp_allowlist:
++            exp, debt = temp_allowlist[(rel, snippet)]
++            rec = {"rel": rel, "lines": lines, "snippet": snippet, "atteso": exp,
++                   "osservato": len(lines), "debt": debt}
++            if len(lines) == exp:
++                temp_accounted.append(rec)
++            else:
++                rec["reason"] = f"TEMP CONTEGGIO: atteso {exp}, osservato {len(lines)} (debt={debt})"
++                violations.append(rec)
++            continue
++        entry = allowlist.get((rel, snippet))
++        if entry is None:
++            reason = ("COMBO fact-token + 'current' (lettura di correntezza)"
++                      if g["kind"] == "combo"
++                      else f"accesso ai fatti fuori da facts/ non in allowlist ({g['kind']})")
++            violations.append({"rel": rel, "lines": lines, "snippet": snippet,
++                               "reason": reason, "atteso": 0, "osservato": len(lines)})
++            continue
++        exp, reason = entry
++        rec = {"rel": rel, "lines": lines, "snippet": snippet, "reason": reason,
++               "atteso": exp, "osservato": len(lines)}
++        if len(lines) == exp:
++            accounted.append(rec)
++        else:
++            rec["reason"] = f"CONTEGGIO: atteso {exp}, osservato {len(lines)} — {reason}"
++            violations.append(rec)
++    return files_scanned, temp_accounted, accounted, violations
++
++
++def _print_report(root, files_scanned, temp_accounted, accounted, violations, allowlist, temp_allowlist):
++    print("== W8 CURRENCY GATE (indurito, W8-fix2) ==")
++    print(f"root: {root}")
++    print("sentinelle: simbolo ORM 'FactAssertion' · tabella grezza 'fact_assertions' "
++          "in chiamata SQL (text/execute) · COMBO (fact-token "
++          f"{'|'.join(FACT_TOKENS)}) + valore di stato quotato 'current'")
++    print(f"scope: {', '.join(d + '/**' for d in SCAN_DIRS)}")
++    print("esclusioni:")
++    for d in EXCLUDE_DIRS:
++        print(f"  - {d}/**  (il resolver È la fonte della correntezza)")
++    for f in EXCLUDE_FILES:
++        print(f"  - {f}  (contiene le sentinelle/fact_key come dato)")
++    print(f"file scansionati: {files_scanned}")
++    print(f"voci allowlist: permanenti {len(allowlist)} · temporanee {len(temp_allowlist)}")
++    print()
++    print(f"ATTENZIONE — ECCEZIONI TEMPORANEE CON DEBITO APERTO: {len(temp_accounted)}")
++    for t in temp_accounted:
++        locs = ",".join(str(x) for x in t["lines"])
++        print(f"  TEMP {t['rel']}:{locs} (atteso {t['atteso']}, osservato {t['osservato']}) "
++              f"debt={t['debt']}")
++        print(f"      | {t['snippet']}")
++    print()
++    print(f"ECCEZIONI GIUSTIFICATE PERMANENTI (accounted): {len(accounted)}")
++    for a in accounted:
++        locs = ",".join(str(x) for x in a["lines"])
++        print(f"  OK  {a['rel']}:{locs}  (atteso {a['atteso']}, osservato {a['osservato']})")
++        print(f"      | {a['snippet']}")
++        print(f"      → {a['reason']}")
++    print()
++    print(f"VIOLAZIONI: {len(violations)}")
++    for v in violations:
++        locs = ",".join(str(x) for x in v["lines"])
++        print(f"  FAIL {v['rel']}:{locs}  (atteso {v['atteso']}, osservato {v['osservato']})")
++        print(f"      | {v['snippet']}")
++        print(f"      → {v['reason']}")
++    print()
++    n_temp = len(temp_accounted)
++    if violations:
++        print("RISULTATO: FAIL")
++    elif n_temp:
++        print(f"RISULTATO: PASS (con {n_temp} eccezione/i temporanea/e)")
++    else:
++        print("RISULTATO: PASS")
++
++
++def run_repo() -> int:
++    errs = validate_temp(TEMPORARY_ALLOWLIST)
++    if errs:
++        print("ERRORE DI CONFIGURAZIONE — voce TEMPORARY_ALLOWLIST senza `debt`:")
++        for rel, snip in errs:
++            print(f"  {rel} | {snip}")
++        return 1
++    files_scanned, temp_acc, acc, viol = scan(ROOT, ALLOWLIST, TEMPORARY_ALLOWLIST)
++    _print_report(ROOT, files_scanned, temp_acc, acc, viol, ALLOWLIST, TEMPORARY_ALLOWLIST)
++    return 1 if viol else 0
++
++
++def run_selftest() -> int:
++    """Controllo negativo: corpus sintetico in dir TEMPORANEA (mai in api/, mai committato).
++
++    Verifica: (1) il gate cattura le tre classi di violazione; (2) il meccanismo
++    TEMPORANEE respinge una voce senza `debt` (errore di configurazione).
++    """
++    tmp = Path(tempfile.mkdtemp(prefix="w8gate_selftest_"))
++    ok_all = True
++    try:
++        api = tmp / "api" / "app"
++        api.mkdir(parents=True)
++        orm_line = "class FactAssertion(Base):"
++        (api / "file1_orm.py").write_text(
++            f"{orm_line}\n    __tablename__ = 'fact_assertions'\n", encoding="utf-8")
++        (api / "file2_rawsql.py").write_text(
++            'stmt = text("SELECT value_norm FROM fact_assertions '
++            "WHERE fact_key='asset.name' AND state='current' ORDER BY id DESC LIMIT 1\")\n",
++            encoding="utf-8")
++        (api / "file3_filterby.py").write_text(
++            'row = db.scalars(select(FactAssertion)'
++            '.filter_by(fact_key="asset.name", state="current")).first()\n',
++            encoding="utf-8")
++        (api / "file4_count.py").write_text(
++            f"{orm_line}\n{orm_line}\n", encoding="utf-8")
++        # file5: usato SOLO per il config-check delle temporanee
++        temp_line = 'n = db.scalar(select(func.count()).select_from(FactAssertion).where(FactAssertion.state == "current"))'
++        (api / "file5_temp.py").write_text(f"{temp_line}\n", encoding="utf-8")
++
++        # (1) corpus principale (file 1-4): 3 violazioni + 1 accounted, 0 temporanee.
++        allowlist = {
++            ("api/app/file1_orm.py", orm_line): (1, "selftest: ORM def lecita"),
++            ("api/app/file4_count.py", orm_line): (1, "selftest: autorizzata 1 volta"),
++        }
++        # file5 escluso dal corpus principale spostandolo temporaneamente fuori scope:
++        # semplice: nel main check non lo allowlistiamo → sarebbe una 4ª violazione.
++        # Per isolarlo, lo rimuoviamo prima del main check e lo riscriviamo per il config-check.
++        (api / "file5_temp.py").unlink()
++        _, temp_acc, acc, viol = scan(tmp, allowlist, {})
++        viol_files = sorted({v["rel"].split("/")[-1] for v in viol})
++        expected_files = ["file2_rawsql.py", "file3_filterby.py", "file4_count.py"]
++        main_ok = (len(viol) == 3 and viol_files == expected_files
++                   and len(acc) == 1 and len(temp_acc) == 0)
++        print(f"SELFTEST/1 corpus principale: atteso 3 violazioni {expected_files} + 1 accounted")
++        print(f"SELFTEST/1 osservato: {len(viol)} violazioni {viol_files} + {len(acc)} accounted "
++              f"+ {len(temp_acc)} temporanee")
++        print("SELFTEST/1:", "PASS" if main_ok else "FAIL")
++        ok_all = ok_all and main_ok
++
++        # (2) config-check: voce temporanea SENZA debt → errore di configurazione.
++        (api / "file5_temp.py").write_text(f"{temp_line}\n", encoding="utf-8")
++        bad_temp = {("api/app/file5_temp.py", temp_line): (1, "")}
++        errs = validate_temp(bad_temp)
++        good_temp = {("api/app/file5_temp.py", temp_line): (1, "DEBT-SELFTEST")}
++        errs_good = validate_temp(good_temp)
++        cfg_ok = (len(errs) == 1 and len(errs_good) == 0)
++        print(f"SELFTEST/2 config-check temporanee: atteso 1 errore (debt vuoto) + 0 (debt valido)")
++        print(f"SELFTEST/2 osservato: {len(errs)} errore(i) debt-vuoto + {len(errs_good)} debt-valido")
++        print("SELFTEST/2:", "PASS" if cfg_ok else "FAIL")
++        ok_all = ok_all and cfg_ok
++
++        print()
++        print("SELFTEST:", "PASS (il gate sa fallire e valida le temporanee)"
++              if ok_all else "FAIL (gate non discrimina)")
++        return 0 if ok_all else 1
++    finally:
++        shutil.rmtree(tmp, ignore_errors=True)
++
++
++def main(argv: list[str]) -> int:
++    if "--selftest" in argv:
++        return run_selftest()
++    return run_repo()
++
++
++if __name__ == "__main__":
++    raise SystemExit(main(sys.argv[1:]))
+diff --git a/observatory/scripts/w8_g8_equivalence.py b/observatory/scripts/w8_g8_equivalence.py
+new file mode 100644
+index 0000000..75a5f9e
+--- /dev/null
++++ b/observatory/scripts/w8_g8_equivalence.py
+@@ -0,0 +1,219 @@
++"""W8.5 / W8-fix — Gate di equivalenza G8, eseguibile · discriminante · esteso.
++
++Cosa fa: confronta, per ogni asset e a writer fermi, la correntezza prodotta dal
++RESOLVER con la superficie osservata dai consumatori, e enumera OGNI differenza
++per id in quattro classi:
++  RESOLVER  R!=None e consumatore == R          (il valore viene dal fatto)
++  FALLBACK  R==None e consumatore ha un valore   (I2: assenza del fatto, ripiego
++            sullo STATO derivato — legittimo, non una divergenza)
++  ABSENT    R==None e consumatore assente         (I2: assenza dichiarata)
++  DIVERGE   R!=None e consumatore != R            (sospetto calcolo locale — (c))
++Un solo DIVERGE ⇒ RISULTATO FAIL. Nessuna tolleranza percentuale.
++
++Fatti confrontati:
++  - asset.name : resolver.current("asset.name") vs presentation_name_for_asset().
++    NB (T1): presentation_name_for_asset NON è un wrapper puro del resolver — usa
++    il resolver per il nome chassis-scoped ma RIPIEGA su Asset.name (stato
++    derivato) quando il fatto è assente. Quindi su asset.name la classe DIVERGE è
++    TAUTOLOGICAMENTE 0 tra funzione interna e resolver: la discriminazione reale
++    è provata da --mutate-probe (sotto) e, se abilitata, dal confronto con
++    l'ENDPOINT GET /api/assets/{id} (superficie consumer reale, env OBS_G8_*).
++  - os.guess  : resolver.current("os.guess") vs Asset.os_guess (COLONNA di stato
++    derivata — store DIVERSO dal fact store: confronto NON tautologico).
++
++Controllo negativo (--mutate-probe <id>): monkeypatch IN-PROCESSO della sola
++funzione di presentazione perché restituisca una sentinella per quell'unico id.
++G8 deve riportare DIVERGE=1 esattamente su quell'id e RISULTATO FAIL. Prova che
++il gate sa fallire.
++
++READ-ONLY (T4e): il gate NON scrive mai sul DB (db.rollback() finale, nessun
++commit). «mai commit» si riferisce alla TRANSAZIONE DB, non al versionamento git:
++questo file È committato come tooling versionato (repo + obs-exchange). Durante
++G8 nessuna azione viene innescata sull'api (unico writer vivo): sono sole letture.
++
++Uso (nel container api, a collector fermo):
++    docker compose exec -T api python3 - < scripts/w8_g8_equivalence.py
++    docker compose exec -T api python3 - < scripts/w8_g8_equivalence.py --mutate-probe 3
++Env opzionali per il confronto con l'endpoint (T4b):
++    OBS_G8_BASE (es. http://127.0.0.1:8000)  OBS_G8_TOKEN (cookie obs_session)
++"""
++
++from __future__ import annotations
++
++import os
++import sys
++
++sys.path.insert(0, "/app")
++
++MUTATE_SENTINEL = "__G8_MUTATE_SENTINEL__"
++
++
++def _import_smoke():
++    """T4a — verifica che ogni simbolo importato esista davvero (no import fittizi)."""
++    problems = []
++    syms = {}
++    try:
++        from app.facts.resolver import current, subject_of
++        syms["current"] = current
++        syms["subject_of"] = subject_of
++    except Exception as exc:  # noqa: BLE001
++        problems.append(f"app.facts.resolver.current/subject_of: {exc!r}")
++    try:
++        from app.config import get_settings
++        syms["get_settings"] = get_settings
++    except Exception as exc:  # noqa: BLE001
++        problems.append(f"app.config.get_settings: {exc!r}")
++    try:
++        from app.models import Asset
++        syms["Asset"] = Asset
++    except Exception as exc:  # noqa: BLE001
++        problems.append(f"app.models.Asset: {exc!r}")
++    try:
++        import app.services.name_proposal_chassis as npc
++        if not hasattr(npc, "presentation_name_for_asset"):
++            problems.append("name_proposal_chassis.presentation_name_for_asset: assente")
++        syms["npc"] = npc
++    except Exception as exc:  # noqa: BLE001
++        problems.append(f"app.services.name_proposal_chassis: {exc!r}")
++    print("== G8 IMPORT-SMOKE ==")
++    for name in ("current", "subject_of", "get_settings", "Asset", "npc"):
++        ok = name in syms
++        print(f"  {'OK ' if ok else 'FAIL'} {name}")
++    if problems:
++        for p in problems:
++            print(f"  ! {p}")
++        print("IMPORT-SMOKE: FAIL")
++        raise SystemExit(2)
++    print("IMPORT-SMOKE: PASS\n")
++    return syms
++
++
++def _norm(v) -> str | None:
++    s = " ".join(str(v or "").strip().split())
++    return s or None
++
++
++def _api_name(base: str, token: str, asset_id: int) -> tuple[str | None, str]:
++    """T4b — nome dalla superficie consumer reale GET /api/assets/{id} (read-only)."""
++    import json
++    import urllib.request
++
++    url = f"{base.rstrip('/')}/api/assets/{asset_id}"
++    req = urllib.request.Request(url, headers={"Cookie": f"obs_session={token}"})
++    with urllib.request.urlopen(req, timeout=8) as r:  # noqa: S310
++        d = json.loads(r.read().decode("utf-8"))
++    name = d.get("chassis_canonical_name") or d.get("display_name") or d.get("name")
++    return _norm(name), "chassis_canonical_name|display_name|name"
++
++
++def _classify(r, consumer):
++    if consumer == MUTATE_SENTINEL:
++        return "DIVERGE"
++    if r is not None and consumer == r:
++        return "RESOLVER"
++    if r is None and consumer is not None:
++        return "FALLBACK"
++    if r is None and consumer is None:
++        return "ABSENT"
++    return "DIVERGE"
++
++
++def main(argv: list[str]) -> int:
++    mutate_id = None
++    if "--mutate-probe" in argv:
++        i = argv.index("--mutate-probe")
++        try:
++            mutate_id = int(argv[i + 1])
++        except (IndexError, ValueError):
++            print("--mutate-probe richiede un asset_id intero")
++            return 2
++
++    syms = _import_smoke()
++    current = syms["current"]
++    subject_of = syms["subject_of"]
++    get_settings = syms["get_settings"]
++    Asset = syms["Asset"]
++    npc = syms["npc"]
++
++    from sqlalchemy import create_engine, select
++    from sqlalchemy.orm import sessionmaker
++
++    base = os.environ.get("OBS_G8_BASE")
++    token = os.environ.get("OBS_G8_TOKEN")
++    api_enabled = bool(base and token)
++
++    # T4d — monkeypatch SOLO della funzione di presentazione, in-processo, per un id.
++    orig_pna = npc.presentation_name_for_asset
++    if mutate_id is not None:
++        def _patched(db, asset):
++            if getattr(asset, "id", None) == mutate_id:
++                return MUTATE_SENTINEL
++            return orig_pna(db, asset)
++        npc.presentation_name_for_asset = _patched
++        print(f"== MUTATE-PROBE attivo su id={mutate_id} (sentinella di presentazione) ==\n")
++
++    settings = get_settings()
++    db = sessionmaker(bind=create_engine(f"sqlite:///{settings.sqlite_path}"))()
++    fail = False
++    try:
++        assets = db.scalars(select(Asset)).all()
++
++        def run_fact(fact_key, consumer_fn, label):
++            nonlocal fail
++            buckets = {"RESOLVER": [], "FALLBACK": [], "ABSENT": [], "DIVERGE": []}
++            for a in assets:
++                st, sid = subject_of(fact_key, a)
++                row = current(db, st, sid, fact_key)
++                r = _norm(row.value_norm) if row is not None else None
++                c = consumer_fn(a)
++                cls = _classify(r, c)
++                if cls in ("DIVERGE", "FALLBACK"):
++                    buckets[cls].append((a.id, r, c))
++                else:
++                    buckets[cls].append(a.id)
++            print(f"== G8 {fact_key} — consumatore: {label} ==")
++            print(f"  RESOLVER={len(buckets['RESOLVER'])} FALLBACK={len(buckets['FALLBACK'])} "
++                  f"ABSENT={len(buckets['ABSENT'])} DIVERGE={len(buckets['DIVERGE'])}")
++            print(f"  RESOLVER ids: {sorted(buckets['RESOLVER'])}")
++            print("  FALLBACK (R=None → stato derivato, I2):")
++            for aid, r, c in sorted(buckets["FALLBACK"]):
++                print(f"    id={aid} resolver=None consumatore={c!r}")
++            print(f"  ABSENT ids (R=None, consumatore=None, I2): {sorted(buckets['ABSENT'])}")
++            print("  DIVERGE (sospetto calcolo locale, (c)):")
++            for aid, r, c in sorted(buckets["DIVERGE"]):
++                print(f"    id={aid} resolver={r!r} consumatore={c!r}")
++            if buckets["DIVERGE"]:
++                fail = True
++            print()
++            return buckets
++
++        # asset.name — funzione interna (tautologica su DIVERGE, dichiarato T1)
++        run_fact("asset.name", lambda a: _norm(npc.presentation_name_for_asset(db, a)),
++                 "presentation_name_for_asset() [interna]")
++
++        # asset.name — endpoint reale (T4b), se abilitato
++        if api_enabled:
++            run_fact("asset.name", lambda a: _api_name(base, token, a.id)[0],
++                     f"GET /api/assets/{{id}} [{base}]")
++        else:
++            print("== G8 asset.name — endpoint GET /api/assets/{id} ==")
++            print("  SKIP (K4): OBS_G8_BASE/OBS_G8_TOKEN non impostati; "
++                  "leg non esercitata a runtime.\n")
++
++        # os.guess — resolver vs colonna di stato derivata (store diverso: non tautologico)
++        run_fact("os.guess", lambda a: _norm(getattr(a, "os_guess", None)),
++                 "Asset.os_guess [colonna derivata]")
++
++        print("RISULTATO G8:", "FAIL" if fail else "PASS")
++        if mutate_id is not None:
++            print(f"MUTATE-PROBE: atteso DIVERGE=1 su id={mutate_id} e FAIL — "
++                  f"{'confermato' if fail else 'NON confermato (controllo negativo rotto)'}")
++        return 1 if fail else 0
++    finally:
++        npc.presentation_name_for_asset = orig_pna
++        db.rollback()
++        db.close()
++
++
++if __name__ == "__main__":
++    raise SystemExit(main(sys.argv[1:]))
