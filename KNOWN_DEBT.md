@@ -10,16 +10,29 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
 - **Ripresa:** quando un consumatore avrà bisogno dello storico dei fatti, cablare `resolver.history()` a un endpoint con `?history=true` (default corrente). Fino ad allora resta inerte.
 - **Vietato:** dichiarare `?history=true` come funzionante finché non è cablato; rimuovere `resolver.history()` o riclassificarlo silenziosamente come morto (è la superficie sanzionata per lo storico).
 
+## DEBT-WPGATE-CURRENCY-COUNT-LOCAL
+
+- **Priorità:** media — aperto W8-fix2 / 0.10.63.
+- **Cosa:** `scripts/wp_gate.py:103` esegue `COUNT(FactAssertion WHERE state=="current")` — una lettura di correntezza dei fatti **fuori dal resolver**.
+- **Perché è un secondo autore di correntezza:** il resolver applica TTL / `_maybe_stale` / R-E per decidere cosa è «corrente adesso»; un `state=="current"` grezzo in SQL **può divergere** dal corrente effettivo del resolver (es. righe scadute non ancora marcate stale). È una **seconda definizione di «corrente»** dentro lo strumento che certifica la produzione.
+- **Chi lo consuma:** il valore «FA current» stampato nella riga REGIME di `wp_gate` (baseline dei report d'ondata).
+- **Risoluzione prevista:** helper di conteggio corrente in `api/app/facts/` (es. `facts.count_current(...)`) che riusi il resolver; `wp_gate` lo chiama invece dello SQL grezzo. È una **micro-ondata runtime successiva** (tocca `api/app/facts/`), **non ora**.
+- **Stato nel gate:** sanato in `TEMPORARY_ALLOWLIST` di `w8_currency_gate.py` con `debt=DEBT-WPGATE-CURRENCY-COUNT-LOCAL` (stampato in testa all'output; l'esito è `PASS (con 1 eccezione temporanea)`).
+- **Vietato:** dichiararlo chiuso allowlistandolo in **permanenza**; introdurre altre letture `state=="current"` grezze fuori dal resolver.
+
 ## PRESIDIO-CURRENCY-GATE (presidio permanente, non debito)
 
-- **Natura:** presidio, non debito da chiudere — istituito W8 / 0.10.63.
-- **Cosa presidia:** la correntezza dei FATTI si legge SOLO dal resolver (`api/app/facts/`). Nessun altro punto di `api/` può interrogare `FactAssertion` per decidere «qual è il valore adesso» (evidenza si scrive, stato si deriva — F-7).
-- **Come:** `scripts/w8_currency_gate.py` — sentinella su ogni riga che nomina `FactAssertion` fuori da `api/app/facts/`; **fallisce** su accessi nuovi. Allowlist **per (file, snippet)** con motivazione (mai pattern generico): `models.py` (def ORM), `bootstrap.py` (import per `create_all`), `admin.py` (`/facts/shadow-stats` COUNT + `/facts/conflicts` divergenze `state="historical"`, I3). Stato W8: **9 eccezioni giustificate, 0 violazioni (PASS)**.
+- **Natura:** presidio, non debito da chiudere — istituito W8 / 0.10.63; indurito W8-fix / W8-fix2.
+- **Cosa presidia:** la correntezza dei FATTI si legge SOLO dal resolver (`api/app/facts/`). Nessun altro consumatore può interrogare `FactAssertion` per decidere «qual è il valore adesso» (evidenza si scrive, stato si deriva — F-7).
+- **Come (versione consegnata):** `scripts/w8_currency_gate.py` — scope **`api/** · scripts/** · collector/****, esclusi `api/app/facts/**` (fonte protetta) e i due file d'ondata. **Tre sentinelle:** simbolo ORM `FactAssertion`; tabella `fact_assertions` dentro chiamata SQL (`text(`/`.execute(`/`.exec_driver_sql(`); COMBO fact-token + `'current'` quotato. Allowlist **per (file, snippet, N)** con conteggio (N+1 = violazione) + sezione **TEMPORANEA** `(file, snippet, N, debt)` con `debt` obbligatorio (voce senza debt → exit 1). Ha `--selftest`.
+- **Criterio del ruling (W8-fix2):** `api/app/facts/**` escluso perché è la fonte; **ogni altro consumatore, tooling compreso, si allowlista riga per riga** (come `admin.py`), MAI per path intero.
+- **Stato W8-fix2:** **0 violazioni · 17 eccezioni permanenti** (8 api + 9 tooling `wp_gate`/`wp_diagnose`) · **1 temporanea** (`DEBT-WPGATE-CURRENCY-COUNT-LOCAL`) → **PASS (con 1 eccezione temporanea)**. Selftest **PASS** (3 violazioni attese + config-check debt).
+- **Limitazione dichiarata (R6):** B1(i) è **MITIGATO, non chiuso** — una stringa SQL costruita su più righe e concatenata sfugge alle tre sentinelle. Non dichiarare «chiuso».
 - **Da eseguire:** a ogni ondata futura, con output completo, **insieme a I6**.
-- **Non presidiato (criterio dichiarato):** `ip_addresses.is_current` = elezione IP (F-15, W8.1.3), non correntezza dei fatti — il resolver non è fonte esclusiva per gli IP finché il ruolo non entra nella `excl_key` (pre-condizioni W3: `DEBT-DOUBLE-CURRENT-IP`, `DEBT-IFACE-IP-CARDINALITY-ROLE`, `DEBT-LASTSEEN-DUAL-SEMANTICS`).
-- **Equivalenza:** `scripts/w8_g8_equivalence.py` (G8, read-only) — `DIVERGE=0` non-regressione della correntezza del nome (resolver vs presentazione).
-- **Doc:** [`docs/obs-design-spec-025.md`](obs-design-spec-025.md) §12 · [`docs/obs-w8.md`](obs-w8.md)
-- **Vietato:** aggiungere all'allowlist un pattern generico; leggere correntezza dei fatti fuori dal resolver; introdurre un secondo autore di stato (F-7).
+- **Non presidiato (criterio dichiarato):** `ip_addresses.is_current` = elezione IP (F-15), non correntezza dei fatti (pre-condizioni W3: `DEBT-DOUBLE-CURRENT-IP`, `DEBT-IFACE-IP-CARDINALITY-ROLE`, `DEBT-LASTSEEN-DUAL-SEMANTICS`); colonne di stato derivate `Asset` (F-7); evidenza grezza/oggetti di dominio; `resolver.history()` (`DEBT-HISTORY-PATH-UNWIRED`).
+- **Equivalenza (G8):** `scripts/w8_g8_equivalence.py` — **read-only sulla TRANSAZIONE DB** (`db.rollback()`, nessun commit; file versionato). Confronta `asset.name` (resolver vs presentazione vs endpoint) e `os.guess` (resolver vs colonna `Asset.os_guess`): `DIVERGE=0` non-regressione. `--mutate-probe <id>` = controllo negativo (`DIVERGE=1` + FAIL).
+- **Doc:** [`docs/obs-design-spec-025.md`](obs-design-spec-025.md) §12 · [`docs/obs-w8.md`](obs-w8.md) · [`docs/obs-w8fix.md`](obs-w8fix.md) · [`docs/obs-w8fix2.md`](obs-w8fix2.md)
+- **Vietato:** allowlist con pattern generico o esclusione per path di un consumatore; leggere correntezza dei fatti fuori dal resolver; introdurre un secondo autore di stato (F-7).
 
 ## DEBT-FINDINGS-OGGI-CONFLUENCE
 
