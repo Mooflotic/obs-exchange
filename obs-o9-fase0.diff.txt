@@ -1,0 +1,1911 @@
+# obs-o9-fase0.diff.txt — X1 harness · X2 priorità · X3 avviso churn
+# O9 / 0.10.72
+
+diff --git a/observatory/docs/KNOWN_DEBT.md b/observatory/docs/KNOWN_DEBT.md
+index 3fe6739..6b157a3 100644
+--- a/observatory/docs/KNOWN_DEBT.md
++++ b/observatory/docs/KNOWN_DEBT.md
+@@ -2,20 +2,246 @@
+ 
+ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite e fuori scope finché non riprese.
+ 
++## CANTIERE OBS-CURRENCY — SOSPESO (non chiuso)
++
++- **Stato:** sospeso all'avvio di OBS-OGGI O1 / 0.10.64. **Non riprendere** finché non riaperto esplicitamente.
++- **Residuo T7 mai eseguito in produzione:** G8 (`asset.name`, `os.guess`, `--mutate-probe`), `wp_gate` (convergenza, `needs_apply`, `T_backup`, structural, breaker, AD rimisurato), I6 sul NAS.
++- **Debiti aperti correlati:** `DEBT-PROD-SOURCE-DRIFT`, `DEBT-WPGATE-CURRENCY-COUNT-LOCAL`, `DEBT-G8-ENDPOINT-LEG-UNEXERCISED`, `DEBT-HISTORY-PATH-UNWIRED`.
++- **`scripts/_w4a_measure.py` sul NAS:** per direttiva di Michele **NON** va spostato, archiviato, cancellato né ulteriormente analizzato. Nessun controllo su quel file.
++- **Vietato:** riaprire T7/merge su main «di passaggio»; dichiarare OBS-CURRENCY chiuso.
++
++## DEBT-DB-SIZE-OBSERVED
++
++- **Priorità:** da valutare — **NON aprire ora** (registrato O7 / 0.10.70; osservato già in O6).
++- **Cosa:** il file SQLite in produzione misura **~1805 MiB** mentre `fact_assertions` pesa ~0,31 MiB. Il volume sta altrove (verosimilmente `observations_raw` / TTL 7 giorni) — **solo osservazione**, nessuna diagnosi autorizzata in O7.
++- **Vietato in O7 e finché non ripreso:** boot/backup/manutenzione DB, vacuum, purge, cambio TTL, analisi `_w4a_measure.py`.
++- **Ripresa:** ondata dedicata esplicita di Michele.
++
++## DEBT-CHASSIS-NAME-LEGACY-HELD
++
++- **Priorità:** media — aperto O1-FIX / 0.10.65; **diagnosi corretta O8 / 0.10.71**.
++- **Cosa (originaria O1):** in produzione `name_currency` (resolver) è `absent` sui chassis vivi; la card d'apparato usa il layer legacy (`name_kind=legacy_manual` o `inference`).
++- **Correzione diagnostica (O8 — annotata, non cancellata):** la diagnosi «il fact store dei nomi chassis è vuoto, serve il backfill W3» è **errata**. Esiste almeno un fatto `asset.name` a soggetto chassis: **FA id 251**, valore `LGS310C`, source=`manual`, authority=100, state=`current`, `subject_id=24`. Il chassis 24 **non esiste più**; l'asset 3 (LGS310C) vive sul **chassis 32** (membri 3, 139, 143). I fatti non mancano: sono **mal indirizzati** (soggetto orfano). Vedi `DEBT-CHASSIS-SUBJECT-ID-CHURN`.
++- **Conseguenza:** `legacy_manual` sulla card del 32 è onesto rispetto al resolver su quel soggetto; FA 251 non deve essere usato come se fosse sul chassis corrente.
++- **Risoluzione prevista:** decisione di Michele sul ri-puntamento/adozione di FA 251 (area identità chassis — esclusiva). Il backfill W3 resta bloccato dalle pre-condizioni IP e **non** è la causa di questo orfano.
++- **Vietato:** dichiararlo risolto etichettando il legacy come «fatto»; ri-puntare/cancellare FA 251 senza decisione esplicita.
++
++## DEBT-CHASSIS-SUBJECT-ID-CHURN
++
++- **Priorità:** alta (pilastro soggetto canonico OBS-CURRENCY) — aperto O8 / 0.10.71.
++- **Causa radice (Z3):** in `api/app/services/chassis_grouping.py` → `reconcile_chassis_grouping`, i chassis sono chiavati sul **frozenset dei member_id**. Se il set di membership cambia, si crea una **riga `Chassis` nuova** (`Chassis(...); db.flush()` ~726–731) con **id nuovo**; i gruppi uscenti passano da `_dissolve_chassis` (`db.delete(chassis)`). **L'id chassis non è stabile** attraverso un ri-raggruppamento.
++- **Censimento Z1 (prod O8, enumerato):** un solo fatto a soggetto chassis — FA **251** (`asset.name`, subject=24, `LGS310C`, manual/100/current, created_at 2026-07-27T11:03:50). `chassis_exists=False` → **orfano**. Nessun altro `subject_type=chassis`.
++- **Z2:** chassis 24 assente (nessuna riga, nessun membro). Non c'è etichetta errata *viva* sul 24; il rischio è usare FA 251 come nome del chassis 32.
++- **Z4 protezione:** `FactAssertion` non ha FK verso `chassis` — dissolve **non** cancella FA 251. Nessun path di pulizia/dedup/adozione trovato che cancelli o riscriva `subject_id` di un fatto manuale orfano; il resolver non lascia sovrascrivere manuale (auth 100) da fonte più debole. **Vietato** introdurre ri-puntamento automatico.
++- **Vietato:** ri-puntare, riassegnare, adottare o cancellare fatti a soggetto chassis senza decisione di Michele; allargare l'allowlist currency per «aggiustare» letture fuori da `api/app/facts/`.
++
++## DEBT-OGGI-LAYOUT-OVERFLOW
++
++- **Priorità:** UX — aperto O1-FIX; **mitigato O9 / 0.10.72** (annotato, non cancellato).
++- **Cosa (O1):** screenshot full-page di `/oggi` bloccato da overflow di layout; sezione chassis mobile ≈366×6680 px.
++- **Causa radice (O9 X1):** `body { overflow: hidden }` + `.workspace { height:100%; overflow:auto }` — lo scroll vive nel main, non sul documento; `Page.captureScreenshot(captureBeyondViewport:true)` resta al viewport.
++- **Mitigazione O9:** documento scrollabile (`body` overflow-y auto; `.workspace` overflow visible; `.app-shell` min-height). Verificare topologia fullscreen e sticky sidebar.
++- **Residuo:** rifinitura densità chassis su mobile resta in ondata UX se ancora eccessiva.
++- **Vietato:** dichiarare «chiuso» senza prova full-page PNG più alto del viewport.
++
++## DEBT-HISTORY-PATH-UNWIRED
++
++- **Priorità:** bassa — aperto W8-fix / 0.10.63 (correzione contraddizione B5 della review W8).
++- **Cosa:** `resolver.history()` (`api/app/facts/resolver.py`) esiste ed è esportato (`app/facts/__init__.py`) ma è **senza chiamanti**: nessun router lo invoca e **nessun endpoint espone `?history=true`** (verificato: grep chiamanti + elenco route routers/ — solo `proposal_history`/`warning_history`/monitor history, estranei ai fatti). Il contratto «storico su richiesta esplicita» è **dichiarato ma non cablato**.
++- **Conseguenza:** l'API è corrente per default *perché* lo storico non è esposto (non per una scelta di gating). Non è una regressione: è codice previsto e inerte.
++- **Ripresa:** quando un consumatore avrà bisogno dello storico dei fatti, cablare `resolver.history()` a un endpoint con `?history=true` (default corrente). Fino ad allora resta inerte.
++- **Vietato:** dichiarare `?history=true` come funzionante finché non è cablato; rimuovere `resolver.history()` o riclassificarlo silenziosamente come morto (è la superficie sanzionata per lo storico).
++
++## DEBT-PROD-SOURCE-DRIFT
++
++- **Priorità:** media — aperto W8-T7 / 0.10.63.
++- **Cosa:** il sorgente in produzione (`/volume1/Docker/observatory`, NO git) **non ha alcun controllo di integrità** contro il repo. Il conteggio `file scansionati` del currency gate è un **proxy debole**: misura solo un netto e **ignora** `api/app/facts/**` (escluso dallo scan perché è la fonte protetta). Un resolver divergente sul NAS sarebbe invisibile al gate e invaliderebbe G8.
++- **Evidenza (W8-T7 ripresa):** enumerazione gate-equivalente 175 (repo) vs 176 (NAS); unica differenza di path `scripts/_w4a_measure.py` (solo NAS). Hash sha256 di **tutto** l'albero `.py` (facts incluso): tutti i file condivisi **identici**; solo l'extra NAS. La corsa precedente si era fermata correttamente sul netto 176≠175.
++- **Risoluzione prevista:** confronto sha256 dell'intero albero `.py` (procedura FASE B di W8-T7) come **passo standard** di ogni ondata che tocchi la produzione — non solo il conteggio del currency gate.
++- **Vietato:** considerarlo chiuso perché «i conteggi coincidono»; escludere dal gate un file di drift per path (convertirebbe un drift rilevato in un punto cieco permanente).
++
++## DEBT-WPGATE-CURRENCY-COUNT-LOCAL
++
++- **Priorità:** media — aperto W8-fix2 / 0.10.63.
++- **Cosa:** `scripts/wp_gate.py:103` esegue `COUNT(FactAssertion WHERE state=="current")` — una lettura di correntezza dei fatti **fuori dal resolver**.
++- **Perché è un secondo autore di correntezza:** il resolver applica TTL / `_maybe_stale` / R-E per decidere cosa è «corrente adesso»; un `state=="current"` grezzo in SQL **può divergere** dal corrente effettivo del resolver (es. righe scadute non ancora marcate stale). È una **seconda definizione di «corrente»** dentro lo strumento che certifica la produzione.
++- **Chi lo consuma:** il valore «FA current» stampato nella riga REGIME di `wp_gate` (baseline dei report d'ondata).
++- **Risoluzione prevista:** helper di conteggio corrente in `api/app/facts/` (es. `facts.count_current(...)`) che riusi il resolver; `wp_gate` lo chiama invece dello SQL grezzo. È una **micro-ondata runtime successiva** (tocca `api/app/facts/`), **non ora**.
++- **Stato nel gate:** sanato in `TEMPORARY_ALLOWLIST` di `w8_currency_gate.py` con `debt=DEBT-WPGATE-CURRENCY-COUNT-LOCAL` (stampato in testa all'output; l'esito è `PASS (con 1 eccezione temporanea)`).
++- **Vietato:** dichiararlo chiuso allowlistandolo in **permanenza**; introdurre altre letture `state=="current"` grezze fuori dal resolver.
++
++## DEBT-G8-ENDPOINT-LEG-UNEXERCISED
++
++- **Priorità:** bassa — aperto W8-fix2 / 0.10.63.
++- **Cosa:** la leg endpoint di G8 (`GET /api/assets/{id}`, superficie consumer reale) resta **SKIP** in produzione perché richiede `OBS_G8_TOKEN`, che è una **credenziale di sessione** (STOP legittimo: informazione/segreto che non va cablato nel gate).
++- **Conseguenza:** su produzione la discriminazione di G8 poggia sul **solo `--mutate-probe`**, dato che la leg `asset.name` interna è **tautologica** (T1: `presentation_name_for_asset` ripiega su `Asset.name` quando il fatto è assente) e la leg `os.guess` è prevista **vacua** (T5a: nessun os.guess fact corrente). Il controllo negativo è ora onesto (rimosso il caso speciale `MUTATE_SENTINEL`, aggiunta la pre-condizione R!=None).
++- **Ripresa:** esercitare la leg endpoint con un token fornito a runtime (non versionato), oppure con un client interno autenticato, per confrontare la correntezza del resolver con la superficie HTTP reale.
++- **Vietato:** dichiarare G8 «copertura completa» finché la leg endpoint non è esercitata; cablare `OBS_G8_TOKEN` nel repo o nel gate.
++
++## PRESIDIO-CURRENCY-GATE (presidio permanente, non debito)
++
++- **Natura:** presidio, non debito da chiudere — istituito W8 / 0.10.63; indurito W8-fix / W8-fix2.
++- **Cosa presidia:** la correntezza dei FATTI si legge SOLO dal resolver (`api/app/facts/`). Nessun altro consumatore può interrogare `FactAssertion` per decidere «qual è il valore adesso» (evidenza si scrive, stato si deriva — F-7).
++- **Come (versione consegnata):** `scripts/w8_currency_gate.py` — scope **`api/** · scripts/** · collector/****, esclusi `api/app/facts/**` (fonte protetta) e i due file d'ondata. **Tre sentinelle:** simbolo ORM `FactAssertion`; tabella `fact_assertions` dentro chiamata SQL (`text(`/`.execute(`/`.exec_driver_sql(`); COMBO fact-token + `'current'` quotato. Allowlist **per (file, snippet, N)** con conteggio (N+1 = violazione) + sezione **TEMPORANEA** `(file, snippet, N, debt)` con `debt` obbligatorio (voce senza debt → exit 1). Ha `--selftest`.
++- **Criterio del ruling (W8-fix2):** `api/app/facts/**` escluso perché è la fonte; **ogni altro consumatore, tooling compreso, si allowlista riga per riga** (come `admin.py`), MAI per path intero.
++- **Stato W8-fix2:** **0 violazioni · 17 eccezioni permanenti** (8 api + 9 tooling `wp_gate`/`wp_diagnose`) · **1 temporanea** (`DEBT-WPGATE-CURRENCY-COUNT-LOCAL`) → **PASS (con 1 eccezione temporanea)**. Selftest **PASS** (3 violazioni attese + config-check debt).
++- **Limitazione dichiarata (R6):** B1(i) è **MITIGATO, non chiuso** — una stringa SQL costruita su più righe e concatenata sfugge alle tre sentinelle. Non dichiarare «chiuso».
++- **Da eseguire:** a ogni ondata futura, con output completo, **insieme a I6**.
++- **Non presidiato (criterio dichiarato):** `ip_addresses.is_current` = elezione IP (F-15), non correntezza dei fatti (pre-condizioni W3: `DEBT-DOUBLE-CURRENT-IP`, `DEBT-IFACE-IP-CARDINALITY-ROLE`, `DEBT-LASTSEEN-DUAL-SEMANTICS`); colonne di stato derivate `Asset` (F-7); evidenza grezza/oggetti di dominio; `resolver.history()` (`DEBT-HISTORY-PATH-UNWIRED`).
++- **Equivalenza (G8):** `scripts/w8_g8_equivalence.py` — **read-only sulla TRANSAZIONE DB** (`db.rollback()`, nessun commit; file versionato). Confronta `asset.name` (resolver vs presentazione vs endpoint) e `os.guess` (resolver vs colonna `Asset.os_guess`): `DIVERGE=0` non-regressione. `--mutate-probe <id>` = controllo negativo (`DIVERGE=1` + FAIL).
++- **Doc:** [`docs/obs-design-spec-025.md`](obs-design-spec-025.md) §12 · [`docs/obs-w8.md`](obs-w8.md) · [`docs/obs-w8fix.md`](obs-w8fix.md) · [`docs/obs-w8fix2.md`](obs-w8fix2.md)
++- **Vietato:** allowlist con pattern generico o esclusione per path di un consumatore; leggere correntezza dei fatti fuori dal resolver; introdurre un secondo autore di stato (F-7).
++
++## DEBT-FINDINGS-OGGI-CONFLUENCE
++
++- **Priorità:** UX (architettura superfici) — aperto UX3 / 0.10.63
++- **Cosa:** la route `/findings` è una coda parallela a Oggi (F-9). Misura in prod (2026-07-28): `/api/findings`=0, `/api/drifts`=0 — la superficie è **vuota** ed è in **shadow** finché lo scoring non è calibrato (Dashboard: «Findings restano in shadow»). Per non frammentare la coda operativa, `/findings` è stata **tolta dalla nav primaria** in 0.10.63.
++- **Raggiungibilità (UX3.2.4 rispettato):** la route esiste ancora ed è raggiungibile dalla Dashboard (ReadySlot «Findings e severità → Apri Findings (shadow)» e card «Findings (shadow) → Apri») e per URL diretto. Nessuna funzione operativa resa irraggiungibile.
++- **Confluenza rinviata:** quando i findings compositi diventeranno autoritativi (scoring calibrato, M4–M5), i loro elementi devono diventare **problemi dentro Oggi** (F-9), non una vista separata. Condizione: calibrazione completata + severità calibrata.
++- **Vietato:** ricreare un hub findings separato da Oggi; esporre findings shadow come alert.
++
++## DEBT-DASHBOARD-READY-SLOTS
++
++- **Priorità:** UX (roadmap M3–M5) — annotato UX3 / 0.10.63
++- **Cosa:** la Dashboard (ora «Panoramica», in nav) mostra `ReadySlot` placeholder («Presenza», «Findings e severità», «Coda attenzione») che in calibrazione dichiarano onestamente «Disponibile dopo la calibrazione» (I2, nessun dato inventato). Non sono rumore da rimuovere: sono slot di roadmap con etichetta d'attesa.
++- **Ripresa:** riempimento a calibrazione conclusa (M3/M4/M5). Nessuna barra muta, nessun valore plausibile.
++- **Vietato:** riempirli con valori stimati prima della calibrazione.
++
+ ## DEBT-RECONCILE-CHURN-1
+ 
+-- **Priorità:** media (bootstrap regime) — aperto in W1.5-bis 2026-07-25
+-- **Cosa:** asset **116** ha `trust_level=fritz_historical` ma `meta.operational_state=active`. Ogni boot1 con `needs_apply=true` / `structural=1` / `T_backup≈80s`; apply trust corregge; `inventory.reconcile_asset_presence` ripristina `active`.
+-- **Attribuzione:** churn preesistente (backup pre-0.10.42), **non** indotto da `identity_evidence`.
+-- **Vietato:** tollerarlo silenziosamente come “regime ok”; sostituire la misura del boot1 con un boot successivo senza dichiararlo.
+-- **Fix quando:** ownership `operational_state` per `fritz_historical` — inventory non deve smashare la quarantena trust senza evidenza reliable; oppure heal one-shot + guard.
++- **Priorità:** media (bootstrap regime) — **CHIUSO in F1-bis / 0.10.44**; **confermato D.6** sul boot1 di **0.10.45** (`structural=0`)
++- **Cosa:** asset **116** aveva `trust_level=fritz_historical` ma `meta.operational_state=active`. Boot1 `needs_apply=true` / `structural=1` / `T_backup≈80s` perché `inventory_may_set_operational_state` permetteva `fritz_historical`→`active` se `reliable=True` (anche con 0 interfacce via reachability).
++- **Fix:** inventory non solleva né smasha `trust_quarantine` (`fritz_historical` op_state o trust_level) — gerarchia invariata `archived > trust_quarantine > trust_protected > inventory_presence`. Test `test_quarantine_zero_interfaces_inventory_cannot_set_active`.
++- **Vietato (storico):** tollerarlo come “regime ok”; caso speciale su `asset_id=116`.
++
++## DEBT-IP-CURRENT-SCOPE-PER-ASSET → ri-caratterizzato come IDENTITÀ CHASSIS (W-D)
++
++- **Priorità:** W4a/W4b (consolidamento chassis) — riaperto/riscritto F1-bis→W-D 2026-07-26
++- **Fatto:** Cassiopea è modellata come **due asset record** — asset **5** «Cassiopea — NIC 1» tiene `192.168.1.3` CURRENT (id 9); asset **6** tiene `192.168.3.24` CURRENT (id 855). L’IP di management non è perso: è sull’altro record. Il ping fallito su `.3.24` dal container api è atteso (lato SPAN), non un sintomo.
++- **Test di non-regressione (da chiudere in W4a/W4b):** dopo consolidamento, Cassiopea = **UN** apparato con **DUE** interfacce; entrambi gli IP correnti ciascuno sulla propria interfaccia; un solo nome canonico.
++- **Vietato ora:** patch dati che forzi due current sullo stesso asset_id / stessa iface.
++- **Doc:** [`docs/obs-f1bis.md`](obs-f1bis.md) · [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-DOUBLE-CURRENT-IP
++
++- **Priorità:** pre-condizione **W3** — aperto W-D 2026-07-26
++- **Cosa:** stesso IP con >1 riga `is_current=1` (stesso asset o asset diversi). Al backfill W3 collideranno con `uq_fact_assertions_current_slot`.
++- **Casi enumerati (live, invariati da X.2):**
++  - `192.168.1.2` — id **3** (asset 2, mgmt) + id **153** (asset 2, fritz)
++  - `192.168.2.108` — id **15** (asset 11) + id **853** (asset 138)
++- **Nota:** W3 richiede una **regola di risoluzione dichiarata PRIMA** del backfill. **NON** collassare ora. Cardinalità non cambiata da X.2 (dedup ≠ `is_current`).
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md) · [`docs/obs-wd-fix.md`](obs-wd-fix.md)
++
++## DEBT-PROVISIONAL-IDENTITY-MERGE
++
++- **Priorità:** post W-D (quando MAC sconosciuto → poi scoperto) — aperto W-D 2026-07-26
++- **Cosa:** `entity_key` IP-only è marcato `payload.identity_provisional=true`, ma non esiste ancora un percorso di **fusione** quando il MAC viene scoperto in seguito (evitare duplicato).
++- **X.2:** invariato — discriminante IP sul dedup non introduce merge. Cardinalità debito invariata.
++- **Vietato:** inventare il merge in questa ondata.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md) · [`docs/obs-wd-fix.md`](obs-wd-fix.md)
+ 
+ ## DEBT-E3-AVAILABLE-FALSE
+ 
+ - **Priorità:** bloccante per E3 finché SNMP non è misurabile
+ - **Cosa:** E3-topological richiede access_port + mac_count misurato + soglia **esplicita** + simultaneità. Con poll SNMP in timeout, E3 = **available=false** (degrada a E2). Nessuna soglia inventata.
+ - **Vincolo:** non promuovere E3 finché `fdb_poll.ok` / misure porta non tornano.
+-- **Ripresa:** W2+ quando SNMP/LLDP writers misurano.
++- **Ripresa:** W2+ quando SNMP/LLDP writers misurano; requisiti accesso/poll in **DEBT-FDB-LLDP-PASSIVE**.
++
++## DEBT-FDB-LLDP-PASSIVE
++
++- **Priorità:** wave futura post W1.5-bis (writers SNMP / presenza) — **non** interrompe W1.5-bis
++- **Cosa:** implementazione iniziale **passiva/read-only** FDB+LLDP: presenza/posizione L2, **non** identità; FDB ≠ ownership; LLDP/CDP solo corroborante (spoofabile). LGS310C/328C: SNMPv3 authPriv, RO, ACL solo Cassiopea, view Bridge/LLDP/ENTITY, no SET, segreti fuori repo/log, timeout/rate limit; LLDP/CDP non abilitato dove non serve. ObservationRaw: switch_id, port, VLAN/bridge-domain, timestamp, age/last_seen, acquisition_method, failure_state; dedupe per **transizione** non per poll. Alert «nuovo MAC su access» solo dopo classificazione misurata access/trunk/uplink/AP/powerline, inizialmente informativo; **niente** quarantena/shutdown auto. Spoof / MAC move / CAM flood / randomized MAC previsti; assenza alert ≠ sicurezza.
++- **Doc:** [`docs/obs-fdb-lldp-passive.md`](obs-fdb-lldp-passive.md)
++- **Vietato:** usarlo come scorciatoia identity/merge; SET SNMP; enforcement automatico porte; dichiarare “rete sicura” perché non ci sono alert.
++
++## DEBT-ENTITY-KEY-MAC-IP
++
++- **Priorità:** era bloccante W2 — **CHIUSO in W-D / 0.10.45** (2026-07-26)
++- **Fix:** `entity_key_for` → MAC quando MAC noto; IP-only → provisional (`identity_provisional`). Test T-b verde.
++- **Residuo correlato (non collassare):** righe IP duplicate / refresh-as-transition — vedi B.2 / DEBT-DOUBLE-CURRENT-IP.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-IP-MIGRATION-NONETYPE
++
++- **Priorità:** era bloccante W2 — **CHIUSO in W-D / 0.10.45** (2026-07-26)
++- **Causa:** `elect_interface_primary` demoteva senza chiudere `last_seen` → `resolve_asset_by_ip_at` tornava `None` a T intermedio.
++- **Fix:** alla demotion, `last_seen = now` se mancante/precedente. T-e / T-f verdi.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-ALEMBIC-BASELINE-LEGACY-TABLE
++
++- **Priorità:** bassa (igiene CI; Alembic **non** gira in prod) — unificato W-D 2026-07-26
++- **Ex:** DEBT-ALEMBIC-MIGRATION-TESTS + baseline disallineata da tabella `observations` droppata.
++- **Sintomi test:** `ix_observations_seen_at`, `assets.chassis_id`, `assets.printer_first_seen` su fixture/alembic.
++- **Vietato:** inseguirli come fix runtime; schema prod = `create_all`.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-IPP-PRECEDENCE (T-c / T-d) — CHIUSO in W6, rank corretto in W6-REVIEW (0.10.57)
++
++- **Priorità:** media (autorità naming) — registrato W-D 2026-07-26, **chiuso** W6 2026-07-27, rank rivisto W6-REVIEW
++- **Test:** `test_ipp_precedence_and_human_category_override` (T-c); `test_snmp_enrichment_creates_proposal_without_overwriting_name` (T-d) — entrambi VERDI
++- **Root-cause:** `create_name_proposal` faceva `db.add` senza sincronizzare la relazione `asset.name_proposals` (proposte create invisibili in-sessione) + `best_guess` usava un secondo prospetto di pesi (`SOURCE_WEIGHT`) non coincidente con I5.
++- **Fix (W6.2 + W6R.1):** `create_name_proposal` → `append` alla relazione (guardia `has_rejected_name_proposal` invariata, non ricrea rifiutate); `best_guess` ordina per `authority_for` (I5) primario + confidence. **Rank corretto in W6-REVIEW:** `ipp=88`/`snmp=87` (sopra dhcp, alteravano I5) → **`ipp=snmp=81`** — unico vincolo misurato `ipp>fritz` (T-c); sotto `dhcp=85`, I5 di prodotto intatto. Posizione tier vs dhcp = decisione di dominio (Michele, STOP-5). Misurato: 0 flip in prod. Nessuna seconda gerarchia. Test non indeboliti.
++
++## DEBT-FDB-UPLINK-PORTAL (T-a) — CHIUSO in W7 (0.10.58)
++
++- **Priorità:** media — registrato W-D 2026-07-26 (preesistente), **chiuso** W7 2026-07-27
++- **Test:** `test_m2_discovery.py::test_fdb_skips_observe_portal_on_uplink_role` — VERDE
++- **Osservato:** `portal_last_seen` valorizzato invece di `None` su ruolo uplink.
++- **Root-cause:** `apply_fdb_observation` (`topology.py`) ricalcolava `interface_role` per-porta prima della guardia portale, declassando `uplink→endpoint` su un singolo hit FDB.
++- **Fix (W7.3):** un hit FDB per-porta non declassa più un'interfaccia strutturale (`uplink`/`infra`); i downgrade restano del reclassify globale. Nessun azzeramento retroattivo di `portal_last_seen`. Test non indebolito.
++
++## DEBT-MAC-IP-POLICY-WIRE — APERTO (wire additivo 0.10.58; policy piena CONSULTIVA 0.10.59; autoritativa rinviata)
++
++- **Priorità:** wave presence — **wire additivo fatto** (0.10.58); **policy piena esposta come CONSULTIVA** (0.10.59); attivazione autoritativa delle regole #3/#5 **rinviata e condizionata**.
++- **Cosa:** policy dominio MAC↔IP (chassis ≥1 IP corrente; eccezione powerline/510E; `present_l2_unaddressed`; supersession binding) — classifier `api/app/services/mac_ip_policy.py` + test contratto.
++- **Fatto (W7.2, deploy 1/2, 0.10.58):** `classify_mac_ip_presence` collegato a `reconcile_asset_presence` come **solo segnale di presenza** (`present_l2_unaddressed` + `l2_only_allowed` → `reliable`); mai forza `stale`/`superseded` (F-7 intatto, non secondo autore). Misurato 0 cambi in prod.
++- **F-14 — il wire è INERTE per costruzione (W7C-FIX, 0.10.59):** ogni decisione consumata dal wire (`present_l2_unaddressed`, `l2_only_allowed`) richiede `mac_fdb_fresh=True`; ma la stessa porta fresca genera in `reconcile_asset_presence` `physical_reasons=["FDB recente"]`, quindi `reliable` era **già** `True` senza il wire. Il wire non fa lavoro su `reliable` a prescindere dalla freschezza FDB. Misura corretta prod (`scripts/w7c_measure.py`, freschezza FDB reale): **0 hit** — vedi `docs/obs-w7close.md` §W7C-FIX.1. Correlato a DEBT-FDB-POLL-STALE (oggi 0 porte fresche).
++- **Fatto (W7C.5, 0.10.59) — policy piena CONSULTIVA:** `inventory.mac_ip_policy_consultation` (read-only) + endpoint admin `GET /api/admin/mac-ip-policy-consultation` calcolano il verdetto della policy completa (regole #1..#5) per ogni asset e lo espongono come **divergenza visibile** accanto allo stato reale e all'evidenza che tiene presente il device. **Non scrive, non guida `operational_state`/`trust_level`/`reliable`** (F-7). Le regole #3/#5 **NON sono autoritative**.
++- **Rinviato (attivazione autoritativa — decisione dominio Michele + correzione regole):** le regole #3/#5 marcherebbero `stale` device la cui presenza è dimostrata nello stesso istante da altre evidenze (FritzBox router, powerline, Sky box) — dissentono dalla realtà osservabile su una quota rilevante del parco e sbagliano sul gateway. **Il difetto è nella regola, non negli asset.** L'attivazione autoritativa è **condizionata alla correzione** delle regole che dissentono dalla realtà; fino ad allora il verdetto resta consultivo (I3). Blast-radius misurato read-only prod: vedi `docs/obs-w7close.md` (enumerazione per id).
++- **Doc:** [`docs/obs-currency-mac-ip-policy.md`](obs-currency-mac-ip-policy.md), [`docs/obs-w7close.md`](obs-w7close.md)
++- **Vietato:** attivare #3/#5 in modo autoritativo prima della correzione delle regole; usare la policy come scorciatoia di fusione chassis; inventare management IP.
++
++## DEBT-FDB-POLL-STALE — CHIUSO in O3 (2026-07-28) — poll ripristinato lato nostro
++
++- **Chiusura (O3):** le chiavi v3 erano **valorizzate** nei `.env.bak-*` (USER len=11, AUTH len=23, PRIV len=26, `SNMP_VERSION` len=1) ma **azzerate** nel `.env` attivo (limite superiore 2026-07-27; vedi precisazione in `obs-o3.md`) (`SNMP_VERSION=2c`). Restore minimo da `.env.bak-0910` + `force-recreate` collector → LGS `fdb_poll.ok=true`, `source=SNMPv3 authPriv`; porte id **{1..38}** `misurata_fresca`; GS308EP **{39..46}** resta `non_coperta` (limite).
++- **S2:** backup RO `pre-4b-drop-20260725-161330.db` (copia cancellata): poll riusciti 25/07 con `snmp_source=SNMPv3 authPriv` (non v2c).
++- **O2 resa onesta:** invariata e ancora necessaria (poll può fallire di nuovo).
++- **O4 rete di sicurezza a valle:** card S-D in Oggi se `last_fdb_at` oltre finestra; a monte resta `DEBT-ENV-NO-INTEGRITY-CHECK`.
++- **Vietato:** rimettere `SNMP_VERSION=2c` senza v3; stampare valori secret; toccare config apparati.
++
++## DEBT-O4-SPURIOUS-MOVES
++
++- **Priorità:** media — registrato O5 / 0.10.68 (bonifica F0).
++- **Cosa:** durante O4, prima dell'hotfix concurrent-presence, ogni MAC presente contemporaneamente su uplink e porta di accesso generava `reason=mac_move` spurie (**396** righe `port.fdb_mac` superseded, `created_at < 2026-07-28T22:01:43Z` = StartedAt container hotfix).
++- **Perché non si cancellano:** sono evidenza reale con interpretazione sbagliata; DELETE vietato (F0). Marcate `reason=o4_defect_concurrent_presence_move`.
++- **Esclusione:** `list_mac_move_supersessions` / card S-B / conteggio mac_move attivo le escludono; UI mostra il conteggio scartato + questo debito.
++- **Vietato:** dichiararlo chiuso cancellando le righe; alzare i tetti breaker.
++
++## DEBT-ENV-NO-INTEGRITY-CHECK
++
++
++- **Priorità:** media — registrato O4 / 0.10.67.
++- **Cosa:** un'edizione manuale di `.env` può azzerare chiavi non correlate senza che nulla lo segnali. Accaduto alle credenziali SNMPv3 fra il 22/07 (`.env.bak-0910` valorizzato) e il 27/07 18:58 (bak già vuoto); scoperto solo giorni dopo per assenza di dati FDB.
++- **Mitigazione a valle (O4):** card S-D su copertura FDB non fresca.
++- **Manca a monte:** confronto all'avvio del collector su **nomi+lunghezze** delle chiavi attese (mai leggere i valori) rispetto a un fingerprint dichiarato / bak noto.
++- **Vietato:** loggare o echo dei secret; alzare i tetti breaker per «compensare».
++
++## DEBT-SNMP-PROFILE-PER-SWITCH — APERTO (registrato O2-FIX)
++
++- **Priorità:** progetto FDB/SNMP — tre apparati condividono un solo profilo `default`.
++- **Cosa:** `SNMP_PROFILE_*` **assenti**; `resolve_snmp_profile` supporta profili per label ma nessuno è cablato per switch. GS308EP (no FDB) e LGS (v3 target) non possono divergere via env.
++- **Ripresa:** quando ci sono credenziali v3, introdurre profili per `328c`/`310c` (e lasciare 308ep senza poll FDB).
++- **Vietato:** inventare profili senza credenziali reali.
++
++## DEBT-OGGI-QUEUE-SURFACES
++
++- **Priorità:** UX — residui O1-FIX; **chiuso O8 / 0.10.71** (conservazione a tre superfici + rename + N6).
++- **(a)** `fact_is_manual` → `held_name_is_manual` (O8 Q4).
++- **(b)** no-op identico → `suppressed_noop`, non `missing` (O8 Q2).
++- **(c)** terza superficie rumore inclusa in `queueConservationCheck` (O8 Q1); membro su card non conta anche come rumore ai fini conservazione.
++- **(d)** controllo negativo N6 aggiunto (O8 Q3).
++- **Stato:** chiuso in O8. Non riaprire salvo regressione.
+ 
+ ## DEBT-MIRROR-SOURCES
+ 
+@@ -65,20 +291,65 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+ - **Residuo:** riprendere DVR (#2) / LUMIN / openhabian dal toggle critico se servono; non riattivare Kuma runtime.
+ - **Vietato:** ripristinare Kuma come dipendenza; delete delle righe kuma archiviate.
+ 
+-## DEBT-TOPO-IP-CONTEXTUAL (CHIUSO v0.9.0)
++## DEBT-TOPO-IP-CONTEXTUAL
+ 
+-- **Priorità:** bassa (latente → perimetro ampliato 2026-07-21) — ex BUG 3 declassato
++- **Priorità:** bassa (latente → perimetro ampliato 2026-07-21; discriminante raw ripristinato 0.10.46) — ex BUG 3 declassato
++- **Invariante:** multi-IP sullo stesso MAC **non collassa** nello store raw (fatti distinti).
++- **Stato raw:** **violato in 0.10.45** (`dedup_key` usava solo `entity_key` MAC-scoped → 5 IP → 1 riga). **Ripristinato in 0.10.46:** `entity_key` resta MAC; `compute_dedup_key` aggiunge discriminante IP (`fact_discriminant_for`). Identità ≠ dedup. Vedi [`docs/obs-wd-fix.md`](obs-wd-fix.md).
+ - **Perimetro definitivo:** multi-IP per ruolo (`primario` / `vpn` / `mgmt` / `servizi`). `endpoint.ip_change` **solo sul primario**. Casi noti:
+   - **FRITZ!Box** (asset 1): 5 IP contemporanei sullo stesso MAC — `.1.1` primario, `.1.9` VPN LAN, `.1.4`/`.1.5`/`.1.6` (ruolo TBD servizi/altro); ×223 `ip_change`/24h documentati poi silenziati.
+-  - **GS308EP** (asset 4): `.1.8` mgmt (fatto). `.3.20` = binding Fritz storico sullo stesso MAC, **ownership da confermare** (non inventariale; non SPAN — SPAN=p22/NIC2 `.3.24` / sink `10.255.255.2/30`). Vedi `docs/obs-ux-ip-308-verifica.md`.
++  - **GS308EP** (asset 4): `.1.8` mgmt (fatto). `.3.20` = binding Fritz storico sullo stesso MAC, **ownership da confermare** (non inventariale; non SPAN — SPAN=p22/NIC2 `.3.24` / sink `10.255.255.2/30`). Vedi [`docs/obs-ux-ip-308-verifica.md`](obs-ux-ip-308-verifica.md).
+   - **Cassiopea (ex-bond):** `DEBT-LAG-CASSIOPEA` **CHIUSO** 21/07/2026 (eth0 LAN / eth1 SPAN).
+-- **Nota architetturale:** il dedup raw per-MAC scarta le osservazioni L3 multi-IP (sul Fritz 4/5 IP perse nel raw, `hit_count≈5` ma `l3.ip` resta solo `.1.1`) mentre l’upsert legacy scrive comunque i binding e gli `ip_change`: le due pipeline divergono. Il fix dovrà includere `dedup_key` **MAC+IP** per le osservazioni L3.
+-- **Sintomo latente (BUG 3 originale):** in [`_resolve_ap_asset`](../api/app/services/topology.py) il fallback per-IP usa `is_current` invece di `resolve_asset_by_ip_at`. Oggi non gira (0 client Wi‑Fi IP-only su 41).
+-- **Fix quando servirà:** (1) ruoli IP + `ip_change` solo primario; (2) dedup L3 MAC+IP; (3) nel solo ramo (b) di `_resolve_ap_asset`, `resolve_asset_by_ip_at` + `observed_at`; tie→None→fall-through. NON toccare `is_current` alla cieca su multi-NIC storiche.
++- **Nota architetturale:** il dedup raw per-MAC scartava le osservazioni L3 multi-IP (sul Fritz 4/5 IP perse nel raw, `hit_count≈5` ma `l3.ip` resta solo `.1.1`) mentre l’upsert legacy scrive comunque i binding e gli `ip_change`: le due pipeline divergevano. Fix 0.10.46: `dedup_key` MAC+IP per L3.
++- **Sintomo latente (BUG 3 originale / consumatore di correttezza) — MIGRATO W5 (0.10.54):** [`_resolve_ap_asset`](../api/app/services/topology.py) usa ora `resolve_asset_by_ip_at(ap_ip, observed_at)` (contestuale) invece di `is_current`; tie → None → fall-through sul nome. Gate G5 a writer fermi: 62 associazioni Wi-Fi, 0 sul path `ap_ip` → **0 differenze** (fix latente, equivalenza-preservante). Il facet «consumatore di correntezza» di questo debito è chiuso; la cardinalità/ruolo multi-IP resta tracciata in **DEBT-IFACE-IP-CARDINALITY-ROLE** (pre-condizione W3). Vedi [`docs/obs-w5.md`](obs-w5.md).
++- **Copia ingest chiusa — W5-bis (0.10.55):** [`wifi_associations.resolve_ap_asset`](../api/app/services/wifi_associations.py) (risoluzione AP lato ingest Wi-Fi) era rimasta su `is_current` dopo la migrazione W5 della sola copia di `topology`; ora usa `resolve_asset_by_ip_at(ap_ip, observed_at)` con `observed_at` dall'associazione; tie → None → fall-through sul nome (I2). Equivalenza-preservante sui dati correnti (a ingest `observed_at ≈ now`). Copertura: `tests/test_w5_consumers.py` (contestuale + tie). Vedi [`docs/obs-w5bis.md`](obs-w5bis.md).
++- **Fix quando servirà:** (1) ruoli IP + `ip_change` solo primario; (2) dedup L3 MAC+IP *(fatto 0.10.46)*; (3) nel solo ramo (b) di `_resolve_ap_asset`, `resolve_asset_by_ip_at` + `observed_at`; tie→None→fall-through. NON toccare `is_current` alla cieca su multi-NIC storiche.
+ - **Riattivazione:** attribuzione topologia sbagliata su IP DHCP migrato, oppure ripresa del rumore `ip_change` multi-ruolo dopo unmute.
+-- **Stato FASE B (codice, 2026-07-21):** elezione + `role` + dedup `mac|ip` + `ip_change` solo primario — in tree, pre-deploy. Bonifica storica duplicate `(interface_id, ip)` resta fuori scope. UI secondari = FASE C.
++- **Stato FASE B (codice):** elezione + `role` + dedup `mac|ip` + `ip_change` solo primario — in tree. Bonifica storica duplicate `(interface_id, ip)` resta fuori scope. UI secondari = FASE C.
+ - **Bonifica storica:** eventuali righe duplicate `(interface_id, ip)` pre-FASE-B restano; niente UniqueConstraint finché non c’è purge dedicato (fuori scope).
+ 
++## DEBT-IFACE-IP-CARDINALITY-ROLE
++
++- **Priorità:** pre-condizione **W3** — aperto W4a 2026-07-26
++- **Cosa:** `asset.iface_ip` ha `cardinality=single` per interfaccia e il writer shadow registra **solo l’IP eletto** (`elect_interface_primary`). Sul Fritz (asset 1) esistono cinque IP simultanei (`.1.1` primario, `.1.9` VPN, `.1.4`/`.1.5`/`.1.6` servizi) — i non-eletti **non** compaiono nel layer assertion.
++- **I2:** assenza di un IP in `fact_assertions` **non** significa che l’IP non esista.
++- **W4b.3.3:** `current()` senza `excl_key` e con più righe `current` su cardinality `single` sceglie in silenzio per authority — collegato a questo debito; non collassare ora.
++- **Prima di W3:** `excl_key` deve acquisire il **ruolo** (`fact_key + interface_id + role`), cardinalità `scoped`. NON inventare i ruoli mancanti ora (K3).
++- **Vietato in W4a/W4b:** implementare il ruolo nella excl_key; collassare i doppi-current.
++- **Doc:** [`docs/obs-w4a.md`](obs-w4a.md) · legato a DEBT-TOPO-IP-CONTEXTUAL
++
++## DEBT-RH-BEFORE-REFRESH
++
++- **Priorità:** media (correttezza resolver) — aperto W4b 2026-07-27
++- **Cosa:** `_check_rh_conflict` gira **prima** di R-A refresh. Ogni refresh riesegue la scansione cross-fact; un valore già `current` può diventare `conflict_review` per un cambiamento altrove senza che l’osservazione in ingresso sia nuova.
++- **Vietato in W4b:** correggere l’ordine ora.
++- **Doc:** [`docs/obs-w4b.md`](obs-w4b.md)
++
++## DEBT-LASTSEEN-DUAL-SEMANTICS
++
++- **Priorità:** pre-condizione **W3** — aperto W-D-fix 2026-07-26
++- **Cosa:** `elect_interface_primary` scrive `last_seen = now` alla demotion (chiusura amministrativa di intervallo) nello stesso campo «ultima osservazione».
++- **Nota W3:** prima del backfill dichiarare per ogni campo quale semantica porta; le righe con `last_seen` amministrativo daranno `valid_to`, non un’osservazione.
++- **Vietato ora:** correggere / biforcare il campo in questa ondata.
++- **Doc:** [`docs/obs-wd-fix.md`](obs-wd-fix.md)
++
++## DEBT-FRITZ-TR064-CREDENTIALS
++
++- **Priorità:** operativa — **CHIUSO F0 2026-07-27**
++- **Chiusura misurata:** Michele ha ripristinato le chiavi in `.env`. `docker compose restart collector` **non** ricarica env (USERNAME/PASSWORD len=0 nel container → ancora 401). Dopo `up -d --force-recreate --no-deps collector`: chiavi presenti nel container; hostlist **94** host; mesh `available` **6** assoc; **0** occorrenze 401/`credentials_invalid` post-recreate. Valori segreti mai letti/riportati.
++- **Doc:** [`docs/obs-fritz-restore.md`](obs-fritz-restore.md)
++
++## DEBT-PRESENCE-SOURCE-OUTAGE
++
++- **Priorità:** alta (I2/I4 + churn boot) — aperto W4c 2026-07-27; **NON corretto in W4c** (W4c.5.2); **resta APERTO** con Fritz vivo (F0)
++- **Fatto misurato (W4b boot1):** `structural=4` — asset **136, 140, 145, 148** `meta.operational_state` `active` → `stale_unlocated`. AD finestra 24h sceso 69→62.
++- **Meccanismo:** `classify_asset` / `reconcile_trust_history` in [`api/app/services/trust.py`](../api/app/services/trust.py) (~170–189, ~474–489, ~618–621): senza `portal_last_seen` recente e senza protezione → bucket `stale_unlocated`. Con Fritz TR-064 muto i refresh hostlist non aggiornano la presenza → l’assenza della **sorgente** viene trattata come assenza del **dispositivo**.
++- **Principio:** quando la sorgente che copriva un device è indisponibile, lo stato corretto è «non misurato» / «copertura sorgente non disponibile», non «assente».
++- **F0 (Fritz vivo):** evidenza Fritz corrente su 88 asset; lift live solo **109** → `known` (non `confirmed_present`). **136** ha `discovery.fritz.active=True` ma resta `stale_unlocated` perché `lift_fritz_quarantine_on_active` esce solo da `fritz_historical`. Trust layer non corretto in F0/W4d.
++- **Vietato in W4c/F0:** correggere il trust layer. UI (F2 / **0.10.51**): banner Fritz + copy «copertura sorgente non disponibile».
++- **W-P (0.10.53) — trust layer corretto, debito NON chiuso:** `classify_asset` ora legge l'evidenza fritz-active fresca e deriva `known` (autorità fritz, mai `confirmed_present`); il lift non scrive più lo stato (evidenza→derivazione). Effetto misurato: 109 converge (fine oscillazione), 136 sollevato a `known`. Questo distingue «fritz vivo→known» da «fritz stale→stale/historical», MA **non** distingue ancora «sorgente non disponibile» (outage TR-064) da «dispositivo assente»: durante un'outage l'evidenza invecchia oltre la finestra e l'asset ridiscende. Serve un segnale di **copertura sorgente** (sensor_run/coverage) per chiudere. **RESTA APERTO** (non chiuso per prossimità, W-P.2.7).
++- **Doc:** [`docs/obs-w4c.md`](obs-w4c.md) · [`docs/obs-ux2.md`](obs-ux2.md) · [`docs/obs-fritz-restore.md`](obs-fritz-restore.md) · [`docs/obs-wp.md`](obs-wp.md)
++
+ ## DEBT-A2-CASCADE-AP
+ 
+ - **Priorità:** bassa (latente) — ex nota di confine BUG 1 / A2
+@@ -107,6 +378,7 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+ - **Priorità:** bassa / policy da progettare
+ - **Sintomo:** dopo triage stale FASE 2, resta la classe (d) `local_mac_con_ip` (MAC locally-administered con IP): a ogni rotazione privacy Wi‑Fi rifà apparire stale one-shot.
+ - **Origine:** MAC privacy (bit U/L) visti con IP in finestra breve; non ignorabili alla cieca come la classe (a) senza IP.
++- **O4 (parziale):** i MAC LAA sono riconosciuti strutturalmente (`randomized`); i segnali FDB S-A/S-C su LAA non salgono a priorità alta (al massimo nota). Non chiude il churn inventario.
+ - **Fix quando servirà:** policy TTL auto-ignore (es. local MAC + no curation + inactivity N giorni) — non ora.
+ - **Vietato ora:** bulk ignorato della (d); DELETE asset; merge/fusion ad hoc.
+ 
+diff --git a/observatory/web/src/assets/matrix.css b/observatory/web/src/assets/matrix.css
+index 2db90f5..239aeb0 100644
+--- a/observatory/web/src/assets/matrix.css
++++ b/observatory/web/src/assets/matrix.css
+@@ -61,7 +61,11 @@
+ }
+ 
+ * { box-sizing: border-box; }
+-html, body, #app { height: 100%; margin: 0; }
++html, body, #app {
++  min-height: 100%;
++  height: auto;
++  margin: 0;
++}
+ body {
+   font-family: var(--font-sans);
+   font-size: 14px;
+@@ -69,7 +73,10 @@ body {
+   line-height: 1.45;
+   background: var(--bg-0);
+   color: var(--text-1);
+-  overflow: hidden;
++  /* O9: overflow:hidden bloccava full-page capture (DEBT-OGGI-LAYOUT-OVERFLOW).
++     Lo scroll resta sul documento; .workspace non crea più un secondo scrollport. */
++  overflow-x: hidden;
++  overflow-y: auto;
+ }
+ 
+ a { color: var(--accent); text-decoration: none; }
+@@ -110,8 +117,8 @@ button.primary {
+ }
+ 
+ .app-shell {
+-  height: 100%;
+-  height: 100dvh;
++  min-height: 100%;
++  min-height: 100dvh;
+   display: grid;
+   grid-template-columns: var(--sidebar) 1fr;
+   position: relative;
+@@ -154,6 +161,19 @@ button.primary {
+   line-height: 1.35;
+   max-width: 100%;
+ }
++.nav-toggle {
++  display: none;
++  align-items: center;
++  gap: 0.4rem;
++  border: 0.5px solid var(--border);
++  background: var(--bg-1);
++  color: var(--text-1);
++  border-radius: var(--radius);
++  padding: 0.4rem 0.7rem;
++  font: inherit;
++  font-size: 0.9rem;
++  cursor: pointer;
++}
+ .nav-group {
+   margin-top: 0.3rem;
+   padding-top: 0.3rem;
+@@ -226,8 +246,8 @@ button.primary {
+ .pulse.down { background: var(--alert); }
+ 
+ .workspace {
+-  height: 100%;
+-  overflow: auto;
++  min-height: 0;
++  overflow: visible;
+   position: relative;
+   z-index: 1;
+   padding: 1.25rem 1.5rem 2rem;
+@@ -760,6 +780,7 @@ button.primary {
+ 
+ @media (max-width: 800px) {
+   .app-shell { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
++  /* D3: barra compatta (brand + hamburger + utente); il menu si apre a comparsa. */
+   .sidebar {
+     flex-direction: row;
+     flex-wrap: wrap;
+@@ -767,37 +788,57 @@ button.primary {
+     border-right: none;
+     border-bottom: 1px solid var(--line);
+     padding: 0.6rem;
++    gap: 0.5rem;
+   }
+   .brand {
+     padding: 0.25rem 0.5rem;
+-    max-width: min(100%, 12rem);
++    max-width: min(100%, 14rem);
+     min-width: 0;
++    flex: 0 1 auto;
+   }
+-  .calibration-chrome {
+-    flex: 1 1 auto;
+-    min-width: 0;
+-    max-width: 11rem;
++  .nav-toggle {
++    display: inline-flex;
++    order: 1;
+   }
++  /* Collassati per default: compaiono solo a menu aperto, a piena larghezza. */
++  .calibration-chrome,
+   .nav {
++    display: none;
++  }
++  .sidebar-foot {
++    margin: 0 0 0 auto;
++    border: none;
++    padding: 0;
+     display: flex;
+-    flex-wrap: wrap;
+-    gap: 0.2rem;
++    align-items: center;
++    gap: 0.5rem;
++    order: 2;
++  }
++  .sidebar.nav-open .calibration-chrome {
++    display: block;
++    order: 3;
++    flex: 1 1 100%;
++    max-width: 100%;
+     min-width: 0;
+-    flex: 1 1 auto;
++    padding: 0.2rem 0.2rem 0;
++  }
++  .sidebar.nav-open .nav {
++    display: flex;
++    flex-direction: column;
++    order: 4;
++    flex: 1 1 100%;
++    gap: 0.35rem;
+     overflow: visible;
++    margin-top: 0.2rem;
+   }
+-  .nav-group {
++  .sidebar.nav-open .nav-group {
+     margin: 0;
+-    padding: 0 0 0 0.25rem;
+-    border-top: 0;
+-    border-left: 2px solid color-mix(in srgb, var(--accent) 25%, transparent);
+-    display: flex;
+-    flex-wrap: wrap;
+-    gap: 0.15rem;
++    padding-top: 0.35rem;
++  }
++  .sidebar.nav-open .nav a {
++    margin: 0;
++    padding: 0.6rem 0.7rem;
+   }
+-  .nav-label { display: none; }
+-  .nav a { margin: 0; }
+-  .sidebar-foot { margin: 0; border: none; padding: 0; display: flex; align-items: center; gap: 0.5rem; margin-left: auto; }
+   .workspace { min-width: 0; min-height: 0; }
+ }
+ 
+diff --git a/observatory/web/src/views/Oggi.vue b/observatory/web/src/views/Oggi.vue
+index 02c5a44..dd3b9a7 100644
+--- a/observatory/web/src/views/Oggi.vue
++++ b/observatory/web/src/views/Oggi.vue
+@@ -4,6 +4,7 @@ import { useRouter } from "vue-router";
+ import { api } from "../api";
+ import {
+   composeDevices,
++  isLocallyAdministered,
+   isNuovoDaConoscere,
+   sourceLabel,
+ } from "../inventoryDevices";
+@@ -11,7 +12,23 @@ import {
+   buildTriageRows,
+   noiseProposalIds,
+   noiseProposalsMissingIdCount,
++  queueConservationCheck,
+ } from "../triageRules";
++import { buildChassisNameCards } from "../oggiChassis";
++import {
++  DEFENSE_PRIORITY_LEGEND,
++  compareDefensePriority,
++  priorityForChassisCard,
++  priorityForFdbCard,
++  priorityForMove,
++  priorityForNuovo,
++  priorityForTriageRow,
++} from "../oggiPriority";
++import {
++  groupSuppressionsByRule,
++  listStructuralSuppressions,
++  suppressedProposalIdSet,
++} from "../oggiNoise";
+ import {
+   displayCurrentName,
+   displayIp,
+@@ -24,6 +41,8 @@ import {
+   verdictTone,
+ } from "../oggiTriage";
+ import {
++  chassisNameFields,
++  fdbDefenseFields,
+   humanVerificaLabel,
+   moveSuggestionFields,
+   nameProblemFields,
+@@ -35,7 +54,8 @@ import DenseRow from "../components/ui/DenseRow.vue";
+ import StatusBadge from "../components/ui/StatusBadge.vue";
+ import AiInferenceLabel from "../components/AiInferenceLabel.vue";
+ import ViewStateBanner from "../components/ViewStateBanner.vue";
+-import { isAiSource } from "../observatoryUx";
++import { isAiSource, fritzPresenceOutageFromReliability } from "../observatoryUx";
++import FritzOutageBanner from "../components/FritzOutageBanner.vue";
+ 
+ const router = useRouter();
+ const loading = ref(false);
+@@ -44,25 +64,95 @@ const assets = ref([]);
+ const chassisPayload = ref({ chassis: [] });
+ const monitors = ref([]);
+ const moveSuggestions = ref([]);
++const plantSwitches = ref([]);
++const factConflicts = ref([]);
++const fdbDefense = ref({ cards: [], baseline_at_by_port: {}, roles: [] });
+ const busyKey = ref("");
+ const rumoreExpanded = ref(false);
+ const rumorePreviewOpen = ref(false);
++const suppressedOpen = ref(false);
++const restoredSuppressionIds = ref(new Set());
+ const massBusy = ref(false);
+ /** Esito massa: distinto da error; non azzerato da load(). */
+ const notice = ref("");
++const reliability = ref(null);
++const fritzOutage = computed(() => fritzPresenceOutageFromReliability(reliability.value));
++/** O1: draft rename per chassis_id */
++const renameDraft = ref({});
++const renameOpen = ref({});
++
++const defenseLegend = DEFENSE_PRIORITY_LEGEND;
+ 
+ const devices = computed(() => composeDevices(assets.value, chassisPayload.value));
+ 
+-const triageRows = computed(() =>
++const orphanNameFacts = computed(
++  () => chassisPayload.value?.orphaned_manual_name_facts || [],
++);
++
++const chassisNameCards = computed(() => {
++  const cards = buildChassisNameCards(assets.value || [], chassisPayload.value || {});
++  return cards
++    .map((c) => ({ ...c, defense_priority: priorityForChassisCard(c) }))
++    .sort(compareDefensePriority);
++});
++
++const hiddenProposalIds = computed(() =>
++  suppressedProposalIdSet(assets.value || [], restoredSuppressionIds.value),
++);
++
++const structuralSuppressions = computed(() =>
++  listStructuralSuppressions(assets.value || []).filter(
++    (s) =>
++      s.demote_only ||
++      !restoredSuppressionIds.value.has(Number(s.proposal_id)),
++  ),
++);
++
++const suppressionsByRule = computed(() =>
++  groupSuppressionsByRule(structuralSuppressions.value),
++);
++
++const triageRowsRaw = computed(() =>
+   buildTriageRows(assets.value || [], chassisPayload.value || {}),
+ );
++
++const triageRows = computed(() => {
++  const hidden = hiddenProposalIds.value;
++  const byId = new Map((assets.value || []).map((a) => [Number(a.id), a]));
++  return triageRowsRaw.value
++    .filter((r) => r.proposal_id == null || !hidden.has(Number(r.proposal_id)))
++    .map((r) => {
++      const asset = byId.get(Number(r.asset_id));
++      const macs = r.macs?.length ? r.macs : asset?.macs || [];
++      const ips = r.ips?.length ? r.ips : asset?.ips || [];
++      const solo_l2 = macs.length > 0 && !(ips || []).length;
++      let defense_priority = priorityForTriageRow(r, { solo_l2 });
++      if (solo_l2) {
++        defense_priority = priorityForTriageRow(r, { solo_l2: true });
++      }
++      const laa = (macs || []).some((m) => isLocallyAdministered(m));
++      return {
++        ...r,
++        defense_priority,
++        laa_demoted: laa,
++        laa_reason: laa
++          ? "MAC locally-administered · mai priorità alta (regola mac_randomizzato)"
++          : null,
++      };
++    })
++    .sort(compareDefensePriority);
++});
++
+ const triageGroups = computed(() => groupTriageRows(triageRows.value));
+ const verificaSplit = computed(() => splitVerifica(triageGroups.value.verifica));
+ 
+ /** D10: tutte le pending rumore (anche 2º livello), non solo top di griglia. */
+-const noiseIds = computed(() =>
+-  noiseProposalIds(assets.value || [], chassisPayload.value || {}),
+-);
++const noiseIds = computed(() => {
++  const hidden = hiddenProposalIds.value;
++  return noiseProposalIds(assets.value || [], chassisPayload.value || {}).filter(
++    (id) => !hidden.has(Number(id)),
++  );
++});
+ const rumoreMissingIds = computed(() =>
+   noiseProposalsMissingIdCount(assets.value || [], chassisPayload.value || {}),
+ );
+@@ -75,6 +165,13 @@ const rumoreAssetCount = computed(() => {
+   }
+   return n;
+ });
++
++const conservation = computed(() =>
++  queueConservationCheck(assets.value || [], chassisPayload.value || {}, {
++    hiddenProposalIds: hiddenProposalIds.value,
++  }),
++);
++
+ const newItems = computed(() => {
+   return devices.value
+     .filter((d) => isNuovoDaConoscere(d))
+@@ -87,6 +184,8 @@ const newItems = computed(() => {
+         ? `${d.macs?.[0] || "—"} · visto di recente`
+         : `nessun nome · ${d.vendor || "vendor sconosciuto"}`,
+       age: d.portal_last_seen || d.last_seen || "",
++      defense_priority: priorityForNuovo(),
++      actions: ["dossier"],
+     }));
+ });
+ 
+@@ -111,31 +210,75 @@ const monitorItems = computed(() => {
+     }));
+ });
+ 
+-const moveItems = computed(() =>
+-  (moveSuggestions.value || [])
++const moveItems = computed(() => {
++  const portsById = new Map();
++  for (const sw of plantSwitches.value || []) {
++    for (const p of sw.ports || []) {
++      portsById.set(Number(p.id), { port: p, sw });
++    }
++  }
++  return (moveSuggestions.value || [])
+     .filter((s) => (s.kind || "") === "move" && (s.status || "pending") === "pending")
+-    .map(moveSuggestionFields),
+-);
++    .map((s) => {
++      const payload = s.payload || {};
++      const toId = Number(payload.to_port_id || payload.port_id || 0);
++      const fromId = Number(payload.from_port_id || 0);
++      const hit = portsById.get(toId) || portsById.get(fromId) || null;
++      const fields = moveSuggestionFields(s, {
++        last_fdb_at: hit?.port?.last_fdb_at || payload.last_fdb_at || null,
++        switch_name: hit?.sw?.name || payload.switch_name || null,
++        port_label:
++          hit?.port?.port_path_label ||
++          payload.to_port_label ||
++          payload.from_port_label ||
++          null,
++      });
++      return { ...fields, defense_priority: priorityForMove(fields) };
++    })
++    .sort(compareDefensePriority);
++});
+ 
+ const noisePreview = computed(() =>
+   noiseArchivePreview(assets.value || [], noiseIds.value || []),
+ );
+ 
+ const secondaryQueue = computed(() => {
+-  return [...newItems.value, ...monitorItems.value].sort((a, b) =>
+-    String(b.age).localeCompare(String(a.age)),
+-  );
++  return [...newItems.value, ...monitorItems.value].sort((a, b) => {
++    const dp = compareDefensePriority(a, b);
++    if (dp !== 0) return dp;
++    return String(b.age).localeCompare(String(a.age));
++  });
+ });
+ 
++const fdbDefenseCards = computed(() =>
++  (fdbDefense.value?.cards || [])
++    .map((c) => ({ ...c, defense_priority: priorityForFdbCard(c) }))
++    .sort(compareDefensePriority),
++);
++
+ const emptyAll = computed(
+   () =>
+     !triageRows.value.length &&
++    !chassisNameCards.value.length &&
+     !newItems.value.length &&
+     !monitorItems.value.length &&
+     !moveItems.value.length &&
+-    !noiseIds.value.length,
++    !noiseIds.value.length &&
++    !factConflicts.value.length &&
++    !fdbDefenseCards.value.length,
+ );
+ 
++function restoreSuppression(proposalId) {
++  const next = new Set(restoredSuppressionIds.value);
++  next.add(Number(proposalId));
++  restoredSuppressionIds.value = next;
++}
++
++function defensePriorityLabel(p) {
++  if (!p) return "—";
++  return `P${p.level} · ${p.label}`;
++}
++
+ const verificaBlocks = computed(() => [
+   {
+     key: "collide",
+@@ -164,16 +307,24 @@ async function load() {
+   error.value = "";
+   // notice NON azzerato qui (E1): sopravvive al reload post-massa
+   try {
+-    const [a, c, m, s] = await Promise.all([
++    const [a, c, m, s, fc, rel, sw, fdb] = await Promise.all([
+       api.assets({ include_historical: "true", all_proposals: "true" }),
+       api.chassis(),
+       api.monitors(),
+       api.suggestions().catch(() => []),
++      api.factConflicts().catch(() => ({ conflicts: [] })),
++      api.reliability().catch(() => null),
++      api.switches().catch(() => []),
++      api.fdbDefenseSignals().catch(() => ({ cards: [], roles: [] })),
+     ]);
+     assets.value = a;
+     chassisPayload.value = c;
+     monitors.value = Array.isArray(m) ? m : m?.monitors || [];
+     moveSuggestions.value = Array.isArray(s) ? s : [];
++    factConflicts.value = (fc && fc.conflicts) || [];
++    reliability.value = rel;
++    plantSwitches.value = Array.isArray(sw) ? sw : [];
++    fdbDefense.value = fdb && typeof fdb === "object" ? fdb : { cards: [] };
+   } catch (e) {
+     error.value = e.message || "Caricamento fallito";
+   } finally {
+@@ -204,10 +355,244 @@ function problemFields(row) {
+   return nameProblemFields(row);
+ }
+ 
++function chassisFields(card) {
++  return chassisNameFields(card);
++}
++
++function fdbFields(card) {
++  return fdbDefenseFields(card);
++}
++
++async function ackFdb(card, action) {
++  const key = `fdb-${card.uid}-${action}`;
++  busyKey.value = key;
++  notice.value = "";
++  try {
++    let reason = "";
++    if (action === "ignore") {
++      reason = window.prompt("Motivo (obbligatorio per Ignora):", "") || "";
++      if (!reason.trim()) {
++        notice.value = "Ignora annullato: motivo assente.";
++        return;
++      }
++    }
++    await api.fdbDefenseAck({
++      uid: card.uid,
++      action,
++      reason,
++      signal_key: card.signal_key || "",
++    });
++    notice.value = `FDB ${card.signal}: ${action}`;
++    await load();
++  } catch (e) {
++    error.value = e.message || "Ack FDB fallito";
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++function fdbActionClick(card, actionId) {
++  if (actionId === "dossier") {
++    if (card.signal === "P6" && card.device?.asset_id) {
++      router.push({ path: `/dossier/${card.device.asset_id}`, query: { from: "oggi" } });
++      return;
++    }
++    // FDB ≠ identity: open plant for port context; dossier when mac search later.
++    router.push({ path: "/plant", query: { from: "oggi", fdb_mac: card.mac || "" } });
++    return;
++  }
++  if (actionId === "assign") {
++    router.push({
++      path: "/gs308",
++      query: { from: "oggi", mac: card.mac || "", refresh: String(Date.now()) },
++    });
++    return;
++  }
++  if (actionId === "open_plant") {
++    router.push({ path: "/plant", query: { from: "oggi", switch: card.switch_code || "" } });
++    return;
++  }
++  return ackFdb(card, actionId);
++}
++
++function chassisDisplayName(card) {
++  if (card?.display_name == null || String(card.display_name).trim() === "") {
++    return "nome non noto";
++  }
++  return String(card.display_name).trim();
++}
++
++function chassisProvenanceLabel(card) {
++  if (card.name_kind === "absent") return "assenza dichiarata";
++  if (card.name_kind === "inference") {
++    const src = card.name_source || "sconosciuta";
++    const conf =
++      card.name_confidence != null
++        ? ` · ${formatConfidencePct(card.name_confidence)}`
++        : "";
++    return `inferenza ${src}${conf}`;
++  }
++  if (card.name_kind === "legacy_manual") {
++    return "manuale, registrato sull'interfaccia — non ancora fatto d'apparato";
++  }
++  if (card.name_kind === "fact") {
++    if (card.held_name_is_manual || card.name_source === "manual") {
++      return "fatto manuale (apparato)";
++    }
++    return `fatto ${card.name_source || "?"} (apparato)`;
++  }
++  return `provenienza ${card.name_source || "?"}`;
++}
++
++function openRename(card) {
++  renameOpen.value = { ...renameOpen.value, [card.chassis_id]: true };
++  renameDraft.value = {
++    ...renameDraft.value,
++    [card.chassis_id]: card.display_name || "",
++  };
++}
++
++async function submitChassisRename(card) {
++  const cid = card.chassis_id;
++  const name = String(renameDraft.value[cid] || "").trim();
++  if (!name) {
++    error.value = "Serve un nome non vuoto.";
++    return;
++  }
++  if (!confirmChassisNameWrite(name)) return;
++  const key = card.key;
++  busyKey.value = key;
++  error.value = "";
++  notice.value = "";
++  try {
++    // O1.2: always chassis subject — never member adopt.
++    await api.renameChassis(cid, name);
++    renameOpen.value = { ...renameOpen.value, [cid]: false };
++    await load();
++  } catch (e) {
++    error.value = friendlyChassisError(e);
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++async function adoptChassisProposal(card) {
++  if (!card.chassis_id || !card.proposed_name) return;
++  if (!confirmChassisNameWrite(card.proposed_name)) return;
++  const key = card.key;
++  busyKey.value = key;
++  error.value = "";
++  notice.value = "";
++  try {
++    await api.adoptChassisName(card.chassis_id, {
++      source: card.proposed_source || "manual",
++      value: card.proposed_name,
++      proposalId: card.proposal_id,
++    });
++    await load();
++  } catch (e) {
++    error.value = friendlyChassisError(e);
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++async function confirmInferenceAsManual(card) {
++  if (!card.chassis_id || !card.display_name) return;
++  if (!confirmChassisNameWrite(card.display_name)) return;
++  const key = card.key;
++  busyKey.value = key;
++  error.value = "";
++  notice.value = "";
++  try {
++    await api.adoptChassisName(card.chassis_id, {
++      source: "manual",
++      value: card.display_name,
++    });
++    await load();
++  } catch (e) {
++    error.value = friendlyChassisError(e);
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++/**
++ * O9 X3 — avviso pre-scrittura fatto a soggetto chassis.
++ * DEBT-CHASSIS-SUBJECT-ID-CHURN: l'id chassis non è stabile al ri-raggruppamento;
++ * non disabilita l'azione e non tocca FA 251.
++ */
++function confirmChassisNameWrite(value) {
++  const name = String(value || "").trim() || "(nome)";
++  return window.confirm(
++    `Confermi «${name}» come nome d'apparato?\n\n` +
++      "Nota: dopo un ri-raggruppamento automatico delle interfacce potrebbe " +
++      "servire riconfermare il nome (l'id chassis non è ancora stabile — " +
++      "DEBT-CHASSIS-SUBJECT-ID-CHURN).",
++  );
++}
++
++async function keepManualRejectProposal(card) {
++  if (!card.proposal_asset_id || !card.proposed_source) {
++    error.value = "Proposta non archiviabile: manca l'id membro.";
++    return;
++  }
++  const key = card.key;
++  busyKey.value = key;
++  error.value = "";
++  notice.value = "";
++  try {
++    await api.rejectNameProposal(
++      card.proposal_asset_id,
++      card.proposed_source,
++      card.proposal_id,
++    );
++    await load();
++  } catch (e) {
++    error.value = friendlyChassisError(e);
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++/** O1.2: never surface raw 409 chassis_subject_required to the user. */
++function friendlyChassisError(e) {
++  const msg = e?.message || String(e);
++  if (/chassis_subject_required/i.test(msg)) {
++    return "Adozione sul membro non consentita: usa Correggi/Adotta sulla card apparato.";
++  }
++  return msg;
++}
++
+ async function adoptRow(row) {
+-  if (row.chassis_member) {
++  // W4b.2.9 / O1.2: if chassis-scoped, always call chassis API — never member.
++  const chassisId = row.chassis_id;
++  const needsChassis =
++    row.chassis_member ||
++    row.actionable_reason === "chassis_multi_nic_adopt_blocked" ||
++    (chassisId && row.verdict === "chassis");
++  if (needsChassis && chassisId && row.proposed_name) {
++    const key = row.key;
++    busyKey.value = key;
++    error.value = "";
++    notice.value = "";
++    try {
++      await api.adoptChassisName(chassisId, {
++        source: row.source || "manual",
++        value: row.proposed_name,
++        proposalId: row.proposal_id,
++      });
++      await load();
++    } catch (e) {
++      error.value = friendlyChassisError(e);
++    } finally {
++      busyKey.value = "";
++    }
++    return;
++  }
++  if (row.actionable === false || row.verdict === "unresolvable") {
+     error.value =
+-      "Adozione bloccata: membro di chassis multi-NIC. Serve rename a livello chassis.";
++      "Proposta non risolvibile: nessuna azione disponibile su questa card.";
+     return;
+   }
+   const key = row.key;
+@@ -218,12 +603,35 @@ async function adoptRow(row) {
+     await api.adoptName(row.asset_id, row.source);
+     await load();
+   } catch (e) {
+-    error.value = e.message || String(e);
++    error.value = friendlyChassisError(e);
+   } finally {
+     busyKey.value = "";
+   }
+ }
+ 
++function showAdoptButton(row) {
++  if (row.actionable === false || row.verdict === "unresolvable") {
++    return (
++      row.actionable_reason === "chassis_multi_nic_adopt_blocked" &&
++      !!row.chassis_id &&
++      !!row.proposed_name
++    );
++  }
++  // O1: chassis_member rows should not appear; if they do, still allow chassis adopt.
++  if (row.chassis_member) return !!row.chassis_id && !!row.proposed_name;
++  return true;
++}
++
++function adoptButtonLabel(row) {
++  if (
++    row.chassis_member ||
++    row.actionable_reason === "chassis_multi_nic_adopt_blocked"
++  ) {
++    return "adotta (apparato)";
++  }
++  return "adotta";
++}
++
+ async function rejectRow(row) {
+   const key = row.key;
+   busyKey.value = key;
+@@ -329,7 +737,14 @@ function presenceLabel(state) {
+   if (s === "present") return "presente";
+   if (s === "recent") return "recente";
+   if (s === "fritz_only") return "solo Fritz";
+-  if (s === "stale") return "non visto di recente";
++  if (s === "stale_unlocated" || s === "presence_source_outage" || s === "source_outage") {
++    return "copertura sorgente non disponibile";
++  }
++  if (s === "stale") {
++    return fritzOutage.value?.active
++      ? "copertura sorgente non disponibile"
++      : "non visto di recente";
++  }
+   return s;
+ }
+ 
+@@ -342,13 +757,231 @@ onMounted(load);
+       title="Oggi"
+       help="Coda unica di interventi: nomi, chassis multi-NIC, porte da confermare, device nuovi e monitor. Priorità e cause in italiano."
+     />
++    <FritzOutageBanner
++      :active="fritzOutage.active"
++      :detail="fritzOutage.detail"
++    />
+     <ViewStateBanner v-if="error" kind="error" :message="error" />
+     <ViewStateBanner v-else-if="notice && (notice.includes('saltate') || notice.includes('non trovate'))" kind="partial" :message="notice" />
+     <p v-else-if="notice" class="oggi-notice" role="status">{{ notice }}</p>
+     <ViewStateBanner v-if="loading" kind="loading" />
+     <template v-if="!loading">
++      <section class="oggi-legend" aria-label="Legenda priorità difensiva">
++        <h2 class="oggi-h2">Priorità per conseguenza difensiva</h2>
++        <ol class="oggi-legend-list">
++          <li v-for="L in defenseLegend" :key="L.id">
++            <strong>P{{ L.level }}</strong> — {{ L.label }}
++          </li>
++        </ol>
++        <p class="oggi-muted-inline">
++          Ogni riga mostra la regola che ha prodotto la posizione. Nessun ordinamento magico.
++        </p>
++      </section>
++      <nav class="oggi-quick" aria-label="Domande rapide da Oggi">
++        <p class="oggi-quick-title">Domande rapide (≤3 passi)</p>
++        <ul class="oggi-quick-list">
++          <li>
++            <a href="#oggi-fdb">Non riconosciuto / solo-L2 adesso?</a>
++            <span class="oggi-muted-inline">→ FDB P1 / Nuovi</span>
++          </li>
++          <li>
++            <router-link to="/plant">MAC dove è attaccato?</router-link>
++            <span class="oggi-muted-inline">→ Impianto (cerca MAC)</span>
++          </li>
++          <li>
++            <a href="#oggi-secondary">Già visto o nuovo?</a>
++            <span class="oggi-muted-inline">→ coda secondaria Nuovi</span>
++          </li>
++          <li>
++            <a href="#oggi-fdb">Sorgente cieca?</a>
++            <span class="oggi-muted-inline">→ FDB P4 / S-D</span>
++          </li>
++          <li>
++            <router-link to="/gs308">Dietro il GS308EP?</router-link>
++            <span class="oggi-muted-inline">→ vista punto cieco</span>
++          </li>
++        </ul>
++      </nav>
++      <div
++        v-if="orphanNameFacts.length"
++        class="oggi-orphan"
++        data-testid="o8-orphan-name-facts"
++        role="status"
++      >
++        <strong>Fatto nome chassis orfano (non ri-puntato)</strong>
++        <ul>
++          <li v-for="o in orphanNameFacts" :key="'orf-' + o.id">
++            FA {{ o.id }} · {{ o.fact_key }}={{ o.value_norm }} · subject chassis
++            {{ o.subject_id }} (inesistente) · {{ o.source }}/{{ o.authority }} ·
++            {{ o.state }}. Non usato sul chassis corrente.
++            <code>{{ o.debt }}</code>
++          </li>
++        </ul>
++        <p class="oggi-muted-inline">{{ chassisPayload.orphan_policy }}</p>
++      </div>
++      <div
++        v-if="conservation.missing.length || conservation.duplicated.length"
++        class="oggi-discarded"
++        role="alert"
++      >
++        Conservazione coda: missing=[{{ conservation.missing.join(", ") }}]
++        duplicated=[{{ conservation.duplicated.join(", ") }}]
++      </div>
++      <div
++        v-if="fdbDefense.discarded_moves && fdbDefense.discarded_moves.count"
++        class="oggi-discarded"
++        data-testid="o4-discarded-moves"
++      >
++        <strong>{{ fdbDefense.discarded_moves.count }} eventi mac_move scartati</strong>
++        — {{ fdbDefense.discarded_moves.note }}
++        (<code>{{ fdbDefense.discarded_moves.debt }}</code>). Non cancellati.
++      </div>
+       <ViewStateBanner v-if="emptyAll && !error" kind="empty" message="Niente in coda. La rete non richiede interventi adesso." />
+       <template v-if="!emptyAll">
++        <!-- W4b.2.6: R-H conflict review (no auto-rename) -->
++        <section v-if="factConflicts.length" class="oggi-section">
++          <div class="oggi-section-head">
++            <h2 class="oggi-h2">Conflitti da verificare</h2>
++            <span class="oggi-counts">{{ factConflicts.length }} · R-H</span>
++          </div>
++          <div
++            v-for="c in factConflicts"
++            :key="'cf-' + c.id"
++            class="oggi-grid-row oggi-problem"
++          >
++            <DenseRow metric-width="0" value-width="auto">
++              <div class="oggi-grid-main">
++                <div class="oggi-names">
++                  <span class="oggi-prop">{{ c.incumbent_value || "?" }}</span>
++                  <span class="oggi-vs">vs</span>
++                  <span class="oggi-cur">{{ c.value }}</span>
++                  <StatusBadge tone="attn" label="conflitto" />
++                </div>
++                <dl class="oggi-fields">
++                  <div>
++                    <dt>Priorità</dt>
++                    <dd>alta</dd>
++                  </div>
++                  <div>
++                    <dt>Causa ed evidenza</dt>
++                    <dd>
++                      Contraddizione forte tra
++                      «{{ c.incumbent_value }}» ({{ c.incumbent_source || "?" }},
++                      auth {{ c.incumbent_authority ?? "?" }}) e
++                      «{{ c.value }}» ({{ c.source }}, auth {{ c.authority }}).
++                      Occorrenze: {{ c.occurrences || 1 }}.
++                    </dd>
++                  </div>
++                  <div>
++                    <dt>Impatto</dt>
++                    <dd>Il current resta invariato; nessun auto-rename.</dd>
++                  </div>
++                  <div>
++                    <dt>Se ignori</dt>
++                    <dd>Il conflitto resta in coda R-H finché non scegli un lato o lo risolvi altrove.</dd>
++                  </div>
++                  <div>
++                    <dt>Se agisci</dt>
++                    <dd>Confermi quale valore è il current — l’altro resta storico/divergenza.</dd>
++                  </div>
++                  <div>
++                    <dt>Azione raccomandata</dt>
++                    <dd>Apri il Dossier e conferma a mano quale valore tenere.</dd>
++                  </div>
++                </dl>
++              </div>
++              <template #value>
++                <div class="oggi-actions">
++                  <button
++                    v-if="c.subject_type === 'asset' || c.subject_type === 'chassis'"
++                    type="button"
++                    class="oggi-btn primary"
++                    @click="openDossier(c.subject_id)"
++                  >
++                    apri Dossier
++                  </button>
++                </div>
++              </template>
++            </DenseRow>
++          </div>
++        </section>
++        <!-- O4: FDB defensive signals S-A..S-D -->
++        <section v-if="fdbDefenseCards.length" id="oggi-fdb" class="oggi-section">
++          <div class="oggi-section-head">
++            <h2 class="oggi-h2">FDB · sensore difensivo</h2>
++            <span class="oggi-counts">{{ fdbDefenseCards.length }} · S-A…S-D</span>
++          </div>
++          <div
++            v-for="card in fdbDefenseCards"
++            :key="'fdb-' + card.uid"
++            class="oggi-grid-row oggi-problem"
++          >
++            <DenseRow metric-width="0" value-width="auto">
++              <div class="oggi-grid-main">
++                <div class="oggi-names">
++                  <span class="oggi-prop">{{ fdbFields(card).title }}</span>
++                  <StatusBadge
++                    :tone="fdbFields(card).priority === 'alta' ? 'attn' : 'neutral'"
++                    :label="card.signal + ' · ' + fdbFields(card).priority"
++                  />
++                </div>
++                <div class="oggi-meta">
++                  <span v-if="card.mac" class="mono">{{ card.mac }}</span>
++                  <span v-if="card.switch_code">{{ card.switch_code }}:{{ card.port_number }}</span>
++                  <span v-if="card.ruolo_porta">ruolo {{ card.ruolo_porta }}</span>
++                  <span v-if="fdbFields(card).baseline_at">baseline {{ fdbFields(card).baseline_at }}</span>
++                </div>
++                <dl class="oggi-fields">
++                  <div><dt>Priorità</dt><dd>{{ defensePriorityLabel(card.defense_priority) }}</dd></div>
++                  <div><dt>Regola</dt><dd>{{ card.defense_priority?.rule }}</dd></div>
++                  <div v-if="card.defense_priority?.role_uncertain"><dt>Nota</dt><dd>ruolo_porta non_determinato · priorità ridotta</dd></div>
++                  <div><dt>Causa ed evidenza</dt><dd>{{ fdbFields(card).cause }}</dd></div>
++                  <div><dt>Impatto</dt><dd>{{ fdbFields(card).impact }}</dd></div>
++                  <div><dt>Azione raccomandata</dt><dd>{{ fdbFields(card).action }}</dd></div>
++                  <div><dt>Certezza</dt><dd>{{ fdbFields(card).certainty }}</dd></div>
++                </dl>
++                <div
++                  v-if="card.inference"
++                  class="oggi-inference"
++                  data-kind="inference"
++                >
++                  <strong>{{ card.inference.label || "INFERENZA" }}</strong>
++                  <p class="oggi-inference-disc">{{ card.inference.disclaimer }}</p>
++                  <ul>
++                    <li
++                      v-for="(it, idx) in (card.inference.items || [])"
++                      :key="'inf-' + card.uid + '-' + idx"
++                    >
++                      {{ it.label }}
++                      <span class="mono"> · fonte {{ it.source }} · confidenza {{ it.confidence }}</span>
++                    </li>
++                  </ul>
++                  <p
++                    v-if="card.inference.llm_slot && !card.inference.llm_slot.enabled"
++                    class="oggi-inference-disc"
++                  >
++                    Slot LLM disattivato: {{ card.inference.llm_slot.reason }}
++                  </p>
++                </div>
++              </div>
++              <template #value>
++                <div class="oggi-actions">
++                  <button
++                    v-for="act in (card.actions || [])"
++                    :key="act.id"
++                    type="button"
++                    class="oggi-btn"
++                    :class="{ primary: act.id === 'acknowledge' || act.id === 'dossier' }"
++                    :disabled="busyKey.startsWith('fdb-' + card.uid)"
++                    @click="fdbActionClick(card, act.id)"
++                  >
++                    {{ act.label }}
++                  </button>
++                </div>
++              </template>
++            </DenseRow>
++          </div>
++        </section>
+         <!-- Porte / FDB move (ex /suggestions) -->
+         <section v-if="moveItems.length" class="oggi-section">
+           <div class="oggi-section-head">
+@@ -360,10 +993,14 @@ onMounted(load);
+               <div class="oggi-grid-main">
+                 <div class="oggi-names">
+                   <span class="oggi-prop">{{ item.title }}</span>
+-                  <StatusBadge tone="attn" :label="verdictLabelIt('move')" />
++                  <StatusBadge
++                    :tone="item.priority === 'alta' ? 'attn' : 'neutral'"
++                    :label="verdictLabelIt('move')"
++                  />
+                 </div>
+                 <dl class="oggi-fields">
+-                  <div><dt>Priorità</dt><dd>{{ item.priority }}</dd></div>
++                  <div><dt>Priorità</dt><dd>{{ defensePriorityLabel(item.defense_priority) }}</dd></div>
++                  <div><dt>Regola</dt><dd>{{ item.defense_priority?.rule }}</dd></div>
+                   <div><dt>Causa ed evidenza</dt><dd>{{ item.cause }}</dd></div>
+                   <div><dt>Impatto</dt><dd>{{ item.impact }}</dd></div>
+                   <div><dt>Azione raccomandata</dt><dd>{{ item.action }}</dd></div>
+@@ -404,6 +1041,154 @@ onMounted(load);
+           </div>
+         </section>
+ 
++        <!-- O1: una card per apparato multi-interfaccia (soggetto chassis) -->
++        <section v-if="chassisNameCards.length" class="oggi-section">
++          <div class="oggi-section-head">
++            <h2 class="oggi-h2">Apparati multi-interfaccia</h2>
++            <span class="oggi-counts">{{ chassisNameCards.length }} · nome a livello apparato</span>
++          </div>
++          <div
++            v-for="card in chassisNameCards"
++            :key="card.key"
++            class="oggi-grid-row oggi-problem"
++          >
++            <DenseRow metric-width="0" value-width="auto">
++              <div class="oggi-grid-main">
++                <div class="oggi-names">
++                  <span
++                    class="oggi-cur"
++                    :class="{ 'oggi-name-absent': card.name_kind === 'absent' }"
++                  >{{ chassisDisplayName(card) }}</span>
++                  <template v-if="card.proposed_name && card.conflict">
++                    <span class="oggi-vs">vs</span>
++                    <span class="oggi-prop">{{ card.proposed_name }}</span>
++                  </template>
++                  <template v-else-if="card.proposed_name">
++                    <span class="oggi-arrow" aria-hidden="true">→</span>
++                    <span class="oggi-prop">{{ card.proposed_name }}</span>
++                  </template>
++                  <StatusBadge
++                    :tone="card.priority === 'alta' ? 'attn' : 'neutral'"
++                    :label="verdictLabelIt(card.verdict)"
++                  />
++                </div>
++                <div class="oggi-meta">
++                  <span>{{ chassisProvenanceLabel(card) }}</span>
++                  <span>{{ card.members.length }} interfacce</span>
++                  <span
++                    v-for="m in card.members"
++                    :key="'m-' + m.asset_id"
++                    class="mono"
++                  >#{{ m.asset_id }} {{ m.role || "" }} {{ (m.ips && m.ips[0]) || "—" }}</span>
++                </div>
++                <AiInferenceLabel
++                  v-if="card.name_kind === 'inference' || isAiSource(card.name_source) || isAiSource(card.proposed_source)"
++                  :source="card.name_kind === 'inference' ? (card.name_source || 'inferenza') : (card.proposed_source || card.name_source)"
++                  :confidence="card.name_confidence ?? card.proposed_confidence"
++                  :evidence="card.proposal_evidence || ''"
++                />
++                <dl class="oggi-fields">
++                  <div><dt>Priorità</dt><dd>{{ defensePriorityLabel(card.defense_priority) }}</dd></div>
++                  <div><dt>Regola</dt><dd>{{ card.defense_priority?.rule }}</dd></div>
++                  <div><dt>Causa ed evidenza</dt><dd>{{ chassisFields(card).cause }}</dd></div>
++                  <div><dt>Impatto</dt><dd>{{ chassisFields(card).impact }}</dd></div>
++                  <div><dt>Azione raccomandata</dt><dd>{{ chassisFields(card).action }}</dd></div>
++                  <div><dt>Certezza</dt><dd>{{ chassisFields(card).certainty }}</dd></div>
++                  <div><dt>Esito</dt><dd>{{ chassisFields(card).outcome }}</dd></div>
++                </dl>
++                <div v-if="renameOpen[card.chassis_id]" class="oggi-rename">
++                  <label class="oggi-rename-label">
++                    Nuovo nome
++                    <input
++                      v-model="renameDraft[card.chassis_id]"
++                      type="text"
++                      class="oggi-rename-input"
++                      :disabled="busyKey === card.key"
++                      @keyup.enter="submitChassisRename(card)"
++                    />
++                  </label>
++                  <button
++                    type="button"
++                    class="oggi-btn primary"
++                    :disabled="busyKey === card.key"
++                    @click="submitChassisRename(card)"
++                  >
++                    salva
++                  </button>
++                  <button
++                    type="button"
++                    class="oggi-btn"
++                    :disabled="busyKey === card.key"
++                    @click="renameOpen[card.chassis_id] = false"
++                  >
++                    annulla
++                  </button>
++                </div>
++              </div>
++              <template #value>
++                <div class="oggi-actions">
++                  <button
++                    v-if="card.actions.includes('correggi')"
++                    type="button"
++                    class="oggi-btn primary"
++                    :disabled="busyKey === card.key"
++                    @click="openRename(card)"
++                  >
++                    {{ card.name_kind === 'absent' ? 'assegna nome' : 'correggi nome' }}
++                  </button>
++                  <button
++                    v-if="card.actions.includes('conferma_manuale')"
++                    type="button"
++                    class="oggi-btn primary"
++                    :disabled="busyKey === card.key"
++                    @click="confirmInferenceAsManual(card)"
++                  >
++                    {{
++                      card.name_kind === "legacy_manual"
++                        ? "conferma come fatto d'apparato"
++                        : "conferma come manuale"
++                    }}
++                  </button>
++                  <button
++                    v-if="card.actions.includes('adotta_proposta')"
++                    type="button"
++                    class="oggi-btn primary"
++                    :disabled="busyKey === card.key"
++                    @click="adoptChassisProposal(card)"
++                  >
++                    adotta proposta
++                  </button>
++                  <button
++                    v-if="card.actions.includes('tieni_manuale')"
++                    type="button"
++                    class="oggi-btn"
++                    :disabled="busyKey === card.key"
++                    @click="keepManualRejectProposal(card)"
++                  >
++                    tieni manuale
++                  </button>
++                  <button
++                    v-if="card.actions.includes('sostituisci_proposta')"
++                    type="button"
++                    class="oggi-btn"
++                    :disabled="busyKey === card.key"
++                    @click="adoptChassisProposal(card)"
++                  >
++                    sostituisci con proposta
++                  </button>
++                  <button
++                    type="button"
++                    class="oggi-btn ghost"
++                    @click="openDossier(card.primary_asset_id)"
++                  >
++                    Dossier
++                  </button>
++                </div>
++              </template>
++            </DenseRow>
++          </div>
++        </section>
++
+         <!-- Proposte nome: ADOTTA → VERIFICA → rumore -->
+         <section v-if="triageRows.length || noiseIds.length" class="oggi-section">
+           <div class="oggi-section-head">
+@@ -446,7 +1231,9 @@ onMounted(load);
+                     :evidence="row.proposal_evidence || ''"
+                   />
+                   <dl class="oggi-fields">
+-                    <div><dt>Priorità</dt><dd>{{ problemFields(row).priority }}</dd></div>
++                    <div><dt>Priorità</dt><dd>{{ defensePriorityLabel(row.defense_priority) }}</dd></div>
++                    <div><dt>Regola</dt><dd>{{ row.defense_priority?.rule }}</dd></div>
++                    <div v-if="row.laa_demoted"><dt>Nota</dt><dd>{{ row.laa_reason }}</dd></div>
+                     <div><dt>Causa ed evidenza</dt><dd>{{ problemFields(row).cause }}</dd></div>
+                     <div><dt>Impatto</dt><dd>{{ problemFields(row).impact }}</dd></div>
+                     <div><dt>Azione raccomandata</dt><dd>{{ problemFields(row).action }}</dd></div>
+@@ -527,7 +1314,9 @@ onMounted(load);
+                         :evidence="row.proposal_evidence || ''"
+                       />
+                       <dl class="oggi-fields">
+-                        <div><dt>Priorità</dt><dd>{{ problemFields(row).priority }}</dd></div>
++                        <div><dt>Priorità</dt><dd>{{ defensePriorityLabel(row.defense_priority) }}</dd></div>
++                        <div><dt>Regola</dt><dd>{{ row.defense_priority?.rule }}</dd></div>
++                        <div v-if="row.laa_demoted"><dt>Nota</dt><dd>{{ row.laa_reason }}</dd></div>
+                         <div><dt>Causa ed evidenza</dt><dd>{{ problemFields(row).cause }}</dd></div>
+                         <div><dt>Impatto</dt><dd>{{ problemFields(row).impact }}</dd></div>
+                         <div><dt>Azione raccomandata</dt><dd>{{ problemFields(row).action }}</dd></div>
+@@ -546,13 +1335,18 @@ onMounted(load);
+                           apri Dossier
+                         </button>
+                         <button
++                          v-if="showAdoptButton(row)"
+                           type="button"
+                           class="oggi-btn"
+-                          :disabled="busyKey === row.key || row.chassis_member"
+-                          :title="row.chassis_member ? 'Bloccato: chassis multi-NIC' : ''"
++                          :disabled="busyKey === row.key"
++                          :title="
++                            row.actionable_reason === 'chassis_multi_nic_adopt_blocked'
++                              ? `Adotta a livello chassis ${row.chassis_id}`
++                              : ''
++                          "
+                           @click="adoptRow(row)"
+                         >
+-                          adotta
++                          {{ adoptButtonLabel(row) }}
+                         </button>
+                         <button
+                           type="button"
+@@ -576,6 +1370,40 @@ onMounted(load);
+             </template>
+           </div>
+ 
++          <div v-if="structuralSuppressions.length" class="oggi-rumore-mass oggi-suppressed">
++            <div class="oggi-rumore-actions">
++              <button
++                type="button"
++                class="oggi-btn"
++                :aria-expanded="suppressedOpen"
++                @click="suppressedOpen = !suppressedOpen"
++              >
++                {{ structuralSuppressions.length }} proposte soppresse (ispeziona / ripesca)
++              </button>
++              <span class="oggi-muted-inline">
++                no-op {{ (suppressionsByRule.noop_identico || []).length }} ·
++                duplicato {{ (suppressionsByRule.duplicato || []).length }} ·
++                vendor {{ (suppressionsByRule.vendor_generico || []).length }} ·
++                LAA demote {{ (suppressionsByRule.mac_randomizzato || []).length }}
++              </span>
++            </div>
++            <div v-if="suppressedOpen" class="oggi-noise-preview" role="region">
++              <ul>
++                <li v-for="s in structuralSuppressions" :key="'sup-' + s.rule + '-' + s.proposal_id">
++                  #{{ s.proposal_id }} asset {{ s.asset_id }} · {{ s.rule }} —
++                  {{ s.reason }}
++                  <button
++                    v-if="!s.demote_only"
++                    type="button"
++                    class="oggi-btn ghost"
++                    @click="restoreSuppression(s.proposal_id)"
++                  >
++                    ripesca
++                  </button>
++                </li>
++              </ul>
++            </div>
++          </div>
+           <div v-if="noiseIds.length" class="oggi-rumore-mass">
+             <div class="oggi-rumore-actions">
+               <button
+@@ -694,7 +1522,7 @@ onMounted(load);
+         </section>
+ 
+         <!-- Device nuovi + monitor: solo sotto le proposte -->
+-        <section v-if="secondaryQueue.length" class="oggi-section">
++        <section v-if="secondaryQueue.length" id="oggi-secondary" class="oggi-section">
+           <h2 class="oggi-h2">Altro in coda</h2>
+           <div v-for="item in secondaryQueue" :key="item.key" class="oggi-item">
+             <DenseRow metric-width="0" value-width="auto">
+@@ -775,6 +1603,42 @@ onMounted(load);
+ .oggi-fields dd {
+   margin: 0;
+   color: var(--text-1);
++  min-width: 0;
++  overflow-wrap: anywhere;
++}
++.oggi-names {
++  overflow-wrap: anywhere;
++}
++/* Le card di Oggi hanno contenuto MULTILINEA nello slot primario; lo stile generico
++   di DenseRow (nowrap + overflow hidden) lo troncava a ogni breakpoint (tablet incluso).
++   Qui il testo va a capo e resta visibile — sempre, non solo su mobile. */
++.oggi :deep(.dense-row__primary) {
++  white-space: normal;
++  overflow: visible;
++  text-overflow: clip;
++}
++/* UX2.1/UX2.5 — su mobile la card impila: azioni sotto, label sopra il valore,
++   nomi/MAC vanno a capo invece di troncare (fix responsive Oggi, il cardine). */
++@media (max-width: 640px) {
++  .oggi :deep(.dense-row) {
++    flex-direction: column;
++    align-items: stretch;
++    gap: 8px;
++  }
++  .oggi :deep(.dense-row__value) {
++    width: auto !important;
++    flex-basis: auto !important;
++    text-align: left;
++    white-space: normal;
++  }
++  .oggi-fields > div {
++    grid-template-columns: 1fr;
++    gap: 0;
++  }
++  .oggi-problem .oggi-actions {
++    max-width: none;
++    justify-content: flex-start;
++  }
+ }
+ .oggi-noise-preview {
+   margin-top: 10px;
+@@ -893,6 +1757,55 @@ onMounted(load);
+   gap: 8px;
+   margin: 6px 0 4px;
+ }
++.oggi-legend {
++  margin: 0 0 14px;
++  padding: 10px 12px;
++  border: 0.5px solid var(--border);
++  border-radius: var(--radius);
++  background: var(--bg-1);
++}
++.oggi-quick {
++  margin: 0 0 14px;
++  padding: 8px 12px;
++  border: 0.5px solid var(--border);
++  border-radius: var(--radius);
++  font-size: 12px;
++}
++.oggi-quick-title {
++  margin: 0 0 6px;
++  font-weight: 500;
++  color: var(--text-1);
++}
++.oggi-quick-list {
++  margin: 0;
++  padding: 0;
++  list-style: none;
++  display: grid;
++  gap: 4px;
++}
++.oggi-quick-list li {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 6px 10px;
++  align-items: baseline;
++}
++.oggi-legend-list {
++  margin: 6px 0 8px 1.2em;
++  padding: 0;
++  font-size: 12px;
++  color: var(--text-2);
++  line-height: 1.45;
++}
++.oggi-orphan {
++  margin: 0 0 12px;
++  padding: 10px 12px;
++  border: 0.5px solid color-mix(in srgb, var(--attn, #c45) 40%, var(--border));
++  border-radius: var(--radius);
++  font-size: 12px;
++  color: var(--text-2);
++}
++.oggi-orphan ul { margin: 6px 0 0 1.1em; padding: 0; }
++.oggi-suppressed { border-color: color-mix(in srgb, var(--text-3) 35%, var(--border)); }
+ .oggi-item { margin-top: 4px; }
+ .oggi-main { min-width: 0; }
+ .oggi-kind {
+@@ -937,4 +1850,59 @@ onMounted(load);
+   background: transparent;
+ }
+ .oggi-btn:disabled { opacity: 0.5; cursor: not-allowed; }
++.oggi-name-absent {
++  font-style: italic;
++  color: var(--text-3);
++}
++.oggi-vs { color: var(--text-3); font-size: 12px; }
++.oggi-rename {
++  display: flex;
++  flex-wrap: wrap;
++  align-items: flex-end;
++  gap: 8px;
++  margin-top: 8px;
++}
++.oggi-rename-label {
++  display: flex;
++  flex-direction: column;
++  gap: 4px;
++  font-size: 11px;
++  color: var(--text-3);
++  min-width: 180px;
++  flex: 1;
++}
++.oggi-rename-input {
++  padding: 6px 8px;
++  font-size: 13px;
++  border: 0.5px solid var(--border);
++  border-radius: var(--radius);
++  background: var(--bg-0);
++  color: var(--text-1);
++}
++.oggi-inference {
++  margin-top: 10px;
++  padding: 8px 10px;
++  border-left: 3px solid color-mix(in srgb, var(--accent) 55%, var(--border));
++  background: color-mix(in srgb, var(--accent) 6%, var(--bg-0));
++  font-size: 12px;
++  color: var(--text-2);
++}
++.oggi-inference-disc {
++  margin: 4px 0 6px;
++  font-size: 11px;
++  color: var(--text-3);
++  font-style: italic;
++}
++.oggi-inference ul {
++  margin: 0;
++  padding-left: 1.1em;
++}
++.oggi-discarded {
++  margin: 0 0 1rem;
++  padding: 0.6rem 0.75rem;
++  border-left: 3px solid #e4b866;
++  background: color-mix(in srgb, #e4b866 10%, transparent);
++  font-size: 12px;
++  color: var(--text-2);
++}
+ </style>
+
+diff --git a/observatory/scripts/o9_png_assert.py b/observatory/scripts/o9_png_assert.py
+new file mode 100644
+index 0000000..3775983
+--- /dev/null
++++ b/observatory/scripts/o9_png_assert.py
+@@ -0,0 +1,74 @@
++#!/usr/bin/env python3
++"""O9 X1 — assert breakpoint PNG widths (prove content capture, not hash alone).
++
++Usage:
++  python3 scripts/o9_png_assert.py path.png EXPECTED_WIDTH [EXPECTED_HEIGHT]
++  python3 scripts/o9_png_assert.py --pair a.png WA b.png WB
++
++Exit 0 only if dimensions match. Prints W×H and sha256.
++"""
++from __future__ import annotations
++
++import hashlib
++import struct
++import sys
++from pathlib import Path
++
++
++def png_size(path: Path) -> tuple[int, int]:
++    data = path.read_bytes()
++    if data[:8] != b"\x89PNG\r\n\x1a\n":
++        raise SystemExit(f"FAIL not PNG: {path}")
++    w, h = struct.unpack(">II", data[16:24])
++    return int(w), int(h)
++
++
++def sha256(path: Path) -> str:
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def main(argv: list[str]) -> int:
++    if len(argv) >= 2 and argv[0] == "--pair":
++        if len(argv) != 5:
++            print("Uso: --pair a.png WA b.png WB", file=sys.stderr)
++            return 2
++        a, wa, b, wb = Path(argv[1]), int(argv[2]), Path(argv[3]), int(argv[4])
++        aw, ah = png_size(a)
++        bw, bh = png_size(b)
++        print(f"{a.name}: {aw}x{ah} sha256={sha256(a)}")
++        print(f"{b.name}: {bw}x{bh} sha256={sha256(b)}")
++        if aw != wa:
++            print(f"FAIL {a}: width {aw} != {wa}", file=sys.stderr)
++            return 1
++        if bw != wb:
++            print(f"FAIL {b}: width {bw} != {wb}", file=sys.stderr)
++            return 1
++        if aw == bw:
++            print(
++                f"FAIL pair same width {aw}: non prova due breakpoint",
++                file=sys.stderr,
++            )
++            return 1
++        print("PASS pair distinct widths")
++        return 0
++
++    if len(argv) < 2:
++        print(__doc__, file=sys.stderr)
++        return 2
++    path = Path(argv[0])
++    expect_w = int(argv[1])
++    expect_h = int(argv[2]) if len(argv) > 2 else None
++    w, h = png_size(path)
++    print(f"{path.name}: {w}x{h} sha256={sha256(path)}")
++    if w != expect_w:
++        print(f"FAIL width {w} != {expect_w}", file=sys.stderr)
++        return 1
++    if expect_h is not None and h != expect_h:
++        print(f"FAIL height {h} != {expect_h}", file=sys.stderr)
++        return 1
++    print("PASS")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main(sys.argv[1:]))
+
+diff --git a/observatory/scripts/o9_cdp_png_decode.py b/observatory/scripts/o9_cdp_png_decode.py
+new file mode 100644
+index 0000000..e3be26e
+--- /dev/null
++++ b/observatory/scripts/o9_cdp_png_decode.py
+@@ -0,0 +1,45 @@
++#!/usr/bin/env python3
++"""Decode a CDP Page.captureScreenshot JSON dump to PNG and print WxH.
++
++Harness O9 X1 (diagnosi O8):
++  - `browser_take_screenshot` cattura la superficie Electron fissa (~768px) e
++    IGNORA Emulation.setDeviceMetricsOverride → tre file stessa larghezza.
++  - Procedura corretta:
++      1) CDP Emulation.setDeviceMetricsOverride({width, height, deviceScaleFactor:1, mobile})
++      2) CDP Runtime.evaluate → verificare window.innerWidth == width attesa
++      3) CDP Page.captureScreenshot({format:'png', captureBeyondViewport:false|true})
++      4) salvare con questo script / assert con o9_png_assert.py
++
++Usage:
++  python3 scripts/o9_cdp_png_decode.py cdp-response.json out.png
++"""
++from __future__ import annotations
++
++import base64
++import json
++import struct
++import sys
++from pathlib import Path
++
++
++def main() -> int:
++    if len(sys.argv) != 3:
++        print(__doc__, file=sys.stderr)
++        return 2
++    src, dest = Path(sys.argv[1]), Path(sys.argv[2])
++    payload = json.loads(src.read_text())
++    b64 = payload.get("data")
++    if not b64 and isinstance(payload.get("result"), dict):
++        b64 = payload["result"].get("data")
++    if not b64:
++        print("FAIL: no data field in CDP JSON", file=sys.stderr)
++        return 1
++    raw = base64.b64decode(b64)
++    dest.write_bytes(raw)
++    w, h = struct.unpack(">II", raw[16:24])
++    print(f"WROTE {dest} {w}x{h} bytes={len(raw)}")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+
+diff --git a/observatory/scripts/o9_capture_harness.md b/observatory/scripts/o9_capture_harness.md
+new file mode 100644
+index 0000000..3d86b97
+--- /dev/null
++++ b/observatory/scripts/o9_capture_harness.md
+@@ -0,0 +1,30 @@
++# O9 X1 — harness cattura breakpoint (diagnosi + procedura)
++
++## Diagnosi O8 (non ipotesi)
++
++I tre PNG O8 misurano tutti **768×1756** (anche quelli etichettati 1280/390).
++
++Causa accertata:
++
++1. `Emulation.setDeviceMetricsOverride` **funziona** su `window.innerWidth` / `matchMedia`.
++2. `browser_take_screenshot` (MCP) cattura la **superficie Electron fissa** (~768 CSS px) e **ignora** l’emulazione → stessa larghezza PNG.
++3. Con `deviceScaleFactor: 2` e width 390, `Page.captureScreenshot` produce **780×1688** (= 390×2): i pixel del PNG sono *device* pixels. Per X1 usare sempre **`deviceScaleFactor: 1`** così larghezza PNG = breakpoint CSS.
++
++## Procedura obbligatoria (agente / revisione)
++
++Per ogni breakpoint `W` ∈ {1280, 768, 390}:
++
++1. CDP `Emulation.setDeviceMetricsOverride`  
++   `{ width: W, height: H, deviceScaleFactor: 1, mobile: W < 1280 }`
++2. CDP `Runtime.evaluate` → assert `window.innerWidth === W`
++3. Prova di **contenuto** (non solo hash), es.:
++   - 1280: bottone `☰ Menu` con `display:none`
++   - ≤800: stesso bottone `display:flex` / `visible:true`
++4. CDP `Page.captureScreenshot` `{ format: "png", captureBeyondViewport: false }`  
++   (**non** usare `browser_take_screenshot` per i breakpoint)
++5. Decodare JSON → PNG con `scripts/o9_cdp_png_decode.py`
++6. Assert con `scripts/o9_png_assert.py` / `--pair` (larghezze distinte)
++
++## Full-page
++
++`captureBeyondViewport: true` **non** allunga il PNG finché lo scroll vive in `MAIN.workspace` (`overflow: auto`) e `body { overflow: hidden }` — altezza resta = viewport (es. 1280×900). Vedi `DEBT-OGGI-LAYOUT-OVERFLOW` / fix FASE 2.
