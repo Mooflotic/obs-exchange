@@ -1,0 +1,1966 @@
+diff --git a/observatory/CHANGELOG.md b/observatory/CHANGELOG.md
+index 677f6ee..2112af2 100644
+--- a/observatory/CHANGELOG.md
++++ b/observatory/CHANGELOG.md
+@@ -1,8 +1,211 @@
+ # Changelog
+ 
++## 0.10.69 — OBS-308 O6: punto cieco GS308EP operativo
++
++- **F0:** V1 delta 135→132 = supersession `left_port` (atteso); V2 copy S-A senza «mai visto».
++- **P1–P2:** attestazione strutturale (FDB MAC 308 a monte) + insieme «dietro il 308» (fonte fdb, porta esatta non determinabile).
++- **P3–P5:** assegnazione manuale reversibile (`port.assigned_mac`), inferenza separata, punti ciechi in vista, I7 senza telemetria sul 308.
++- **P6–P7:** card Oggi «nuovo dietro il 308, porta ignota»; vista `/gs308` da Impianto/Dossier; ricerca «dietro il 308».
++
++## 0.10.68 — OBS-MAPPA O5: bonifica O4 + Impianto operativo
++
++- **F0:** marcatura 396 supersession spurie (`o4_defect_concurrent_presence_move`, no DELETE); baseline ricostruita distinta; UI conteggio scartati + `DEBT-O4-SPURIOUS-MOVES`.
++- **M2–M6:** Impianto consuma verità FDB (ruolo+regola, solo-L2, LAA, baseline quality, tre stati vuoti I2, link `link_to_port_id`, ricerca/filtri/azioni, INFERENZA offline).
++- Diff tematici: bonifica · hotfix supersession · mappa.
++
++## 0.10.67 — OBS-FDB O4: FDB come sensore difensivo
++
++- **O4.1–O4.2:** assertion `port.fdb_mac` via shadow (source=fdb, auth 60); baseline esplicita al primo populate porta; LAA = `randomized` (DEBT-PRIVACY-MAC-CHURN).
++- **O4.3:** `ruolo_porta` ∈ {accesso, uplink, non_determinato} solo evidenza strutturale (link / inclusione insiemi MAC) — mai soglia numerica.
++- **O4.4:** card Oggi S-A/S-B/S-C/S-D con azioni F-9; S-D distingue `sorgente_non_disponibile`.
++- **O4.5:** blocco INFERENZA offline (OUI/inventario); slot LLM `/ai` predisposto e disattivato.
++- Debiti: `DEBT-ENV-NO-INTEGRITY-CHECK`; precisazione data regressione in `obs-o3.md`.
++
++## 0.10.66 — OBS-FDB O2: diagnosi FDB + resa onesta copertura
++
++- **FASE 1:** SNMP v2c timeout su LGS328C/LGS310C (ICMP ok); causa (a)/(b) → ramo B; GS308EP limite strutturale.
++- **B1–B4:** stati porta `misurata_fresca`/`misurata_vecchia`/`non_coperta`; pannello Impianto; «non misurato» ≠ assente; move FDB stantio → priorità media.
++- Debiti: `DEBT-FDB-POLL-STALE` aggiornato; `DEBT-OGGI-QUEUE-SURFACES` registrato.
++
++## 0.10.65 — OBS-OGGI O1-FIX: provenienza onesta + conservazione coda
++
++- **T1 — `legacy_manual`:** `name_kind=fact` solo se `name_currency.state===fact`; member-held manual → `legacy_manual` (I1). Conflitto I3/`heldManual` invariati.
++- **T2 — conservazione coda:** `buildTriageRows` assorbe via `absorbedChassisAssetIds` (card reali); `queueConservationCheck` enumera `missing`/`duplicated`.
++- **T3 — test P1–P4** a forma di produzione. **T4 —** `split(/\s+/)`. Debiti `DEBT-CHASSIS-NAME-LEGACY-HELD`, `DEBT-OGGI-LAYOUT-OVERFLOW`.
++
++## 0.10.64 — OBS-OGGI O1: card chassis e adozione nome in Oggi
++
++- **O1.1 — una card per apparato multi-interfaccia in Oggi.** `buildChassisNameCards` + sezione «Apparati multi-interfaccia»: nome dal resolver (`GET /api/chassis` → `name_currency`), altrimenti inferenza etichettata, altrimenti «nome non noto» (I2). Membri (id, ruolo, IP) in elenco. Provenienza sempre visibile (I1).
++- **O1.2 — Adotta/Correggi sul soggetto chassis.** Azioni sulla card → `POST /api/chassis/{id}/rename|adopt-name`. UI risolve sempre al chassis: nessun 409 `chassis_subject_required` grezzo. Conflitto manuale vs proposta più debole → card conflitto (I3). F-9: priorità alta solo con azione.
++- **O1.3 — API:** `list_chassis_payload` espone `name_currency` via `resolver.current`. Membri multi-NIC assorbiti da `buildTriageRows` (niente card proposta per-NIC).
++- **OBS-CURRENCY sospeso** (non chiuso). Gate: currency PASS (1 temp); I6 vuoto. Deploy: `api` + `web`.
++
++## W8-fix — indurimento del presidio + esecuzione reale dei gate (NESSUN deploy, nessun bump)
++
++- **B1 gate indurito (`scripts/w8_currency_gate.py`).** Sentinelle: simbolo ORM `FactAssertion` **+** tabella grezza `fact_assertions` in chiamata SQL (`text/execute`, B1-i) **+** COMBO (fact-token + valore di stato quotato `'current'`, cattura `state='current'`/`filter_by(state="current")`). Allowlist per **(file, snippet, N)** con conteggio: N+1 = violazione, atteso vs osservato in output (B1-ii). Scope allargato a **`api/**` · `scripts/**` · `collector/**`** (B1-iii). `--selftest` (controllo negativo): corpus sintetico in dir temporanea → **3 violazioni attese (file 2,3,4) + 1 accounted → PASS (il gate sa fallire)**.
++- **Esito gate reale (repo):** **FAIL — 10 violazioni** tutte in tooling read-only (`scripts/wp_gate.py`, `scripts/wp_diagnose.py`) che legge `FactAssertion` per metriche di regime, rese visibili SOLO ora dall'allargamento scope. Per regola d'ondata **NON allowlistate**: classificate e **fermate per ruling** (vedi `obs-w8fix.md`).
++- **B2/B3 G8 eseguito e discriminante (`scripts/w8_g8_equivalence.py`).** Import-smoke (T4a: `subject_of` vive in `resolver.py`, import corretto), leg **os.guess** (resolver vs colonna derivata `Asset.os_guess` — store diverso, non tautologico), leg **endpoint** `GET /api/assets/{id}` opzionale (T4b), `--mutate-probe <id>` (T4d). Eseguito su DB sintetico: normale **DIVERGE=0 (PASS)**; `--mutate-probe` → **DIVERGE=1 esatto sull'id, FAIL**. Prova che G8 sa fallire.
++- **B4** AD rimisurato (finestra mobile 24h). **B5** corretta contraddizione: `resolver.history()` è **senza chiamanti**, nessun `?history=true` esiste → `DEBT-HISTORY-PATH-UNWIRED` (spec §12 + `obs-w8.md` corretti). **B6** JSON grezzo `/api/assets/2` e `/109`: «LGS328C» è il canonico del **chassis 23** (tenuto dall'asset **2**); l'asset **109** è membro con nome PROPRIO vuoto (F-5) e AI guess «Switch Centrale» — etichette corrette in `obs-w8.md`.
++- **Nessun tocco a `api/app/**` o `web/src/**`** ⇒ nessun deploy, VERSION resta **0.10.63**.
++
++## W8 — enforcement della correntezza (presidio; NESSUN deploy, nessun bump)
++
++- **W8.1 censimento esaustivo → 0 calcoli locali di correntezza da migrare (classe (a) vuota).** Grep su `api/` e `web/src/`: ogni punto che «decide qual è il valore adesso» è già dentro il resolver (`api/app/facts/`), oppure è (b) legittimo con criterio dichiarato — `ip_addresses.is_current` = elezione IP (F-15, non correntezza), colonne di stato derivate di `Asset` (F-7), evidenza grezza/oggetti di dominio (Event/ScanRun/SpeedTest/Finding/Suggestion/Snapshot/ActionRequest), FE che consuma la correntezza fornita dal server. Nessuna classe (a): la migrazione dei consumatori era già stata completata in W5/W6/W7.
++- **W8.3 gate permanente istituito:** `scripts/w8_currency_gate.py` — sentinella su ogni riga che nomina `FactAssertion` fuori da `api/app/facts/`; **fallisce** su accessi nuovi; allowlist per (file, snippet) con motivazione. Eseguito: **9 eccezioni giustificate, 0 violazioni (PASS)**. Da eseguire a ogni ondata futura insieme a I6. Documentato in `docs/obs-design-spec-025.md` §12 e `KNOWN_DEBT.md` (PRESIDIO-CURRENCY-GATE).
++- **W8.4 API corrente per default:** già così — `GET /api/assets` con `include_historical=false`/`all_proposals=false`, `resolver.history()` percorso storico sanzionato ma non cablato ad alcun endpoint. **0 contratti cambiati.** Verifica runtime (method A): `ips`/`ip_bindings` vuoti → «assente» (≠ zero); binding non-eletti/duplicati restano visibili (F-15). UI stale/superseded invariata da UX3 (nessun cambio, riferimento agli screenshot UX3).
++- **W8.5 G8:** `scripts/w8_g8_equivalence.py` (read-only) — equivalenza correntezza nome resolver↔presentazione; 0 migrazioni ⇒ 0 casi (c) per costruzione; probe da confermare a writer fermi sul NAS.
++- **Nessun cambio di codice runtime** ⇒ nessun deploy, VERSION resta 0.10.63. Presidio e doc sono artefatti di repo. Pre-condizioni W3 (IP) restano aperte: `DEBT-DOUBLE-CURRENT-IP`, `DEBT-IFACE-IP-CARDINALITY-ROLE`, `DEBT-LASTSEEN-DUAL-SEMANTICS`.
++
++## 0.10.63 — UX3 ondata 2: architettura superfici (D8 + confluenze)
++
++- **UX3.1.4 / D8 — Dashboard decisa con misura → «Panoramica» in navigazione.** Misura prod (2026-07-28): la Dashboard mostra ciò che nessun'altra vista mostra — stato calibrazione osservatorio (giorno N/14), **salute Internet** (capacità/traffico FRITZ!Box, speedtest NAS, prossimo test), copertura discovery, salute sensori, KPI device+monitor. **Utile e distinta** (opzione a): entra in nav come «Panoramica» (gruppo RADAR). Coerenza con F-9: `/` non è più la Dashboard ma **reindirizza a `/oggi`** (il cardine è la landing); la Dashboard vive su `/dashboard`.
++- **UX3.2 — architettura delle superfici (decisioni con dati reali).** `suggestions` → già **CONFLUITA** in Oggi (redirect `/suggestions`→`/oggi`; le 2 proposte pending compaiono in Oggi). `findings` → 0 elementi, 0 drift, in shadow: **tolta dalla nav primaria** (coda parallela vuota, F-9), ma **ancora raggiungibile** dalla Dashboard (ReadySlot + card «Findings shadow») e per URL — nessuna funzione irraggiungibile (UX3.2.4). Debito `DEBT-FINDINGS-OGGI-CONFLUENCE` registrato: confluenza autoritativa in Oggi rinviata a calibrazione/scoring (M4–M5). Le viste con domanda unica **TENGONO**: Oggi (cardine), Dossier (device), Inventario (elenco/ricerca), Impianto (porte/modifica), Topologia (dove), Monitor (salute), Timeline (cronologia), Azioni (scansioni/errori discovery), Panoramica (D8).
++- **Nessun dato grezzo rimosso perché non trovato di gravità operativa (UX3.3):** Dossier è strutturato e onesto (identità osservata con ignoti dichiarati, inferenza AI marcata con confidenza+evidenze, GS308EP con `.1.8` corrente/`.3.20` storico) — non un dump. Switch = tre superfici coerenti (Impianto=modifica, Topologia=dove, Monitor=salute), nessuna vista switch legacy autonoma. ReadySlot Dashboard dichiarano l'attesa (I2), non inventano: annotati in `DEBT-DASHBOARD-READY-SLOTS`.
++- **Test:** nessun nodo backend toccato; frontend `oggiTriage`, `oggiProblems`, `observatoryUx`, `portPresentation`, `topologyLayout` invariati verdi. F-1..F-14 rispettati; policy MAC↔IP consultiva (F-12); I5/F-8 immutati; favicon A (F-6).
++
++## 0.10.62 — UX3 ondata 1: mobile + Mappa usabili (D3, D4, D7)
++
++- **UX3.1.2 / D3 — navigazione mobile a comparsa:** sotto 800px la sidebar diventava una barra alta ~280px perché gli 11 link andavano a capo su più righe, spingendo il contenuto sotto la piega. Ora (`App.vue` + `matrix.css`) la barra mobile è compatta (brand + hamburger «☰ Menu» + utente/Esci); il menu si apre a comparsa a piena larghezza in colonna, con tocco comodo, e si chiude a ogni cambio rotta. Desktop invariato. Nessun tocco ad auth/ruoli (K10).
++- **UX3.1.3 / D4 — Impianto, troncamenti alla radice:** in `Plant.vue` più righe informative usavano `white-space:nowrap`+`overflow:hidden`+ellissi su testo che deve andare a capo (stessa **classe** di causa di D2, qui su testo semplice, non `DenseRow`). Punti condivisi enumerati e corretti: `.fdb-status` (banner copertura FDB — la **data dell'ultima misura non va mai troncata**, F-13: ora va a capo a ogni larghezza), `.switch-role`, `.port-foot .patch` (vanno a capo su mobile). 
++- **UX3.1.1 / D7 — Topologia usabile su mobile:** il grafo a coordinate assolute in un contenitore scroll è inutilizzabile sotto 800px (finestrella su una mappa grande). Sotto 800px il grafo è sostituito da una **lista gerarchica per livello** (Radice → Livello 1/2/3) che risponde alla stessa domanda («dove sta un apparato, a cosa è attaccato»): riusa i nodi già posizionati da `layoutTopology` e mostra per ciascun nodo nome canonico, IP/tipo e «↳ collegato a <padre>»; gli endpoint restano toccabili per isolarne il percorso. I controlli zoom (inerti senza grafo) sono nascosti su mobile. Nessun dato inventato.
++- **Test:** `topologyLayout`, `portPresentation`, `observatoryUx`, `oggiTriage`, `oggiProblems` (invariati, verdi). Favicon A immutata (F-6), I5/F-8 immutati, nessuna logica identità/currency nel frontend, policy MAC↔IP consultiva (F-12), FDB solo presentazione (F-13).
++
++## 0.10.61 — UX2 ondata 1b: Oggi non tronca su tablet (radice DenseRow)
++
++- **UX2.5 — Oggi, troncamento su tablet risolto alla radice:** su tablet (≈820px) i valori delle card («Causa ed evidenza», «Esito», …) erano **tagliati a metà parola**. Causa: lo slot primario di `DenseRow` porta lo stile generico `white-space:nowrap` + `overflow:hidden`, adatto a righe singole ma non al contenuto **multilinea** delle card di Oggi. Fix in `Oggi.vue`: dentro `.oggi` lo slot primario va a capo e resta visibile a **tutti** i breakpoint (non solo ≤640px). Nessun impatto su desktop (già largo) né sul resto delle viste che usano DenseRow.
++
++## 0.10.60 — UX2 ondata 1: onestà dei dati porta/telemetria + Oggi mobile
++
++- **UX2.2.4 / F-13 — copertura FDB dichiarata in UI (`DEBT-FDB-POLL-STALE`):** la copertura FDB è ferma (RO 2026-07-27: 46 porte, 38 con `last_fdb_at`, 0 fresche nelle 24h; più recente 2026-07-25 14:52). Nuovo helper puro `fdbCoverageStatus()` in `web/src/observatoryUx.js` (con test) calcola la freschezza dalla `last_fdb_at` di porta, **mai** dall'ora del poll fallito. Impianto (`Plant.vue`): banner «copertura FDB non aggiornata: ultima mappatura … (circa N h fa)» e badge per-switch corretto — prima `switchFreshness` spacciava `fdb_poll.at` (tentativo fallito, `ok:false`) come «dati al … (ok)». Solo presentazione: nessuna diagnosi/riavvio del polling (F-13).
++- **UX2.5 / I2 / I7 — Monitor: assente ≠ zero:** in «Switch · salute porte» (`Monitoring.vue`) traffico ed errori erano resi `0 b/s` / `0` per switch senza SNMP riuscito (GS308EP non interrogabile, LGS in timeout). Ora sono `—` (non disponibile) quando `snmp_poll.ok≠true`, e l'ultimo poll è marcato «non riuscito». Nessuna telemetria inventata.
++- **UX2.1 / UX2.5 — Oggi (il cardine) responsive su mobile:** le card di Oggi troncavano nome/MAC e non impilavano label/valore su schermi stretti (le azioni comprimevano il contenuto). Fix CSS scoped in `Oggi.vue`: sotto 640px la riga densa impila (azioni sotto, allineate a sinistra), i campi vanno a capo, nome/MAC non si troncano.
++- **Test:** `observatoryUx` (nuovo caso `fdbCoverageStatus` F-13), `oggiTriage`, `oggiProblems`, `portPresentation`, `topologyLayout` — 40 verdi. Favicon A immutata (F-6), I5/F-8 immutati, nessuna logica di identità/currency nel frontend (F-13 = presentazione di timestamp misurati), policy MAC↔IP resta consultiva (F-12).
++
++## 0.10.59 — W7-CLOSE: eccezione L2 da attributi misurati, ignoto≠falso, policy consultiva
++
++- **W7C.2 (K9/F-5) — eccezione L2-only NON dipende più da `Asset.name`:** `_l2_only_exception_class` (`inventory.py`) derivava la classe powerline/510E da `" ".join(asset.name, asset.category, asset.vendor)`. Dopo W4c.1 i membri di chassis hanno `Asset.name` **vuoto per progetto** (F-5): un powerline membro di chassis non sarebbe stato riconosciuto. Ora la classe è derivata da attributi **MISURATI** — `category`, `vendor`, l'**OUI vendor** di ogni interfaccia — e, quando serve un nome, dal **nome CANONICO risolto** (`presentation_name_for_asset`, chassis-scoped), mai dal nome grezzo del membro. Se nessun attributo misurato riconosce la classe, la classe è **ASSENTE (`None`, K3)**, non un match mancato spacciato per «non è powerline».
++- **W7C.3 (I2/K3) — input costanti del classifier risolti:** in `_mac_ip_policy_present` gli input `chassis_mgmt_ip` e `superseded_by_newer_binding` erano passati fissi (`None`, `False`). Il secondo **asseriva** un fatto non misurato («nessun binding più recente ha soppiantato»). Ora `superseded_by_newer_binding` è **tri-stato** (`bool | None`, default `None`=IGNOTO): solo un `True` **misurato** produce il verdetto `superseded`; `None` (ignoto) non viene mai coerciuto in un'asserzione. Il wire passa `None` (ignoto), non più `False`. `chassis_mgmt_ip` resta `None`=IGNOTO (non serve/non misurato qui, mai inventato).
++- **W7C.5 — policy PIENA CONSULTIVA (mai autoritativa):** nuovo `inventory.mac_ip_policy_consultation` (read-only) calcola il verdetto della policy completa (regole #1..#5) per ogni asset e lo espone come **divergenza diagnostica** accanto allo stato reale, con l'evidenza che tiene presente il device. Endpoint admin `GET /api/admin/mac-ip-policy-consultation` (sola lettura, ruolo operator). **Non scrive nulla e non guida `operational_state`/`trust_level`/`reliable`** (F-7): le regole #3/#5 restano **NON autoritative** (attivazione autoritativa rinviata e condizionata alla correzione delle regole che dissentono dalla realtà osservabile — `DEBT-MAC-IP-POLICY-WIRE` aperto). Mai esposto come stato del device in UI.
++- **Test:** `test_mac_ip_policy` (11, incl. tri-stato supersession) esercitato; nuovi nodi fixture/app W7C.2 verificati per import/sintassi (K4, non esercitati a runtime per contesa risorse NAS). F-7 intatto, I5/F-8 immutati, favicon A immutata (F-6).
++
++## 0.10.58 — W7 (deploy 1/2): T-a uplink→portal + wire mac_ip_policy additivo
++
++- **W7.3 T-a (DEBT-FDB-UPLINK-PORTAL):** `apply_fdb_observation` (`topology.py`) **ricalcolava** `interface.interface_role` per-porta prima della guardia portale, facendo un **downgrade `uplink→endpoint`** su un singolo hit FDB → poi attribuiva `portal_last_seen` a una porta uplink (presenza al posto sbagliato). Fix: un hit FDB per-porta NON declassa più un'interfaccia strutturale (`uplink`/`infra`); i downgrade restano di competenza del reclassify globale (`role_for_interface_global`). Test T-a verde, non indebolito. Il fix NON azzera retroattivamente `portal_last_seen`: nessun effetto su presence/structural al boot (misurato).
++- **W7.2 wire `mac_ip_policy` (deploy 1/2 — additivo, F-7 intatto):** il classifier `classify_mac_ip_presence` è ora collegato a `reconcile_asset_presence` come **solo segnale di PRESENZA** (`reliable`), limitato alle lacune che la logica esistente non copre: membro di chassis mantenuto presente dall'IP corrente di chassis (`present_l2_unaddressed`) ed eccezione powerline/510E (`l2_only_allowed`). Il wire **non forza mai `stale`/`superseded`** e non è un secondo autore di `operational_state`/`trust_level` (classify_asset resta l'unico deriver). `present_l2_unaddressed` è **dichiarato** dalla freschezza FDB misurata, mai dedotto dal solo IP di chassis. **Misura pre-deploy (read-only prod):** 0 hit `present_l2_unaddressed`/`l2_only_allowed` correnti ⇒ **0 cambi di `operational_state`** (wire inerte oggi, esercitato dai test unitari `test_w7_consumers` — K4).
++- **W7.2.3 split dichiarato:** la riclassificazione AMPIA della policy (regole #3/#5: `stale`/`superseded` che toglierebbero presenza a device correnti) ha blast-radius **alto (52/151 asset**, inclusi FritzBox router, powerline, Sky box) e tocca infrastruttura oggi `active` → **rinviata al deploy 2/2** (decisione di dominio su quali device attivi declassare: Michele). Non fatta qui per non introdurre regressioni (c) né violare «stale/superseded fuori dallo stato corrente».
++- **Test:** `test_w7_consumers` (5, wire additivo), `test_m2_discovery` (T-a) verdi; nodi presence/trust/scans nominati verdi (94). Gate I6 vuoto.
++
++## 0.10.57 — W6-REVIEW: rank ipp/snmp riportato al minimo non alterante di I5
++
++- **W6R.1 (DEBT-IPP-PRECEDENCE, correzione soglia non misurata):** W6 aveva collocato `ipp=88`/`snmp=87` **sopra** `dhcp=85`, alterando l'ordinamento dell'invariante di PRODOTTO I5 (`manual > ai > dhcp > fritz > oui`) per far passare due test — stessa classe di difetto della soglia inventata rimossa in W1.5-bis. L'UNICO vincolo MISURATO è `ipp > fritz` (test T-c, fixture fritz(0.9) vs ipp(0.96)); nessun test impone `ipp > dhcp` né alcun ordine per `snmp` (T-d e `test_printer_provider` asseriscono solo creazione/valore della proposta, mai `best_guess`). Rank riportato al minimo non alterante: **`ipp=snmp=81`** (tier «identità auto-dichiarata via management», sopra `fritz=80`, **sotto `dhcp=85`** → I5 intatto; tie ipp/snmp risolto da confidence). La posizione del tier vs `dhcp` è una decisione di dominio lasciata a Michele (STOP-5, K8), tenuta sotto dhcp.
++- **W6R.1.3 effetto misurato (read-only prod 0.10.56):** **0 proposte pending `ipp`/`snmp`**, **0 asset vinti** da `ipp`/`snmp`, **0 flip** di `best_guess` abbassando i rank → il fix è **comportamentalmente inerte** in produzione. Le 3 differenze `i5_reorder` (id 109/120/134) sono `ai` (rank 90, non toccato) e **restano**.
++- **W6R.2.1 `adopted_names_changed = 0` (misurato):** i 30 nomi adottati (`manual_overrides` include `name`) sono **identici** tra prod 0.10.56, backup pre-deploy W6 e nightly pre-W6 — nessun nome adottato ha cambiato valore.
++- **W6R.2.2 asset senza best guess:** 28 asset con `best_guess` vuoto; di questi 9 senza nome canonico (`presented=None`) → la UI dichiara l'assenza («Device senza nome» / MAC, I2), mai un placeholder spacciato per nome. Gli altri mostrano il nome dell'apparato (asset.name o canon chassis).
++- **Test:** nodi nominati Python verdi (T-c/T-d verdi con `ipp=snmp=81`); gate I6 `rg 'scoreSpecificity|specificity' api/` vuoto. Nessun test indebolito. Artefatti W6 e W5-bis ripubblicati con URL raw (curl 200).
++
++## 0.10.56 — W6: fingerprinting, inferenze AI, generazione proposte alla correntezza
++
++- **W6.1 correntezza dei consumatori (`suggest.best_guess`, `ai_naming._hostnames`, `fingerprint_facts` backfill hostname):** `best_guess` non filtrava lo stato delle `NameProposal` e sorfava proposte **rejected/superseded/archived** — in prod **51 asset** ricevevano come «best guess» un nome che l'utente aveva rifiutato o che era stato soppiantato. Ora i tre percorsi consumano SOLO proposte `pending`; le altre restano a DB (storia leggibile, `escludere ≠ cancellare`). Fatti `fact_assertions` in stato `superseded/historical` non erano consumati (i percorsi leggono `resolver.current` o `observations_raw`, mai gli stati non correnti) → per quel lato il fix è preventivo (misurato: 0).
++- **W6.2 DEBT-IPP-PRECEDENCE (T-c/T-d), gerarchia unica I5:** `best_guess` decideva la precedenza con un **secondo prospetto di pesi** (`SOURCE_WEIGHT`) non coincidente con I5. Rimosso: ora ordina per `authority_for` (registro I5) primario, `confidence` a parità. `ipp`/`snmp` hanno un rank **dichiarato esplicito** in `AUTHORITY_RANK` (ipp=88, snmp=87: identità auto-dichiarata dal device via management, sotto l'AI curata e sopra dhcp/fritz). Root-cause di T-c/T-d: `create_name_proposal` faceva `db.add` senza sincronizzare la relazione `asset.name_proposals` → le proposte create non erano visibili in-sessione; ora `append` alla relazione. T-c → `('Stampante Studio','ipp')`, T-d → proposta `snmp` presente. Test non indeboliti.
++- **W6.3 soppressione alla generazione (già conforme):** `should_suppress_proposal` sopprime per **provenienza + soggetto** (chassis-manual blocca sorgenti più deboli; dedup per valore), mai per specificità del nome (I6, K6). Gate `rg 'scoreSpecificity|specificity' api/` **vuoto**.
++- **W6.2/6.4 R-D:** un'inferenza AI resta marcata (`source=ai`, `status=pending`) e NON sovrascrive un valore `manual`; `ai` non entra come sorgente hostname fattuale nel payload LLM.
++- **W6.4 gate G6 (writer fermi, `now` ricalcolato):** `best_guess` PRE vs DEPLOYED, per id. Baseline pre-deploy `diff=0` (inline-old fedele). Post-deploy: **54 differenze, tutte (a)** — 51 `status_exclusion` (correntezza) + 3 `i5_reorder` (id 109/120/134: `ai` pending ora batte `oui`/`fritz` per I5). Zero (b), zero (c). Fingerprint/AI generation NON esercitati in prod (K4): filtro preventivo + AI = API a pagamento; copertura nei test unitari.
++- **W6.6 test (nodi nominati):** Python nominati verdi (incl. `test_w6_consumers` W6.6.1-6.4, T-c/T-d ora verdi) + 39 JS. Gate I6 vuoto.
++
++## 0.10.55 — W5-bis: chiusure prima di W6
++
++- **W5b.1 mapping livello→stato TOTALE (`trust.py` `_apply_level_meta`):** per ogni livello attivo (`known`/`confirmed_present`) `operational_state="active"` viene scritto SEMPRE. Prima, se `inventory_hidden_auto` era falso, `operational_state` restava invariato e `_build_trust_plan` (che confronta `operational_state`) marcava `structural` in perpetuo — stessa forma del difetto 109 dietro una condizione. L'auto-hide viene revocato; un nascondimento MANUALE resta rispettato ed esplicitamente escluso (non è `structural`: il piano confronta `operational_state`, non i flag di hide). Mapping reso totale, gate NON reso cieco (F-7: unico writer del campo).
++- **W5b.2 gate di regime = CONVERGENZA (`scripts/wp_gate.py` riscritto):** prima costruiva due piani `dry_run` sullo stesso stato con lo stesso `now` (verificava il determinismo, non la convergenza). Ora: piano → **apply** (in-sessione, mai committato, snapshot pre-op) → ricostruzione con `now` **ricalcolato** → `structural == []`. Precisazione aggiunta a `obs-wp.md` (non riscritta la storia).
++- **W5b.3 lista classe-(b) chiusa voce per voce:** copia ingest `wifi_associations.resolve_ap_asset` era rimasta su `is_current` dopo la migrazione W5 di `topology._resolve_ap_asset`; migrata al resolver contestuale `resolve_asset_by_ip_at(ap_ip, observed_at)`, tie → None → fall-through sul nome (I2). Chiamanti di `presentation_name_for_asset` verificati: nessuno annulla il None con `or ""`/placeholder come surrogato di nome canonico (i fallback sono display-di-ultima-istanza, dichiarati). G5 di W5 non ha esercitato il path `ap_ip` (0/62): copertura nei test unitari (dichiarato, non «verificato»).
++- **W5b.5 test (nodi nominati):** 176 nodi Python verdi + 39 JS verdi + nuovi W5b.1.5 (mapping totale, hide manuale preservato) e W5b.3 (ingest AP contestuale + tie). T-c/T-d (`test_printer_enrichment`, DEBT-IPP-PRECEDENCE) restano ROSSI: contratti W6, non addomesticati. Gate I6 `rg 'scoreSpecificity|specificity' api/` vuoto.
++
++## 0.10.54 — W5: consumatori dello stato corrente sul resolver
++
++- **W5.0/1 perimetro:** migrazione di LETTURA (nessuna scrittura su colonne Asset). Il nome canonico nelle viste migrate passa già dal resolver (`presentation_name_for_asset` → `current("chassis", …, "asset.name")`, fallback dichiarato I2 quando assente).
++- **W5 `_resolve_ap_asset` (DEBT-TOPO-IP-CONTEXTUAL):** il fallback per-IP non usa più `IpAddress.is_current` ma `resolve_asset_by_ip_at(ap_ip, observed_at)`: risolve l'AP che DETENEVA l'IP al momento dell'associazione, non chi lo detiene ora. Tie → None → fall-through all'euristica sul nome (I2, nessun proprietario indovinato).
++- **W5.1.3 (IP multi-valore):** `asset.iface_ip` ha `cardinality=single` (solo IP eletto); il resolver NON è fonte esclusiva per gli IP finché il ruolo non entra nella `excl_key` (pre-condizione W3, DEBT-IFACE-IP-CARDINALITY-ROLE). La UI continua a mostrare tutti gli IP reali (multi-IP non collassati).
++- **W5.2 gate G5 (writer fermi):** risoluzione AP `is_current` vs contestuale su 62 associazioni Wi-Fi → **0 differenze** (0 associazioni sul path `ap_ip`; tutte risolvono per `ap_asset_id`/`ap_mac`). Nessuna regressione: la migrazione è un fix latente, equivalenza-preservante sui dati correnti.
++- **W5.4 test:** `_resolve_ap_asset` contestuale + tie→fall-through (W5.4.6); chassis un nome canonico dal resolver (W5.4.5); fatto assente → None (W5.4.1); resolver stale/superseded esclusi dal corrente, storia leggibile (facts_resolver/shadow_w2).
++
++## 0.10.53 — W-P: presenza con un solo proprietario, stato derivato
++
++- **W-P.1 (misurato):** ipotesi A — Fritz VEDE l'asset 109 (`discovery.fritz.active=True` fresh, MAC `D8:EC:5E:CC:1C:01`). Il lift era legittimo; il difetto era che `classify_asset` non consumava l'evidenza fritz → riderivava `fritz_historical` ≠ stato memorizzato → `structural=1` permanente. Divergenti reali: solo 109.
++- **W-P.2:** l'evidenza si scrive, lo stato si deriva. `classify_asset` ora legge l'evidenza fritz-active fresca (`meta.discovery.fritz`, finestra staleness) e deriva `known` (autorità fritz I5 0.90, MAI `confirmed_present`). `lift_fritz_quarantine_on_active` non scrive più lo stato: registra l'evidenza e ri-esegue la derivazione unica. Mapping `livello→stato` estratto in `_apply_level_meta` (un solo writer, condiviso con `_apply_trust_plan`).
++- **W-P.3:** round-trip a writer fermi (due piani consecutivi `structural==[]`); fixture 109-like con/senza evidenza fritz; D.0.b (fresh→known, mai confirmed_present) + reversibilità; W-C invariata (inventory non solleva né smasha la quarantena). Gate I6 vuoto.
++- **fritz_historical NON assorbente:** un'evidenza fritz-active fresca solleva la quarantena via derivazione; scaduta l'evidenza il piano riporta a `fritz_historical`/`stale_unlocated` senza oscillare.
++- **DEBT-PRESENCE-SOURCE-OUTAGE:** migliorato (fritz vivo → `known`, non stale), ma NON chiuso: manca ancora la distinzione «sorgente non disponibile» vs «dispositivo assente» (richiede segnale di copertura sorgente). Resta APERTO.
++
++## 0.10.52 — W4d: census Asset.name, una scrittura rename, UX truth
++
++- **W4d.1:** censimento lettori `Asset.name`; `presentation_name_for_asset` su API display/porte/topologia/scan; lista (b) → input W5.
++- **W4d.2:** `adopt_name_on_chassis` / `mark_lgs310c_manual` → sola `apply_observation` (niente doppio shadow).
++- **W4d.3:** `obs-ux2.md` matrice «non verificato a runtime» + checklist Michele; LGS via API reali.
++- **W4d.4:** favicon opzione B (anello+hub, stessi token) pubblicata; attuale non sostituita.
++- **F0:** DEBT-FRITZ-TR064-CREDENTIALS chiuso (recreate collector).
++
++## 0.10.51 — F2: revisione UI/UX portale (presenza, Mappa, favicon)
++
++- **F2.0:** gruppo nav MAPPA = Inventario/Impianto/Topologia/…; mappa porte fisica = `/plant`.
++- **F2.1 Plant:** deep-link `?asset=`/`?asset_id=`; pallini SNMP nascosti se non supportati (GS308); limiti I2/I7 in Branch308.
++- **F2.2–3:** banner Fritz muto (Oggi/Dashboard/Inventario); `stale_unlocated` → «copertura sorgente non disponibile»; conflitti R-H nel flusso Oggi; dossier/inventario un nome chassis.
++- **F2.5:** favicon su token `--bg-0`/`--accent`/`--ok`; SVG+ICO+apple-touch; link versionati.
++- **Non toccato:** trust layer (DEBT-PRESENCE-SOURCE-OUTAGE); credenziali Fritz; W5 consumatori.
++
++## 0.10.50 — W4c: rename chassis un-canonico, bonifica una-tantum, boot pulito
++
++- **W4c.1:** `adopt_name_on_chassis` scrive solo `fact_assertions` (subject=chassis); i membri non vengono rinominati né marcati manual; triage sibling su `chassis_role===interface`.
++- **W4c.2:** bonifica `provenance_unreliable` con cutoff `2026-07-27T11:00:00Z`, fuori dal boot; script `scripts/unmark_post_cutoff_provenance.py`.
++- **W4c.3:** `mark_lgs310c_manual` rimosso dal bootstrap (helper one-shot).
++- **W4c.5:** aperto DEBT-PRESENCE-SOURCE-OUTAGE (Fritz muto ≠ device assente).
++
++## 0.10.49 — W4b: provenienza senza traduzione, anti-ballooning, rename chassis
++
++- **W4b.0.a:** shadow writers non traducono più le sorgenti; unknown → rifiuto + `unknown_source`; bonifica `provenance_unreliable` su nmap non ricostruibile.
++- **W4b.0.b:** divergenze ripetute (stesso excl_key/value/source) aggiornano `occurrences` invece di nuove righe.
++- **W4b.1:** LGS310C (asset 3 / chassis 24) marcato manual (provenienza); LGS328C resta `unknown_nonempty`; UI card dichiara l’apparato di appartenenza.
++- **W4b.2:** rename/adopt a soggetto chassis; member → 409 con chassis; conflict-review in Oggi; `asset.name` collegato agli shadow writers.
++- **W4b.3:** aperti DEBT-RH-BEFORE-REFRESH; `_table_bytes` non usa più la size del file DB; DEBT-FRITZ resta aperto (credenziali TR-064 assenti).
++
++## 0.10.48 — W4a: soggetto chassis e soppressione proposte a monte
++
++- **W4a:** NameProposal generate/soppresse per soggetto chassis (manual blocca autorità inferiore; dedup `(chassis, valore)`); risolvibilità calcolata; sibling come interfacce.
++- **W4a.0:** `facts/shadow.py` tracciato; DEBT-IFACE-IP-CARDINALITY-ROLE; DEBT-FRITZ-TR064-CREDENTIALS (STOP-5); `subject_ref_interface` rifiuta multi-NIC senza primary.
++- **Non toccato:** adopt/rename 409 (W4b); shadow `asset.name`.
++- Report: [`docs/obs-w4a.md`](docs/obs-w4a.md).
++
++## 0.10.47 — W2: shadow writers fact_assertion
++
++- **W2:** scritture parallele `asset.iface_ip` (soggetto=interfaccia, excl_key=`asset.iface_ip:{iface_id}`); nessun consumatore legge ancora.
++- **S1:** barriera + SAVEPOINT; kill switch `FACT_SHADOW_WRITERS_ENABLED`; circuit breaker (20k righe / 2k/giorno / 50 MiB).
++- **Non collegato:** `asset.name` (chassis → W4a/W4b). Observability: `GET /api/admin/facts/shadow-stats`.
++- Report: [`docs/obs-w2.md`](docs/obs-w2.md).
++
++## 0.10.46 — W-D-fix: discriminante multi-IP sul dedup
++
++- **X.2:** `entity_key` resta MAC-scoped; `compute_dedup_key` ripristina discriminante IP (`fact_discriminant_for`) — DEBT-TOPO-IP-CONTEXTUAL ripristinato.
++- **X.4:** lift Fritz → `known` (non `confirmed_present`); decisione in `on_fritz_active_evidence` (trust).
++- **Debiti:** DEBT-LASTSEEN-DUAL-SEMANTICS. W2 → **0.10.47**.
++- Report: [`docs/obs-wd-fix.md`](docs/obs-wd-fix.md).
++
++## 0.10.45 — W-D: sblocco gate W2 (T-b, T-e, T-f)
++
++- **T-b:** `entity_key_for` MAC-scoped quando MAC noto; IP-only provisional (`identity_provisional`) + DEBT-PROVISIONAL-IDENTITY-MERGE.
++- **T-e/T-f:** demotion IP chiude `last_seen=now` → `resolve_asset_by_ip_at` trova il detentore storico.
++- **D.0.b:** `lift_fritz_quarantine_on_active` (trust) — quarantena non assorbente; inventory resta bloccata.
++- **Debiti:** DEBT-DOUBLE-CURRENT-IP; Cassiopea ri-caratterizzata chassis (W4a/W4b); alembic unificato in DEBT-ALEMBIC-BASELINE-LEGACY-TABLE. W2 writers → **0.10.46** (poi **0.10.47** in W-D-fix).
++- Report: [`docs/obs-wd.md`](docs/obs-wd.md).
++
++## 0.10.44 — F1-bis: DEBT-RECONCILE-CHURN-1 + riqualifica gate F1
++
++- **W-C:** `inventory_may_set_operational_state` non solleva/smasha `trust_quarantine` (`fritz_historical`) — chiude DEBT-RECONCILE-CHURN-1 (classe, non asset 116). Test zero-iface obbligatorio.
++- **W-B.3:** script una-tantum `scripts/normalize_empty_manual_names.py` (asset 98/150 name manual vuoto → assenza; no bump).
++- **Debiti:** DEBT-IP-CURRENT-SCOPE-PER-ASSET (Cassiopea asset 6). W2 slitta a **0.10.45** (poi rinumerato → **0.10.46** in W-D).
++- Report: [`docs/obs-f1bis.md`](docs/obs-f1bis.md).
++
+ ## 0.10.43 — OBS-IDENTITY W1.5-bis gate closure
+ 
+-- **W1.5-bis:** rimossa soglia E3 inventata (`mac_count_threshold` solo se misurata); test limiti E5-physical (D.2); tool RO `obs_identity_linker_dryrun.py`. Nessun writer identity acceso. W2 shadow writers slitta a **0.10.44**. Debiti: DEBT-RECONCILE-CHURN-1 (asset 116), DEBT-E3-AVAILABLE-FALSE.
++- **W1.5-bis:** rimossa soglia E3 inventata (`mac_count_threshold` solo se misurata); test limiti E5-physical (D.2); tool RO `obs_identity_linker_dryrun.py`. Nessun writer identity acceso. W2 shadow writers slitta a **0.10.44** (poi rinumerato → **0.10.45** in F1-bis). Debiti: DEBT-RECONCILE-CHURN-1 (asset 116), DEBT-E3-AVAILABLE-FALSE.
++- **MAC↔IP (fixture):** classifier puro `mac_ip_policy.py` + 9 test contratto; **non** wired a reconcile/trust (DEBT-MAC-IP-POLICY-WIRE → W7).
+ 
+ ## 0.10.42 — W1.5 identity-evidence (deployata)
+ 
+diff --git a/observatory/VERSION b/observatory/VERSION
+index a548662..9664aec 100644
+--- a/observatory/VERSION
++++ b/observatory/VERSION
+@@ -1 +1 @@
+-0.10.43
++0.10.69
+diff --git a/observatory/api/app/facts/gs308.py b/observatory/api/app/facts/gs308.py
+new file mode 100644
+index 0000000..bf5a4b9
+--- /dev/null
++++ b/observatory/api/app/facts/gs308.py
+@@ -0,0 +1,53 @@
++"""O6 — GS308EP branch facts (read path in facts/)."""
++
++from __future__ import annotations
++
++from typing import Any
++
++from sqlalchemy import select
++from sqlalchemy.orm import Session
++
++from app.models import FactAssertion
++
++FACT_PORT_ASSIGNED_MAC = "port.assigned_mac"
++EMPTY_SENTINEL = "__empty__"
++
++
++def _row_view(row: FactAssertion) -> dict[str, Any]:
++    return {
++        "id": int(row.id),
++        "subject_id": int(row.subject_id),
++        "state": row.state,
++        "value_norm": row.value_norm or "",
++        "value_json": dict(row.value_json or {}),
++        "source": row.source,
++        "authority": row.authority,
++        "reason": row.reason or "",
++        "observed_at": row.observed_at,
++        "created_at": row.created_at,
++        "superseded_by_id": row.superseded_by_id,
++    }
++
++
++def list_current_port_assignments(db: Session) -> list[dict[str, Any]]:
++    rows = db.scalars(
++        select(FactAssertion).where(
++            FactAssertion.fact_key == FACT_PORT_ASSIGNED_MAC,
++            FactAssertion.state == "current",
++        )
++    ).all()
++    return [_row_view(r) for r in rows]
++
++
++def current_assignment_for_port(db: Session, port_id: int) -> dict[str, Any] | None:
++    row = db.scalar(
++        select(FactAssertion)
++        .where(
++            FactAssertion.fact_key == FACT_PORT_ASSIGNED_MAC,
++            FactAssertion.subject_type == "port",
++            FactAssertion.subject_id == int(port_id),
++            FactAssertion.state == "current",
++        )
++        .order_by(FactAssertion.id.desc())
++    )
++    return _row_view(row) if row else None
+diff --git a/observatory/api/app/facts/registry.py b/observatory/api/app/facts/registry.py
+index c0faf54..805706c 100644
+--- a/observatory/api/app/facts/registry.py
++++ b/observatory/api/app/facts/registry.py
+@@ -6,16 +6,31 @@ from dataclasses import dataclass
+ from datetime import timedelta
+ from typing import Any, Callable
+ 
+-from app.models import Asset, Chassis, Interface
+-
+-# I5 — single hierarchy: manual > ai > dhcp(0.95) > fritz(0.90) > oui(0.70)
++from app.models import Asset, Chassis, Interface, SwitchPort
++
++# I5 — single hierarchy (PRODUCT invariant, F-8): manual > ai > dhcp(0.95) >
++# fritz(0.90) > oui(0.70). Discovery family (scan/arp/icmp) shares nmap tier — declared.
++# W6-REVIEW.1 (DEBT-IPP-PRECEDENCE): ipp/snmp sono identità AUTO-DICHIARATA dal device via
++# management (IPP printer-name; SNMP make-and-model/sysName). L'UNICO vincolo MISURATO è
++# `ipp > fritz` (test T-c, fixture fritz vs ipp) — nessun test impone `ipp > dhcp` né alcun
++# ordine per snmp. Perciò collocati nel tier minimo NON alterante di I5: sopra fritz(80),
++# SOTTO dhcp(85), così l'invariante di prodotto dhcp>fritz>oui resta intatto. Valore
++# minimo che la misura richiede (ipp>80 ⇒ 81); snmp allo stesso tier (nessuna misura lo
++# ordina, tie risolto da confidence). La posizione del tier management vs dhcp è una
++# decisione di DOMINIO lasciata a Michele (STOP-5, K8): qui è tenuta sotto dhcp. In prod
++# 0 proposte pending ipp/snmp ⇒ 0 flip di best_guess (fix inerte, misurato in W6R.1.3).
+ AUTHORITY_RANK: dict[str, int] = {
+     "manual": 100,
+     "ai": 90,
+     "dhcp": 85,
++    "ipp": 81,
++    "snmp": 81,
+     "fritz": 80,
+     "mgmt": 80,
+     "nmap": 75,
++    "scan": 75,
++    "arp": 75,
++    "icmp": 75,
+     "dns": 75,
+     "mdns": 75,
+     "ssdp": 70,
+@@ -23,14 +38,23 @@ AUTHORITY_RANK: dict[str, int] = {
+     "portal": 65,
+     "fdb": 60,
+     "auto": 50,
++    # Declared unknown: weakest explicit tier (I2 — not invented as another source).
++    "unknown": 10,
+ }
+ 
+ AUTHORITY_CONFIDENCE: dict[str, float] = {
+     "manual": 1.0,
+     "ai": 0.96,
++    "ipp": 0.96,
++    "snmp": 0.94,
+     "dhcp": 0.95,
+     "fritz": 0.90,
+     "oui": 0.70,
++    "nmap": 0.75,
++    "scan": 0.75,
++    "arp": 0.75,
++    "icmp": 0.75,
++    "unknown": 0.0,
+ }
+ 
+ 
+@@ -63,6 +87,30 @@ def subject_ref_asset(entity: Any) -> tuple[str, int]:
+     return ("asset", int(asset.id))
+ 
+ 
++def subject_ref_interface(entity: Any) -> tuple[str, int]:
++    """IP currency subject is the NIC (W2 — never asset-scoped exclusivity).
++
++    Multi-NIC without a marked primary → raise (I2: no plausible guess). S1 barrier
++    isolates the error when called from shadow writers.
++    """
++    if isinstance(entity, Interface):
++        return ("interface", int(entity.id))
++    asset = _entity_asset(entity)
++    if asset is None:
++        raise ValueError("subject_ref_interface requires Asset or Interface")
++    ifaces = list(asset.interfaces or [])
++    if not ifaces:
++        raise ValueError("subject_ref_interface requires at least one Interface")
++    primaries = [i for i in ifaces if i.is_primary]
++    if len(primaries) == 1:
++        return ("interface", int(primaries[0].id))
++    if len(ifaces) == 1:
++        return ("interface", int(ifaces[0].id))
++    raise ValueError(
++        "subject_ref_interface: multiple interfaces and none marked primary — refuse guess"
++    )
++
++
+ def excl_key_fixed(key: str) -> Callable[..., str]:
+     def _fn(_subject: tuple[str, int], _entity: Any, _value: Any) -> str:
+         return key
+@@ -71,23 +119,44 @@ def excl_key_fixed(key: str) -> Callable[..., str]:
+ 
+ 
+ def excl_key_iface_ip(_subject: tuple[str, int], entity: Any, _value: Any) -> str:
+-    """Per-MAC/interface exclusivity (W0 §0.3 — sequential same MAC)."""
++    """Exclusivity = fact_key + interface_id (W2 — GS308EP sequential; Cassiopea parallel).
++
++    Same refuse-to-guess rule as subject_ref_interface when resolving from Asset.
++    """
+     if isinstance(entity, Interface):
+-        return f"ip:{entity.id}"
++        return f"asset.iface_ip:{entity.id}"
+     asset = _entity_asset(entity)
+-    if asset and asset.interfaces:
+-        primary = next((i for i in asset.interfaces if i.is_primary), asset.interfaces[0])
+-        return f"ip:{primary.id}"
+-    raise ValueError("excl_key_iface_ip requires Interface or Asset with interfaces")
++    if not asset or not asset.interfaces:
++        raise ValueError("excl_key_iface_ip requires Interface or Asset with interfaces")
++    ifaces = list(asset.interfaces)
++    primaries = [i for i in ifaces if i.is_primary]
++    if len(primaries) == 1:
++        return f"asset.iface_ip:{primaries[0].id}"
++    if len(ifaces) == 1:
++        return f"asset.iface_ip:{ifaces[0].id}"
++    raise ValueError(
++        "excl_key_iface_ip: multiple interfaces and none marked primary — refuse guess"
++    )
++
++
++def subject_ref_port(entity: Any) -> tuple[str, int]:
++    """O4: subject = SwitchPort.id (never stub 0)."""
++    if isinstance(entity, SwitchPort) and getattr(entity, "id", None):
++        return ("port", int(entity.id))
++    raise ValueError("subject_ref_port requires SwitchPort with id")
+ 
+ 
+ def excl_key_port_fdb(_subject: tuple[str, int], _entity: Any, value: Any) -> str:
++    """MAC-centric excl so a move across ports can supersede (O4)."""
+     if isinstance(value, dict):
+-        switch = value.get("switch") or value.get("switch_code") or ""
+-        port = value.get("port") or ""
+         mac = value.get("mac") or ""
+-        return f"fdb:{switch}:{port}:{mac}"
+-    return f"fdb:{_norm_text(value)}"
++        return f"fdb:{_norm_text(mac).upper()}"
++    return f"fdb:{_norm_text(value).upper()}"
++
++
++def excl_key_port_assigned(_subject: tuple[str, int], _entity: Any, value: Any) -> str:
++    """O6: one manual assignment slot per 308 port (or empty declaration)."""
++    return "assigned"
+ 
+ 
+ def excl_key_name_proposal(_subject: tuple[str, int], _entity: Any, value: Any) -> str:
+@@ -129,13 +198,19 @@ FACT_REGISTRY: dict[str, FactSpec] = {
+     ),
+     "asset.iface_ip": FactSpec(
+         fact_key="asset.iface_ip",
+-        subject_scope="asset",
+-        subject_ref=subject_ref_asset,
++        # W2/W4a: cardinality=single means the ELECTED primary IP only.
++        # Absence in fact_assertions does NOT mean the IP does not exist
++        # (Fritz multi-role IPs — see DEBT-IFACE-IP-CARDINALITY-ROLE).
++        subject_scope="interface",
++        subject_ref=subject_ref_interface,
+         cardinality="single",
+         excl_key=excl_key_iface_ip,
+-        sources=frozenset({"mgmt", "dhcp", "fritz", "nmap", "manual"}),
++        sources=frozenset(
++            {"mgmt", "dhcp", "fritz", "nmap", "manual", "scan", "arp", "icmp"}
++        ),
+         ttl_window=timedelta(hours=2),
+-        consumers=("elect_interface_primary", "topology", "scans", "monitoring"),
++        # W2/W4b: shadow writers; consumers migrate in W5/W7.
++        consumers=(),
+     ),
+     "asset.mgmt_ip": FactSpec(
+         fact_key="asset.mgmt_ip",
+@@ -160,12 +235,22 @@ FACT_REGISTRY: dict[str, FactSpec] = {
+     "port.fdb_mac": FactSpec(
+         fact_key="port.fdb_mac",
+         subject_scope="port",
+-        subject_ref=lambda _e: ("port", 0),  # resolved by caller in W2+
++        subject_ref=subject_ref_port,
+         cardinality="scoped",
+         excl_key=excl_key_port_fdb,
+         sources=frozenset({"fdb"}),
+         ttl_window=None,
+-        consumers=("topology", "presence"),
++        consumers=("topology", "presence", "oggi"),
++    ),
++    "port.assigned_mac": FactSpec(
++        fact_key="port.assigned_mac",
++        subject_scope="port",
++        subject_ref=subject_ref_port,
++        cardinality="single",
++        excl_key=excl_key_port_assigned,
++        sources=frozenset({"manual"}),
++        ttl_window=None,
++        consumers=("oggi", "plant", "gs308"),
+     ),
+     "rel.physical_link": FactSpec(
+         fact_key="rel.physical_link",
+diff --git a/observatory/api/app/facts/shadow.py b/observatory/api/app/facts/shadow.py
+index e18591a..ee4b245 100644
+--- a/observatory/api/app/facts/shadow.py
++++ b/observatory/api/app/facts/shadow.py
+@@ -1,10 +1,10 @@
+-"""W2 shadow writers — parallel fact_assertion writes; no consumers read yet.
++"""W2/W4b shadow writers — parallel fact_assertion writes.
+ 
+ S1: never degrade the observed ingest path. Kill switch + circuit breaker
+ stop writes without touching Asset / reconcile fields.
+ 
+-Writes use a SAVEPOINT on the ingest session so (1) freshly flushed interfaces
+-are visible and (2) assertion rollback never rolls back the observation.
++W4b.0.a: sources are NEVER translated. Unknown sources are refused, counted,
++and logged once — the S1 barrier keeps ingest alive.
+ """
+ 
+ from __future__ import annotations
+@@ -20,8 +20,9 @@ from sqlalchemy import func, select, text
+ from sqlalchemy.orm import Session
+ 
+ from app.config import get_settings
++from app.facts.registry import get_fact_spec
+ from app.facts.resolver import apply_observation
+-from app.models import FactAssertion, Interface, utcnow
++from app.models import FactAssertion, Interface, SwitchPort, utcnow
+ 
+ log = logging.getLogger("observatory.facts.shadow")
+ 
+@@ -31,6 +32,9 @@ MAX_GROWTH_PER_DAY = 2_000
+ MAX_TABLE_BYTES = 50 * 1024 * 1024
+ 
+ FACT_IFACE_IP = "asset.iface_ip"
++FACT_ASSET_NAME = "asset.name"
++FACT_PORT_FDB_MAC = "port.fdb_mac"
++FACT_PORT_ASSIGNED_MAC = "port.assigned_mac"
+ 
+ _lock = threading.Lock()
+ _counters: dict[tuple[str, str], dict[str, int]] = defaultdict(
+@@ -44,6 +48,7 @@ _counters: dict[tuple[str, str], dict[str, int]] = defaultdict(
+         "errors": 0,
+         "skipped_breaker": 0,
+         "skipped_disabled": 0,
++        "unknown_source": 0,
+     }
+ )
+ _breaker_open = False
+@@ -52,31 +57,13 @@ _breaker_opened_at: datetime | None = None
+ _day_anchor: date | None = None
+ _day_start_rows = 0
+ _error_logged = False
+-
+-# Source aliases from ingest kinds → registry-allowed labels.
+-_SOURCE_MAP: dict[str, str] = {
+-    "fritz": "fritz",
+-    "dhcp": "dhcp",
+-    "nmap": "nmap",
+-    "mgmt": "mgmt",
+-    "manual": "manual",
+-    "scan": "nmap",
+-    "arp": "nmap",
+-    "icmp": "nmap",
+-    "mdns": "nmap",
+-    "ssdp": "nmap",
+-    "portal": "fritz",
+-}
+-
+-
+-def _norm_source(source: str) -> str:
+-    key = str(source or "").strip().lower()
+-    return _SOURCE_MAP.get(key, "nmap")
++_unknown_source_logged = False
++_unknown_source_total = 0
+ 
+ 
+ def _bump(fact_key: str, source: str, action: str) -> None:
+     with _lock:
+-        bucket = _counters[(fact_key, source)]
++        bucket = _counters[(fact_key, source or "?")]
+         if action == "superseded":
+             bucket["supersession"] += 1
+         elif action in bucket:
+@@ -90,6 +77,7 @@ def reset_shadow_stats_for_tests() -> None:
+     """Test helper — clears in-memory counters / breaker."""
+     global _breaker_open, _breaker_reason, _breaker_opened_at
+     global _day_anchor, _day_start_rows, _error_logged
++    global _unknown_source_logged, _unknown_source_total
+     with _lock:
+         _counters.clear()
+         _breaker_open = False
+@@ -98,6 +86,8 @@ def reset_shadow_stats_for_tests() -> None:
+         _day_anchor = None
+         _day_start_rows = 0
+         _error_logged = False
++        _unknown_source_logged = False
++        _unknown_source_total = 0
+ 
+ 
+ def force_breaker_open_for_tests(reason: str = "test") -> None:
+@@ -109,6 +99,10 @@ def force_breaker_open_for_tests(reason: str = "test") -> None:
+ 
+ 
+ def _table_bytes(db: Session) -> int:
++    """Size of fact_assertions + its indexes only. Never the whole DB file.
++
++    W4b.3.2: dbstat absent → 0 (unknown), not sqlite file size (false breaker).
++    """
+     try:
+         row = db.execute(
+             text(
+@@ -121,12 +115,7 @@ def _table_bytes(db: Session) -> int:
+             return int(row)
+     except Exception:  # noqa: BLE001 — dbstat optional
+         pass
+-    settings = get_settings()
+-    path = Path(settings.sqlite_path)
+-    try:
+-        return int(path.stat().st_size) if path.exists() else 0
+-    except OSError:
+-        return 0
++    return 0
+ 
+ 
+ def _row_count(db: Session) -> int:
+@@ -204,78 +193,384 @@ def shadow_stats() -> dict[str, Any]:
+                 "max_growth_per_day": MAX_GROWTH_PER_DAY,
+                 "max_table_bytes": MAX_TABLE_BYTES,
+             },
++            "unknown_source": _unknown_source_total,
+             "counters": by_key_source,
+         }
+ 
+ 
+-def safe_shadow_iface_ip(
++def _source_allowed(fact_key: str, source: str) -> bool:
++    src = str(source or "").strip().lower()
++    if not src:
++        return False
++    if src == "manual":
++        return True
++    try:
++        spec = get_fact_spec(fact_key)
++    except KeyError:
++        return False
++    return src in spec.sources
++
++
++def _refuse_unknown_source(fact_key: str, source: str) -> str | None:
++    """Return normalized source or None if refused (W4b.0.a — no translation)."""
++    global _unknown_source_logged, _unknown_source_total
++    src = str(source or "").strip().lower()
++    if _source_allowed(fact_key, src):
++        return src
++    _bump(fact_key, src or "?", "unknown_source")
++    with _lock:
++        _unknown_source_total += 1
++        first = not _unknown_source_logged
++        if first:
++            _unknown_source_logged = True
++    if first:
++        log.error(
++            "fact_shadow_unknown_source fact_key=%s source=%r — refused, not translated",
++            fact_key,
++            source,
++        )
++    else:
++        log.warning(
++            "fact_shadow_unknown_source fact_key=%s source=%r",
++            fact_key,
++            source,
++        )
++    return None
++
++
++def _apply_shadow(
+     db: Session,
+-    iface: Interface,
+     *,
+-    ip: str,
++    fact_key: str,
++    entity: Any,
++    value: str,
+     source: str,
+-    observed_at: datetime | None = None,
+-    confidence: float | None = None,
+-) -> None:
+-    """Apply asset.iface_ip inside a SAVEPOINT; never raise to caller (S1)."""
++    observed_at: datetime | None,
++    confidence: float | None,
++    value_json: dict | None = None,
++) -> Any | None:
+     global _error_logged
+ 
+     settings = get_settings()
+-    src = _norm_source(source)
+     if not settings.fact_shadow_writers_enabled:
+-        _bump(FACT_IFACE_IP, src, "skipped_disabled")
+-        return
++        _bump(fact_key, str(source or "?"), "skipped_disabled")
++        return None
+ 
+-    ip_n = (ip or "").strip()
+-    if not ip_n or iface is None or not getattr(iface, "id", None):
+-        return
++    src = _refuse_unknown_source(fact_key, source)
++    if src is None:
++        return None
+ 
+     try:
+         open_, _reason = evaluate_circuit_breaker(db)
+         if open_:
+-            _bump(FACT_IFACE_IP, src, "skipped_breaker")
+-            return
++            _bump(fact_key, src, "skipped_breaker")
++            return None
+ 
+         with db.begin_nested():
+             result = apply_observation(
+                 db,
+-                fact_key=FACT_IFACE_IP,
+-                entity=iface,
+-                value=ip_n,
++                fact_key=fact_key,
++                entity=entity,
++                value=value,
+                 source=src,
+                 observed_at=observed_at,
+                 confidence=confidence,
++                value_json=value_json,
+             )
+ 
+         action = result.action
+         if action == "superseded":
+-            _bump(FACT_IFACE_IP, src, "supersession")
++            _bump(fact_key, src, "supersession")
+         elif action == "refresh":
+-            _bump(FACT_IFACE_IP, src, "refresh")
++            _bump(fact_key, src, "refresh")
+         elif action == "weak_evidence":
+-            _bump(FACT_IFACE_IP, src, "weak_evidence")
++            _bump(fact_key, src, "weak_evidence")
+         elif action == "conflict_review":
+-            _bump(FACT_IFACE_IP, src, "conflict_review")
++            _bump(fact_key, src, "conflict_review")
+         elif action == "created":
+-            _bump(FACT_IFACE_IP, src, "created")
++            _bump(fact_key, src, "created")
+         elif action == "cooldown":
+-            _bump(FACT_IFACE_IP, src, "cooldown")
++            _bump(fact_key, src, "cooldown")
+ 
+         evaluate_circuit_breaker(db)
++        return result
+     except Exception as exc:  # noqa: BLE001 — S1 barrier
+-        _bump(FACT_IFACE_IP, src, "errors")
++        _bump(fact_key, src, "errors")
+         if not _error_logged:
+             _error_logged = True
+             log.exception(
+-                "fact_shadow_apply_isolated fact_key=%s interface_id=%s err=%s",
+-                FACT_IFACE_IP,
+-                getattr(iface, "id", None),
++                "fact_shadow_apply_isolated fact_key=%s err=%s",
++                fact_key,
+                 exc,
+             )
+         else:
+             log.warning(
+-                "fact_shadow_apply_isolated fact_key=%s interface_id=%s err=%s",
+-                FACT_IFACE_IP,
+-                getattr(iface, "id", None),
++                "fact_shadow_apply_isolated fact_key=%s err=%s",
++                fact_key,
+                 exc,
+             )
++        return None
++
++
++def safe_shadow_iface_ip(
++    db: Session,
++    iface: Interface,
++    *,
++    ip: str,
++    source: str,
++    observed_at: datetime | None = None,
++    confidence: float | None = None,
++) -> None:
++    """Apply asset.iface_ip inside a SAVEPOINT; never raise to caller (S1)."""
++    ip_n = (ip or "").strip()
++    if not ip_n or iface is None or not getattr(iface, "id", None):
++        return
++    _apply_shadow(
++        db,
++        fact_key=FACT_IFACE_IP,
++        entity=iface,
++        value=ip_n,
++        source=source,
++        observed_at=observed_at,
++        confidence=confidence,
++    )
++
++
++def safe_shadow_asset_name(
++    db: Session,
++    entity: Any,
++    *,
++    name: str,
++    source: str,
++    observed_at: datetime | None = None,
++    confidence: float | None = None,
++) -> None:
++    """Apply asset.name (chassis subject) inside SAVEPOINT; never raise (S1)."""
++    text = (name or "").strip()
++    if not text or entity is None:
++        return
++    _apply_shadow(
++        db,
++        fact_key=FACT_ASSET_NAME,
++        entity=entity,
++        value=text,
++        source=source,
++        observed_at=observed_at,
++        confidence=confidence,
++    )
++
++
++def _mac_still_on_port(port: Any, mac: str) -> bool:
++    """True if port.observed_macs still lists mac (concurrent FDB learning)."""
++    from app.services.macutil import normalize_mac
++
++    if port is None or not mac:
++        return False
++    target = normalize_mac(mac)
++    for raw_m in getattr(port, "observed_macs", None) or []:
++        if normalize_mac(raw_m) == target:
++            return True
++    return False
++
++
++def safe_shadow_port_fdb_snapshot(
++    db: Session,
++    port: Any,
++    *,
++    switch_code: str,
++    macs: list[str],
++    observed_at: datetime | None = None,
++) -> None:
++    """O4: write port.fdb_mac for one port snapshot; S1 — never raise to ingest.
++
++    - First successful population of a port → all creates marked baseline in value_json.
++    - Same MAC on another port → prior current rows superseded (MAC-move).
++    - MACs absent from this snapshot on this port → superseded (left_port).
++    """
++    from app.services.macutil import is_locally_administered, normalize_mac
++
++    if port is None or not getattr(port, "id", None):
++        return
++    when = observed_at or utcnow()
++    port_id = int(port.id)
++    port_number = int(getattr(port, "number", 0) or 0)
++    switch_code = (switch_code or "").strip()
++
++    # Baseline = no current port.fdb_mac yet for this subject.
++    prior = db.scalars(
++        select(FactAssertion).where(
++            FactAssertion.fact_key == FACT_PORT_FDB_MAC,
++            FactAssertion.subject_type == "port",
++            FactAssertion.subject_id == port_id,
++            FactAssertion.state == "current",
++        )
++    ).all()
++    baseline_round = len(prior) == 0
++    seen_norm: set[str] = set()
++
++    for raw in macs or []:
++        mac = normalize_mac(raw)
++        if not mac or len(mac) != 17:
++            continue
++        seen_norm.add(mac)
++        # Never send baseline=False on refresh — would erase the bootstrap mark (I2).
++        vj = {
++            "mac": mac,
++            "switch": switch_code,
++            "port": port_number,
++            "port_id": port_id,
++            "randomized": bool(is_locally_administered(mac)),
++        }
++        if baseline_round:
++            vj["baseline"] = True
++            vj["baseline_at"] = when.isoformat() + ("Z" if when.tzinfo is None else "")
++        result = _apply_shadow(
++            db,
++            fact_key=FACT_PORT_FDB_MAC,
++            entity=port,
++            value=mac,
++            source="fdb",
++            observed_at=when,
++            confidence=None,
++            value_json=vj,
++        )
++        if result is None or result.assertion is None:
++            continue
++        # Cross-port MAC-move: supersede other current rows with same excl_key
++        # ONLY when the other port no longer lists this MAC (concurrent FDB
++        # learning on uplink+access is NOT a move — O4 volume invariant).
++        excl = result.assertion.excl_key
++        others = db.scalars(
++            select(FactAssertion).where(
++                FactAssertion.fact_key == FACT_PORT_FDB_MAC,
++                FactAssertion.state == "current",
++                FactAssertion.excl_key == excl,
++                FactAssertion.subject_id != port_id,
++            )
++        ).all()
++        for old in others:
++            if old.id == result.assertion.id:
++                continue
++            other_port = db.get(SwitchPort, int(old.subject_id))
++            # Concurrent presence on another port is NOT a move (O4 hotfix / O5 F0.5).
++            if _mac_still_on_port(other_port, mac):
++                continue
++            old.state = "superseded"
++            old.superseded_by_id = result.assertion.id
++            old.valid_to = when
++            old.reason = "mac_move"
++            _bump(FACT_PORT_FDB_MAC, "fdb", "supersession")
++
++    # MACs that left this port.
++    for old in prior:
++        if old.value_norm in seen_norm:
++            continue
++        if old.state != "current":
++            continue
++        old.state = "superseded"
++        old.valid_to = when
++        old.reason = "left_port"
++        _bump(FACT_PORT_FDB_MAC, "fdb", "supersession")
++
++
++def safe_shadow_port_assigned_mac(
++    db: Session,
++    port: Any,
++    *,
++    mac: str | None,
++    empty: bool = False,
++    observed_at: datetime | None = None,
++    clear: bool = False,
++) -> Any | None:
++    """O6: manual assignment (or empty declaration) on a GS308EP port. Source=manual."""
++    from app.services.macutil import normalize_mac
++    from app.facts.gs308 import EMPTY_SENTINEL
++
++    if port is None or not getattr(port, "id", None):
++        return None
++    when = observed_at or utcnow()
++    if clear:
++        # supersede current by writing empty then leaving? Better: apply empty sentinel clear
++        # via apply with a tombstone — use empty declaration then caller can supersede.
++        value = EMPTY_SENTINEL
++        vj = {"kind": "cleared", "port_id": int(port.id)}
++    elif empty:
++        value = EMPTY_SENTINEL
++        vj = {"kind": "empty_declared", "port_id": int(port.id)}
++    else:
++        mac_n = normalize_mac(mac or "")
++        if not mac_n or len(mac_n) != 17:
++            return None
++        value = mac_n
++        vj = {"kind": "assigned", "mac": mac_n, "port_id": int(port.id)}
++    return _apply_shadow(
++        db,
++        fact_key=FACT_PORT_ASSIGNED_MAC,
++        entity=port,
++        value=value,
++        source="manual",
++        observed_at=when,
++        confidence=1.0,
++        value_json=vj,
++    )
++
++
++# W4c.2.1 — only rows created before the 0.10.49 deploy may be marked unreliable.
++# Deploy 0.10.49 went live 2026-07-27 ~11:03Z (Cassiopea); cutoff = that instant.
++PROVENANCE_BONIFY_CUTOFF = datetime(2026, 7, 27, 11, 0, 0)
++
++
++def bonify_translated_provenance(db: Session) -> dict[str, int]:
++    """W4b.0.a.4 / W4c.2 — one-shot mark for pre-0.10.49 nmap iface_ip rows.
++
++    NOT for the boot path (W4c.2.3). Cutoff: created_at < 2026-07-27T11:00:00Z.
++    Rows created after the fix have authentic provenance and must not be marked.
++    """
++    marked = 0
++    skipped = 0
++    rows = db.scalars(
++        select(FactAssertion).where(FactAssertion.fact_key == FACT_IFACE_IP)
++    ).all()
++    for row in rows:
++        reason = row.reason or ""
++        if "provenance_unreliable" in reason:
++            skipped += 1
++            continue
++        if (row.source or "").lower() != "nmap":
++            skipped += 1
++            continue
++        created = row.created_at
++        if created is not None and created >= PROVENANCE_BONIFY_CUTOFF:
++            skipped += 1
++            continue
++        row.reason = (
++            f"{reason}|provenance_unreliable" if reason else "provenance_unreliable"
++        )
++        marked += 1
++    if marked:
++        db.flush()
++    return {"marked": marked, "skipped": skipped, "total": len(rows)}
++
++
++def unmark_post_cutoff_provenance(db: Session) -> dict[str, Any]:
++    """W4c.2.2 — remove erroneous provenance_unreliable from post-cutoff rows.
++
++    Idempotent. Returns enumerated ids cleared.
++    """
++    cleared: list[int] = []
++    rows = db.scalars(
++        select(FactAssertion).where(FactAssertion.fact_key == FACT_IFACE_IP)
++    ).all()
++    for row in rows:
++        reason = row.reason or ""
++        if "provenance_unreliable" not in reason:
++            continue
++        created = row.created_at
++        if created is None or created < PROVENANCE_BONIFY_CUTOFF:
++            continue
++        parts = [p for p in reason.split("|") if p and p != "provenance_unreliable"]
++        row.reason = "|".join(parts)
++        cleared.append(int(row.id))
++    if cleared:
++        db.flush()
++    return {"cleared": len(cleared), "ids": cleared}
+diff --git a/observatory/api/app/main.py b/observatory/api/app/main.py
+index d79b9d5..fa5cdec 100644
+--- a/observatory/api/app/main.py
++++ b/observatory/api/app/main.py
+@@ -18,6 +18,8 @@ from app.routers import (
+     chassis,
+     dashboard,
+     evolution,
++    fdb_defense,
++    gs308,
+     ingest,
+     monitors,
+     suggestions,
+@@ -130,6 +132,8 @@ def create_app() -> FastAPI:
+     app.include_router(ai_routes.router)
+     app.include_router(ingest.router)
+     app.include_router(evolution.router)
++    app.include_router(fdb_defense.router)
++    app.include_router(gs308.router)
+     app.include_router(system.router)
+     return app
+ 
+diff --git a/observatory/api/app/routers/gs308.py b/observatory/api/app/routers/gs308.py
+new file mode 100644
+index 0000000..cf97195
+--- /dev/null
++++ b/observatory/api/app/routers/gs308.py
+@@ -0,0 +1,60 @@
++"""O6 — GS308EP blind-spot vista API."""
++
++from __future__ import annotations
++
++from fastapi import APIRouter, Depends, HTTPException, Request
++from pydantic import BaseModel, Field
++from sqlalchemy.orm import Session
++
++from app.auth import check_csrf, require_user
++from app.config import Settings, get_settings
++from app.db import get_db
++from app.models import User
++from app.services.gs308_branch import assign_device_to_308_port, build_gs308_view
++
++router = APIRouter(prefix="/api/gs308", tags=["gs308"])
++
++
++class AssignBody(BaseModel):
++    port_id: int
++    mac: str | None = None
++    empty: bool = False
++    clear: bool = False
++    confirm: bool = Field(
++        False,
++        description="Must be true — assegnazione manuale solo con conferma esplicita",
++    )
++
++
++@router.get("/view")
++def get_view(db: Session = Depends(get_db), user: User = Depends(require_user)):
++    return build_gs308_view(db)
++
++
++@router.post("/assign")
++def post_assign(
++    body: AssignBody,
++    request: Request,
++    db: Session = Depends(get_db),
++    user: User = Depends(require_user),
++    settings: Settings = Depends(get_settings),
++):
++    check_csrf(request, settings)
++    if not body.confirm:
++        raise HTTPException(
++            status_code=400,
++            detail="confirm_required: assegnazione manuale solo con conferma esplicita",
++        )
++    if not body.clear and not body.empty and not (body.mac or "").strip():
++        raise HTTPException(status_code=400, detail="mac_required")
++    result = assign_device_to_308_port(
++        db,
++        port_id=body.port_id,
++        mac=body.mac,
++        empty=body.empty,
++        clear=body.clear,
++    )
++    if not result.get("ok"):
++        raise HTTPException(status_code=400, detail=result.get("error") or "assign_failed")
++    db.commit()
++    return result
+diff --git a/observatory/api/app/services/gs308_branch.py b/observatory/api/app/services/gs308_branch.py
+new file mode 100644
+index 0000000..bc55243
+--- /dev/null
++++ b/observatory/api/app/services/gs308_branch.py
+@@ -0,0 +1,550 @@
++"""O6 — GS308EP blind-spot as operational knowledge (no invented SNMP/FDB on 308)."""
++
++from __future__ import annotations
++
++import uuid
++from datetime import datetime
++from typing import Any
++
++from sqlalchemy import select
++from sqlalchemy.orm import Session
++
++from app.facts.gs308 import EMPTY_SENTINEL, current_assignment_for_port, list_current_port_assignments
++from app.facts.port_fdb import list_current_port_fdb_mac
++from app.facts.shadow import safe_shadow_port_assigned_mac
++from app.models import Interface, IpAddress, Suggestion, Switch, SwitchPort, utcnow
++from app.services.macutil import is_locally_administered, normalize_mac, oui_prefix
++from app.services.switch_capabilities import switch_capabilities
++
++GS308_CODE = "308ep"
++GS308_MGMT_IP = "192.168.1.8"
++BLIND_SPOTS = [
++    "la porta esatta di ogni dispositivo, finché non è assegnata manualmente",
++    "gli spostamenti di porta interni al GS308EP (invisibili all'osservatorio)",
++    "il traffico che resta interamente dietro il 308 e non attraversa l'uplink",
++    "un ulteriore switch non gestito annidato dietro il 308 (indistinguibile)",
++]
++
++
++def _mac_inventory(db: Session, mac: str) -> dict[str, Any]:
++    iface = db.scalar(select(Interface).where(Interface.mac == mac))
++    name = ""
++    asset_id = None
++    ip = None
++    if iface and iface.asset:
++        name = (iface.asset.name or "").strip()
++        asset_id = int(iface.asset.id)
++    if iface is not None:
++        row = db.execute(
++            select(IpAddress.ip)
++            .where(IpAddress.interface_id == iface.id, IpAddress.is_current.is_(True))
++            .limit(1)
++        ).first()
++        if row:
++            ip = row[0]
++    return {
++        "mac": mac,
++        "oui": oui_prefix(mac) or "OUI sconosciuto",
++        "name": name or None,
++        "name_label": name if name else "nome non noto",
++        "asset_id": asset_id,
++        "ip": ip,
++        "solo_l2": ip is None,
++        "randomized": is_locally_administered(mac),
++    }
++
++
++def _freshness(fa: dict[str, Any]) -> str | None:
++    ts = fa.get("observed_at") or fa.get("created_at")
++    if not ts:
++        return None
++    if isinstance(ts, datetime):
++        return ts.isoformat() + ("Z" if ts.tzinfo is None else "")
++    return str(ts)
++
++
++def locate_gs308_attestation(db: Session) -> dict[str, Any]:
++    """P1 — structural only: FDB fact of the 308's own MAC on a managed switch port."""
++    row = db.execute(
++        select(Interface.mac)
++        .join(IpAddress, IpAddress.interface_id == Interface.id)
++        .where(IpAddress.ip == GS308_MGMT_IP, IpAddress.is_current.is_(True))
++        .limit(1)
++    ).first()
++    mac308 = normalize_mac(row[0]) if row and row[0] else None
++    sw308 = db.scalar(select(Switch).where(Switch.code == GS308_CODE))
++    if not mac308:
++        return {
++            "porta_di_attestazione": "non_determinata",
++            "rule": "MAC gestione GS308EP assente (sorgente_non_disponibile)",
++            "mac_308": None,
++            "switch_308_id": sw308.id if sw308 else None,
++            "hits": [],
++        }
++
++    hits: list[dict[str, Any]] = []
++    for fa in list_current_port_fdb_mac(db):
++        if normalize_mac(fa.get("value_norm") or "") != mac308:
++            continue
++        port = db.get(SwitchPort, int(fa["subject_id"]))
++        if port is None:
++            continue
++        sw = db.get(Switch, port.switch_id)
++        if not sw or sw.code == GS308_CODE:
++            continue
++        cap = switch_capabilities(sw.model)
++        if cap.get("fdb_supported") is False:
++            continue
++        remote = db.get(SwitchPort, port.link_to_port_id) if port.link_to_port_id else None
++        is_managed_uplink = bool(remote and remote.switch_id != port.switch_id)
++        hits.append(
++            {
++                "switch_code": sw.code,
++                "switch_id": sw.id,
++                "port_id": int(port.id),
++                "port_number": int(port.number or 0),
++                "managed_uplink": is_managed_uplink,
++                "rule": f"FDB corrente contiene MAC del GS308EP gestito ({mac308})",
++                "freshness": _freshness(fa),
++            }
++        )
++
++    if not hits:
++        return {
++            "porta_di_attestazione": "non_determinata",
++            "rule": "MAC 308 non trovato in FDB corrente degli switch gestiti a monte",
++            "mac_308": mac308,
++            "switch_308_id": sw308.id if sw308 else None,
++            "hits": [],
++        }
++
++    # Managed uplinks also learn the MAC in transit — not the attachment (no count heuristic).
++    refined = [h for h in hits if not h["managed_uplink"]]
++    if len(refined) == 1:
++        chosen = refined[0]
++        return {
++            "porta_di_attestazione": "determinata",
++            "switch_code": chosen["switch_code"],
++            "switch_id": chosen["switch_id"],
++            "port_id": chosen["port_id"],
++            "port_number": chosen["port_number"],
++            "rule": chosen["rule"] + " · non uplink tra apparati gestiti",
++            "mac_308": mac308,
++            "switch_308_id": sw308.id if sw308 else None,
++            "hits": hits,
++            "freshness": chosen.get("freshness"),
++        }
++    if len(refined) > 1:
++        return {
++            "porta_di_attestazione": "non_determinata",
++            "rule": (
++                "più porte candidate non-uplink: "
++                + ", ".join(f"{h['switch_code']}:{h['port_number']}(id={h['port_id']})" for h in refined)
++            ),
++            "mac_308": mac308,
++            "switch_308_id": sw308.id if sw308 else None,
++            "hits": hits,
++        }
++    return {
++        "porta_di_attestazione": "non_determinata",
++        "rule": "MAC 308 visto solo su uplink tra gestiti (transito), senza porta di attacco univoca",
++        "mac_308": mac308,
++        "switch_308_id": sw308.id if sw308 else None,
++        "hits": hits,
++    }
++
++
++def devices_behind_gs308(db: Session, attestation: dict[str, Any] | None = None) -> dict[str, Any]:
++    """P2 — MAC set on attestation port (FDB facts) minus 308 self and other access paths."""
++    att = attestation or locate_gs308_attestation(db)
++    if att.get("porta_di_attestazione") != "determinata":
++        return {
++            "attestation": att,
++            "devices": [],
++            "disclaimer": (
++                "dietro il 308 non enumerabile: porta di attestazione non_determinata (I2)"
++            ),
++        }
++    port_id = int(att["port_id"])
++    mac308 = normalize_mac(att.get("mac_308") or "")
++    port = db.get(SwitchPort, port_id)
++    sw = db.get(Switch, port.switch_id) if port else None
++
++    other_macs: set[str] = set()
++    if sw:
++        for fa in list_current_port_fdb_mac(db):
++            pid = int(fa["subject_id"])
++            if pid == port_id:
++                continue
++            p = db.get(SwitchPort, pid)
++            if p is None or p.switch_id != sw.id:
++                continue
++            remote = db.get(SwitchPort, p.link_to_port_id) if p.link_to_port_id else None
++            if remote and remote.switch_id != p.switch_id:
++                continue  # managed uplink — not an alternate access path
++            nm = normalize_mac(fa.get("value_norm") or "")
++            if nm:
++                other_macs.add(nm)
++
++    devices = []
++    for fa in list_current_port_fdb_mac(db):
++        if int(fa["subject_id"]) != port_id:
++            continue
++        mac = normalize_mac(fa.get("value_norm") or "")
++        if not mac or mac == mac308:
++            continue
++        if mac in other_macs:
++            continue
++        info = _mac_inventory(db, mac)
++        info["source"] = "fdb"
++        info["authority"] = 60
++        info["placement"] = "dietro il 308; porta esatta non determinabile dall'apparato"
++        info["attestation_port_id"] = port_id
++        info["attestation_switch"] = att.get("switch_code")
++        info["freshness"] = _freshness(fa)
++        devices.append(info)
++
++    return {
++        "attestation": att,
++        "devices": devices,
++        "disclaimer": "dietro il 308; porta esatta non determinabile dall'apparato",
++        "last_fdb_at": port.last_fdb_at.isoformat() + "Z" if port and port.last_fdb_at else None,
++    }
++
++
++def _offline_port_inference(db: Session, mac: str) -> dict[str, Any]:
++    info = _mac_inventory(db, mac)
++    items = [
++        {
++            "label": f"OUI {info['oui']}",
++            "source": "oui",
++            "confidence": 0.4,
++            "kind": "inference",
++        }
++    ]
++    if info.get("name"):
++        items.append(
++            {
++                "label": f"Nome inventario «{info['name']}»",
++                "source": "inventory",
++                "confidence": 0.55,
++                "kind": "inference",
++            }
++        )
++    if info.get("randomized"):
++        items.append(
++            {
++                "label": "MAC localmente amministrato (LAA)",
++                "source": "mac_structure",
++                "confidence": 0.7,
++                "kind": "inference",
++            }
++        )
++    return {
++        "label": "INFERENZA",
++        "disclaimer": (
++            "Proposta euristica offline — non certezza; nessuna azione automatica. "
++            "Percorso /ai (Groq) non cablato."
++        ),
++        "items": items,
++        "suggested_port": None,  # never invent a 308 port number (I2 · I7)
++        "llm_slot": {"enabled": False, "reason": "/ai Groq non cablato (STOP costi)"},
++    }
++
++
++def build_gs308_view(db: Session) -> dict[str, Any]:
++    """Full O6 payload for the 308 vista."""
++    sw308 = db.scalar(select(Switch).where(Switch.code == GS308_CODE))
++    att = locate_gs308_attestation(db)
++    behind = devices_behind_gs308(db, att)
++    assignments = {a["subject_id"]: a for a in list_current_port_assignments(db)}
++
++    ports_out = []
++    if sw308:
++        for p in sorted(
++            db.scalars(select(SwitchPort).where(SwitchPort.switch_id == sw308.id)).all(),
++            key=lambda x: x.number or 0,
++        ):
++            asg = assignments.get(int(p.id))
++            state = "sconosciuta"
++            assigned_mac = None
++            if asg:
++                vj = asg.get("value_json") or {}
++                kind = vj.get("kind") or ""
++                if asg["value_norm"] == EMPTY_SENTINEL or kind in {"empty_declared", "cleared"}:
++                    state = "sconosciuta" if kind == "cleared" else "vuota_dichiarata"
++                else:
++                    state = "assegnata"
++                    assigned_mac = asg["value_norm"]
++            # "proposta" only when an inference names this exact port — we never invent that.
++            ports_out.append(
++                {
++                    "port_id": int(p.id),
++                    "port_number": int(p.number or 0),
++                    "state": state,
++                    "assignment": asg,
++                    "assigned_mac": assigned_mac,
++                    "assigned_device": _mac_inventory(db, assigned_mac) if assigned_mac else None,
++                    "notes": p.notes or "",
++                    "source_label": "manual" if asg and asg.get("source") == "manual" else None,
++                    "telemetry": None,  # I7: never invent SNMP/FDB on 308
++                    "fdb": None,
++                    "actions": [
++                        {"id": "assign", "label": "Assegna dispositivo"},
++                        {"id": "declare_empty", "label": "Dichiara vuota"},
++                        {"id": "clear", "label": "Rimuovi assegnazione"},
++                    ],
++                }
++            )
++
++    assigned_macs = {
++        a["value_norm"]
++        for a in assignments.values()
++        if a["value_norm"] and a["value_norm"] != EMPTY_SENTINEL
++        and (a.get("value_json") or {}).get("kind") not in {"empty_declared", "cleared"}
++    }
++    proposals = []
++    for d in behind.get("devices") or []:
++        mac = d["mac"]
++        if mac in assigned_macs:
++            continue
++        proposals.append(
++            {
++                "mac": mac,
++                "placement": d["placement"],
++                "device": d,
++                "inference": _offline_port_inference(db, mac),
++                "state": "proposta",
++                "note": (
++                    "Non assegnato a una porta del 308 — solo inferenza (nessun numero di porta "
++                    "inventato). Nessuna scrittura automatica."
++                ),
++            }
++        )
++
++    conflicts = []
++    # Same MAC manually on two 308 ports
++    by_mac: dict[str, list[dict[str, Any]]] = {}
++    for p in ports_out:
++        if p["state"] == "assegnata" and p["assigned_mac"]:
++            by_mac.setdefault(p["assigned_mac"], []).append(p)
++    for mac, plist in by_mac.items():
++        if len(plist) > 1:
++            conflicts.append(
++                {
++                    "kind": "i3_divergence",
++                    "mac": mac,
++                    "note": (
++                        "CONFLITTO (I3): stesso MAC assegnato manualmente a più porte 308: "
++                        + ", ".join(f"p{x['port_number']}(id={x['port_id']})" for x in plist)
++                        + " — nessuna correzione silenziosa."
++                    ),
++                    "ports": [{"port_id": x["port_id"], "port_number": x["port_number"]} for x in plist],
++                }
++            )
++
++    # Manual on 308 vs current FDB presence elsewhere (not attestation uplink)
++    att_pid = int(att["port_id"]) if att.get("porta_di_attestazione") == "determinata" else None
++    for p in ports_out:
++        if p["state"] != "assegnata" or not p["assigned_mac"]:
++            continue
++        for fa in list_current_port_fdb_mac(db):
++            if normalize_mac(fa.get("value_norm") or "") != p["assigned_mac"]:
++                continue
++            other_pid = int(fa["subject_id"])
++            if att_pid is not None and other_pid == att_pid:
++                continue
++            other = db.get(SwitchPort, other_pid)
++            if other and sw308 and other.switch_id == sw308.id:
++                continue
++            conflicts.append(
++                {
++                    "kind": "i3_divergence",
++                    "mac": p["assigned_mac"],
++                    "manual_port_id": p["port_id"],
++                    "manual_port_number": p["port_number"],
++                    "other_port_id": other_pid,
++                    "note": (
++                        "CONFLITTO (I3): assegnazione manuale sul 308 vs presenza FDB corrente "
++                        f"su altra porta id={other_pid} — nessuna sovrascrittura."
++                    ),
++                }
++            )
++
++    # Weaker proposal vs manual: surface when device has inference but a different
++    # manual assignment already claims another MAC on a port (display only).
++    for prop in proposals:
++        # If any port note or inventory conflicts — kept structural; proposals never write.
++        prop["vs_manual"] = "nessuna assegnazione manuale su questo MAC"
++
++    return {
++        "switch": {
++            "id": sw308.id if sw308 else None,
++            "code": GS308_CODE,
++            "name": sw308.name if sw308 else "GS308EP",
++            "model": sw308.model if sw308 else "",
++            "ip": GS308_MGMT_IP,
++            "fdb_supported": False,
++            "snmp_supported": False,
++        },
++        "attestation": att,
++        "behind": behind,
++        "ports": ports_out,
++        "port_state_counts": {
++            "assegnata": sum(1 for p in ports_out if p["state"] == "assegnata"),
++            "proposta": sum(1 for p in ports_out if p["state"] == "proposta"),
++            "vuota_dichiarata": sum(1 for p in ports_out if p["state"] == "vuota_dichiarata"),
++            "sconosciuta": sum(1 for p in ports_out if p["state"] == "sconosciuta"),
++        },
++        "proposals": proposals,
++        "conflicts": conflicts,
++        "blind_spots": BLIND_SPOTS,
++        "blind_spots_title": "Punti ciechi dichiarati (non misurabili sul GS308EP)",
++        "search_hint": {
++            "behind_macs": [d["mac"] for d in behind.get("devices") or []],
++            "label": "dietro il 308",
++        },
++    }
++
++
++def assign_device_to_308_port(
++    db: Session,
++    *,
++    port_id: int,
++    mac: str | None = None,
++    empty: bool = False,
++    clear: bool = False,
++) -> dict[str, Any]:
++    """P3 — explicit manual write only. Never automatic."""
++    port = db.get(SwitchPort, port_id)
++    if port is None:
++        return {"ok": False, "error": "port_not_found"}
++    sw = db.get(Switch, port.switch_id)
++    if not sw or sw.code != GS308_CODE:
++        return {"ok": False, "error": "not_a_308_port"}
++
++    existing = current_assignment_for_port(db, port_id)
++    # Weaker proposal never overwrites: only this path writes source=manual.
++    if existing and existing.get("source") == "manual" and not clear and not empty:
++        new_mac = normalize_mac(mac or "")
++        old_kind = (existing.get("value_json") or {}).get("kind")
++        old_mac = existing.get("value_norm") or ""
++        if (
++            old_kind == "assigned"
++            and old_mac
++            and old_mac != EMPTY_SENTINEL
++            and new_mac
++            and new_mac != old_mac
++        ):
++            # Same-port replace is explicit confirmation (caller already confirmed).
++            # Cross-signal weaker auto never reaches here.
++            pass
++
++    result = safe_shadow_port_assigned_mac(
++        db, port, mac=mac, empty=empty, clear=clear, observed_at=utcnow()
++    )
++    if result is None:
++        return {"ok": False, "error": "shadow_refused_or_breaker"}
++    db.flush()
++    return {
++        "ok": True,
++        "action": getattr(result, "action", "ok"),
++        "port_id": port_id,
++        "previous": existing,
++        "assignment": current_assignment_for_port(db, port_id),
++    }
++
++
++def build_p6_behind_signals(db: Session) -> list[dict[str, Any]]:
++    """P6 — new MAC behind 308 (relative to baseline on attestation port)."""
++    behind = devices_behind_gs308(db)
++    att = behind.get("attestation") or {}
++    if att.get("porta_di_attestazione") != "determinata":
++        return []
++    port_id = int(att["port_id"])
++    currents = [r for r in list_current_port_fdb_mac(db) if int(r["subject_id"]) == port_id]
++
++    baseline_at = None
++    baseline_quality = None
++    for fa in currents:
++        vj = fa.get("value_json") or {}
++        if vj.get("baseline"):
++            ts = fa.get("observed_at") or fa.get("created_at")
++            if ts and (baseline_at is None or ts < baseline_at or baseline_quality != "verified"):
++                baseline_at = ts
++                baseline_quality = "verified"
++        elif vj.get("baseline_reconstructed") and baseline_quality != "verified":
++            bat = vj.get("baseline_at")
++            parsed = None
++            if isinstance(bat, str) and bat:
++                try:
++                    parsed = datetime.fromisoformat(bat.replace("Z", ""))
++                except ValueError:
++                    parsed = fa.get("observed_at") or fa.get("created_at")
++            else:
++                parsed = fa.get("observed_at") or fa.get("created_at")
++            if parsed and (baseline_at is None or parsed < baseline_at):
++                baseline_at = parsed
++                baseline_quality = "reconstructed"
++
++    acked = {
++        str(s.uid)
++        for s in db.scalars(
++            select(Suggestion).where(
++                Suggestion.kind == "fdb_behind_308",
++                Suggestion.status.in_(("approved", "rejected")),
++            )
++        ).all()
++    }
++    cards = []
++    mac308 = normalize_mac(att.get("mac_308") or "")
++    behind_macs = {d["mac"] for d in behind.get("devices") or []}
++    for fa in currents:
++        mac = normalize_mac(fa.get("value_norm") or "")
++        if not mac or mac == mac308 or mac not in behind_macs:
++            continue
++        vj = fa.get("value_json") or {}
++        if vj.get("baseline") or vj.get("baseline_reconstructed"):
++            continue
++        observed = fa.get("observed_at") or fa.get("created_at")
++        if baseline_at and observed and observed <= baseline_at:
++            continue
++        uid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"fdb:p6:{mac}:{port_id}"))
++        if uid in acked:
++            continue
++        info = _mac_inventory(db, mac)
++        bat_s = None
++        if isinstance(baseline_at, datetime):
++            bat_s = baseline_at.isoformat() + ("Z" if baseline_at.tzinfo is None else "")
++        elif baseline_at:
++            bat_s = str(baseline_at)
++        if baseline_quality == "reconstructed" and bat_s:
++            presence = f"non presente alla ricostruzione della baseline del {bat_s}"
++        elif bat_s:
++            presence = f"non presente alla baseline verificata del {bat_s}"
++        else:
++            presence = "non in baseline sulla porta di attestazione (I2: storia precedente non disponibile)"
++        cards.append(
++            {
++                "uid": uid,
++                "signal_key": f"fdb:p6:{mac}:{port_id}",
++                "kind": "fdb_behind_308",
++                "signal": "P6",
++                "priority": "bassa" if info["randomized"] else "alta",
++                "mac": mac,
++                "title": "Nuovo dispositivo dietro il GS308EP",
++                "body": f"{mac} · nuovo dispositivo dietro il 308, porta ignota · {presence}",
++                "placement": "dietro il 308; porta esatta non determinabile dall'apparato",
++                "baseline_at": bat_s,
++                "baseline_quality": baseline_quality,
++                "device": info,
++                "actions": [
++                    {"id": "acknowledge", "label": "Riconosci"},
++                    {"id": "assign", "label": "Assegna a porta"},
++                    {"id": "dossier", "label": "Apri dossier"},
++                    {"id": "ignore", "label": "Ignora con motivo"},
++                ],
++                "inference": _offline_port_inference(db, mac),
++            }
++        )
++    return cards
+diff --git a/observatory/tests/test_o6_gs308.py b/observatory/tests/test_o6_gs308.py
+new file mode 100644
+index 0000000..8f61383
+--- /dev/null
++++ b/observatory/tests/test_o6_gs308.py
+@@ -0,0 +1,294 @@
++"""O6 — GS308EP blind spot: attestation, behind-set, manual assign, P6 (named nodes)."""
++
++from __future__ import annotations
++
++import sys
++from pathlib import Path
++
++import pytest
++from sqlalchemy import create_engine, select
++from sqlalchemy.orm import sessionmaker
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
++
++from app.config import get_settings
++from app.db import Base
++from app.facts import shadow as fact_shadow
++from app.facts.gs308 import EMPTY_SENTINEL, current_assignment_for_port
++from app.models import Asset, FactAssertion, Interface, IpAddress, Switch, SwitchPort
++from app.services.fdb_defense import build_fdb_defense_signals
++from app.services.gs308_branch import (
++    assign_device_to_308_port,
++    build_gs308_view,
++    build_p6_behind_signals,
++    devices_behind_gs308,
++    locate_gs308_attestation,
++)
++from app.services.topology import apply_fdb_observation
++
++MAC_308 = "54:07:7D:1E:4F:B9"
++MAC_BEHIND = "DC:A6:32:9C:A7:62"
++MAC_NEW = "AA:BB:CC:DD:EE:01"
++
++
++@pytest.fixture()
++def db(tmp_path, monkeypatch):
++    db_path = tmp_path / "o6.db"
++    monkeypatch.setenv("SQLITE_PATH", str(db_path))
++    monkeypatch.setenv("FACT_SHADOW_WRITERS_ENABLED", "true")
++    get_settings.cache_clear()
++    fact_shadow.reset_shadow_stats_for_tests()
++    engine = create_engine(f"sqlite:///{db_path}")
++    Base.metadata.create_all(engine)
++    Session = sessionmaker(bind=engine)
++    session = Session()
++    yield session
++    session.close()
++    get_settings.cache_clear()
++    fact_shadow.reset_shadow_stats_for_tests()
++
++
++def _seed(db):
++    sw328 = Switch(code="328c", name="328C", model="Linksys LGS328C", port_count=28, ip="192.168.1.10")
++    sw310 = Switch(code="310c", name="310C", model="Linksys LGS310C", port_count=10, ip="192.168.1.11")
++    sw308 = Switch(code="308ep", name="GS308EP", model="Netgear GS308EP", port_count=8, ip="192.168.1.8")
++    db.add_all([sw328, sw310, sw308])
++    db.flush()
++    p24 = SwitchPort(switch_id=sw328.id, number=24)  # attestation — no managed uplink
++    p21 = SwitchPort(switch_id=sw328.id, number=21)
++    p8 = SwitchPort(switch_id=sw310.id, number=8)
++    p21.link_to_port_id = None  # set after p8
++    db.add_all([p24, p21, p8])
++    db.flush()
++    p21.link_to_port_id = p8.id
++    p8.link_to_port_id = p21.id
++    ports_308 = []
++    for n in range(1, 9):
++        p = SwitchPort(switch_id=sw308.id, number=n)
++        db.add(p)
++        ports_308.append(p)
++    db.flush()
++    # management identity of 308
++    asset308 = Asset(uid="a-308", name="GS308EP", category="switch")
++    db.add(asset308)
++    db.flush()
++    iface308 = Interface(asset_id=asset308.id, mac=MAC_308)
++    db.add(iface308)
++    db.flush()
++    db.add(IpAddress(interface_id=iface308.id, ip="192.168.1.8", is_current=True))
++    # behind device
++    asset_b = Asset(uid="a-behind", name="allsky3", category="host")
++    db.add(asset_b)
++    db.flush()
++    iface_b = Interface(asset_id=asset_b.id, mac=MAC_BEHIND)
++    db.add(iface_b)
++    db.flush()
++    db.add(IpAddress(interface_id=iface_b.id, ip="192.168.2.138", is_current=True))
++    db.commit()
++    return {
++        "sw328": sw328,
++        "sw310": sw310,
++        "sw308": sw308,
++        "p24": p24,
++        "p8": p8,
++        "ports_308": ports_308,
++        "asset_b": asset_b,
++    }
++
++
++def test_o6_t1_attestation_structural(db):
++    s = _seed(db)
++    # MAC on attestation + transit uplink
++    apply_fdb_observation(
++        db,
++        switch_code="328c",
++        port_number=24,
++        macs=[MAC_308, MAC_BEHIND],
++    )
++    db.commit()
++    apply_fdb_observation(
++        db,
++        switch_code="310c",
++        port_number=8,
++        macs=[MAC_308, MAC_BEHIND, "00:11:22:33:44:55"],
++    )
++    db.commit()
++    att = locate_gs308_attestation(db)
++    assert att["porta_di_attestazione"] == "determinata"
++    assert att["port_id"] == s["p24"].id
++    assert att["switch_code"] == "328c"
++    assert "conteggio" not in (att["rule"] or "").lower()
++    assert "FDB" in att["rule"]
++    view = build_gs308_view(db)
++    assert view["attestation"]["port_id"] == s["p24"].id
++
++
++def test_o6_t2_behind_not_assigned_to_308_port(db):
++    s = _seed(db)
++    apply_fdb_observation(
++        db, switch_code="328c", port_number=24, macs=[MAC_308, MAC_BEHIND]
++    )
++    db.commit()
++    behind = devices_behind_gs308(db)
++    assert len(behind["devices"]) == 1
++    d = behind["devices"][0]
++    assert d["mac"] == MAC_BEHIND
++    assert d["name_label"] == "allsky3"
++    assert "porta esatta non determinabile" in d["placement"]
++    view = build_gs308_view(db)
++    for p in view["ports"]:
++        assert p["assigned_mac"] != MAC_BEHIND
++        assert p["state"] in {"sconosciuta", "vuota_dichiarata", "assegnata", "proposta"}
++        assert p["telemetry"] is None
++        assert p["fdb"] is None
++
++
++def test_o6_t3_manual_assign_reversible_conflict(db):
++    s = _seed(db)
++    apply_fdb_observation(
++        db, switch_code="328c", port_number=24, macs=[MAC_308, MAC_BEHIND]
++    )
++    db.commit()
++    port = s["ports_308"][1]  # number 2
++    r = assign_device_to_308_port(db, port_id=port.id, mac=MAC_BEHIND)
++    db.commit()
++    assert r["ok"] is True
++    cur = current_assignment_for_port(db, port.id)
++    assert cur is not None
++    assert cur["source"] == "manual"
++    assert cur["value_norm"] == MAC_BEHIND
++    view = build_gs308_view(db)
++    p2 = next(p for p in view["ports"] if p["port_id"] == port.id)
++    assert p2["state"] == "assegnata"
++    assert p2["source_label"] == "manual"
++    # reverse
++    r2 = assign_device_to_308_port(db, port_id=port.id, clear=True)
++    db.commit()
++    assert r2["ok"] is True
++    view2 = build_gs308_view(db)
++    p2b = next(p for p in view2["ports"] if p["port_id"] == port.id)
++    assert p2b["state"] == "sconosciuta"
++    # re-assign then diverge on second port → I3
++    assign_device_to_308_port(db, port_id=port.id, mac=MAC_BEHIND)
++    db.commit()
++    other = s["ports_308"][2]
++    assign_device_to_308_port(db, port_id=other.id, mac=MAC_BEHIND)
++    db.commit()
++    view3 = build_gs308_view(db)
++    assert any(c["kind"] == "i3_divergence" for c in view3["conflicts"])
++    # weaker proposal never wrote — manual rows still current
++    assert current_assignment_for_port(db, port.id)["value_norm"] == MAC_BEHIND
++
++
++def test_o6_t4_inference_separated(db):
++    s = _seed(db)
++    apply_fdb_observation(
++        db, switch_code="328c", port_number=24, macs=[MAC_308, MAC_BEHIND]
++    )
++    db.commit()
++    view = build_gs308_view(db)
++    assert view["proposals"]
++    prop = view["proposals"][0]
++    assert prop["inference"]["label"] == "INFERENZA"
++    assert prop["inference"]["llm_slot"]["enabled"] is False
++    assert prop["inference"]["suggested_port"] is None
++    for it in prop["inference"]["items"]:
++        assert "source" in it and "confidence" in it
++    # no automatic write
++    assert not any(
++        a.state == "current" and a.fact_key == "port.assigned_mac"
++        for a in db.scalars(select(FactAssertion)).all()
++    )
++
++
++def test_o6_t5_ports_no_invented_telemetry(db):
++    s = _seed(db)
++    view = build_gs308_view(db)
++    assert view["switch"]["fdb_supported"] is False
++    assert view["switch"]["snmp_supported"] is False
++    ids = [p["port_id"] for p in view["ports"]]
++    assert len(ids) == 8
++    for p in view["ports"]:
++        assert p["state"] == "sconosciuta"
++        assert p["telemetry"] is None
++        assert p["fdb"] is None
++    assert "la porta esatta" in " ".join(view["blind_spots"])
++
++
++def test_o6_t6_p6_new_mac_card(db):
++    s = _seed(db)
++    from datetime import timedelta
++
++    from app.models import utcnow
++
++    # baseline round
++    apply_fdb_observation(
++        db, switch_code="328c", port_number=24, macs=[MAC_308, MAC_BEHIND]
++    )
++    db.commit()
++    assert build_p6_behind_signals(db) == []
++    # new MAC behind 308 (not baseline)
++    apply_fdb_observation(
++        db, switch_code="328c", port_number=24, macs=[MAC_308, MAC_BEHIND, MAC_NEW]
++    )
++    db.commit()
++    fa_new = db.scalar(
++        select(FactAssertion).where(
++            FactAssertion.fact_key == "port.fdb_mac",
++            FactAssertion.value_norm == MAC_NEW,
++            FactAssertion.state == "current",
++        )
++    )
++    assert fa_new is not None
++    fa_new.observed_at = utcnow() + timedelta(minutes=5)
++    db.commit()
++    cards = build_p6_behind_signals(db)
++    assert len(cards) == 1
++    c = cards[0]
++    assert c["signal"] == "P6"
++    assert c["mac"] == MAC_NEW
++    assert "porta ignota" in c["body"]
++    assert "mai visto" not in c["body"].lower()
++    assert any(a["id"] == "assign" for a in c["actions"])
++    assert any(a["id"] == "acknowledge" for a in c["actions"])
++    # also merged into Oggi signals
++    sig = build_fdb_defense_signals(db)
++    assert any(x["signal"] == "P6" and x["mac"] == MAC_NEW for x in sig["cards"])
++
++
++def test_o6_sa_body_no_mai_visto(db):
++    """V2 — S-A copy must not claim pre-baseline history."""
++    from datetime import timedelta
++
++    from app.models import utcnow
++
++    sw = Switch(code="328c", name="A", model="Linksys LGS328C", port_count=2, ip="192.0.2.1")
++    db.add(sw)
++    db.flush()
++    p = SwitchPort(switch_id=sw.id, number=3)
++    db.add(p)
++    db.commit()
++    apply_fdb_observation(db, switch_code="328c", port_number=3, macs=["00:11:22:33:44:10"])
++    db.commit()
++    apply_fdb_observation(
++        db, switch_code="328c", port_number=3, macs=["00:11:22:33:44:10", "00:11:22:33:44:99"]
++    )
++    db.commit()
++    # Ensure new MAC is strictly after baseline (same-second utcnow can collapse S-A).
++    fa_new = db.scalar(
++        select(FactAssertion).where(
++            FactAssertion.fact_key == "port.fdb_mac",
++            FactAssertion.value_norm == "00:11:22:33:44:99",
++            FactAssertion.state == "current",
++        )
++    )
++    assert fa_new is not None
++    fa_new.observed_at = utcnow() + timedelta(minutes=5)
++    db.commit()
++    sig = build_fdb_defense_signals(db)
++    sa = [c for c in sig["cards"] if c["signal"] == "S-A"]
++    assert sa
++    for c in sa:
++        assert "mai visto" not in c["body"].lower()
++        assert "baseline" in c["body"].lower()
++        assert "00:11:22:33:44:99" in c["body"]
+\ No newline at end of file
