@@ -1,0 +1,324 @@
+# OBS-O2-FIX FASE 3 — diff corto SOLO helper copertura FDB + test
+# helper lines: observatoryUx.js L94-279
+# esclusioni: Plant/Oggi/portPresentation/oggiProblems/CHANGELOG/KNOWN_DEBT/VERSION/resto observatoryUx.js
+
+diff -ruN /dev/null b/web/src/observatoryUx.js  (estratto: FDB_STALE_HOURS..fdbCoverageStatus)
+--- /dev/null
++++ b/web/src/observatoryUx.js  (estratto: FDB_STALE_HOURS..fdbCoverageStatus)
+@@ -0,0 +1,186 @@
++/** FDB coverage staleness threshold (mirrors ASSET_STALE_AFTER_HOURS default). */
++export const FDB_STALE_HOURS = 24;
++
++/** Human label for the declared FDB freshness window (B1 — never hide in code only). */
++export function fdbFreshnessWindowLabel(hours = FDB_STALE_HOURS) {
++  return `finestra di freschezza FDB: ${Number(hours)} h`;
++}
++
++/** Parse a timestamp treating naive (no tz) values as UTC — backend stores utcnow(). */
++function _utcMs(iso) {
++  if (!iso) return null;
++  let s = String(iso);
++  if (!/[zZ]|[+-]\d\d:?\d\d$/.test(s)) s += "Z";
++  const ms = Date.parse(s);
++  return Number.isFinite(ms) ? ms : null;
++}
++
++/**
++ * Per-port FDB coverage state (O2 / B1). Never confuses poll-attempt time with data age.
++ *
++ * @returns {{
++ *   state: 'misurata_fresca'|'misurata_vecchia'|'non_coperta',
++ *   reason: string,
++ *   last_fdb_at: string|null,
++ *   age_hours: number|null,
++ *   switch_id: number|null,
++ *   port_id: number|null,
++ *   port_number: number|null,
++ * }}
++ */
++export function fdbPortCoverageState(port, sw = {}, nowMs = Date.now(), staleHours = FDB_STALE_HOURS) {
++  const cap = sw.capabilities || {};
++  const poll = sw.fdb_poll || {};
++  const last = port?.last_fdb_at || null;
++  const ms = _utcMs(last);
++  const switchId = sw.id ?? sw.switch_id ?? null;
++  const portId = port?.id ?? null;
++  const portNumber = port?.number ?? port?.physical_port_number ?? port?.port ?? null;
++
++  if (cap.fdb_supported === false) {
++    return {
++      state: "non_coperta",
++      reason: "FDB non supportato dall'apparato",
++      last_fdb_at: last,
++      age_hours: ms == null ? null : Math.max(0, (nowMs - ms) / 3_600_000),
++      switch_id: switchId,
++      port_id: portId,
++      port_number: portNumber,
++    };
++  }
++
++  if (ms != null) {
++    const ageH = (nowMs - ms) / 3_600_000;
++    if (ageH <= staleHours) {
++      return {
++        state: "misurata_fresca",
++        reason: "",
++        last_fdb_at: last,
++        age_hours: ageH,
++        switch_id: switchId,
++        port_id: portId,
++        port_number: portNumber,
++      };
++    }
++    return {
++      state: "misurata_vecchia",
++      reason: `ultima mappatura oltre ${staleHours} h`,
++      last_fdb_at: last,
++      age_hours: ageH,
++      switch_id: switchId,
++      port_id: portId,
++      port_number: portNumber,
++    };
++  }
++
++  let reason = "mai misurata";
++  if (poll.ok === false) {
++    reason = "switch non interrogabile";
++  } else if (poll.supported === false) {
++    reason = "FDB non supportato dall'apparato";
++  }
++
++  return {
++    state: "non_coperta",
++    reason,
++    last_fdb_at: null,
++    age_hours: null,
++    switch_id: switchId,
++    port_id: portId,
++    port_number: portNumber,
++  };
++}
++
++/**
++ * Full coverage report for Plant (B1). Enumerates ports by state; declares window.
++ *
++ * @returns {{
++ *   window_hours: number,
++ *   window_label: string,
++ *   switches: Array<object>,
++ *   by_state: { misurata_fresca: number[], misurata_vecchia: number[], non_coperta: number[] },
++ * }}
++ * `by_state` lists port **ids** (never bare totals without ids).
++ */
++export function fdbCoverageReport(switches = [], nowMs = Date.now(), staleHours = FDB_STALE_HOURS) {
++  const by_state = {
++    misurata_fresca: [],
++    misurata_vecchia: [],
++    non_coperta: [],
++  };
++  const outSwitches = [];
++  for (const sw of switches || []) {
++    const ports = [];
++    for (const port of sw.ports || []) {
++      const st = fdbPortCoverageState(port, sw, nowMs, staleHours);
++      ports.push(st);
++      if (st.port_id != null) by_state[st.state].push(Number(st.port_id));
++    }
++    const poll = sw.fdb_poll || {};
++    const cap = sw.capabilities || {};
++    outSwitches.push({
++      switch_id: sw.id,
++      name: sw.switch_display_name || sw.name,
++      fdb_supported: cap.fdb_supported !== false,
++      poll_ok: poll.ok === true,
++      poll_error: poll.ok === false ? String(poll.error || "") : "",
++      // Never treat failed poll.at as freshness of port data.
++      poll_attempt_at: poll.at || null,
++      ports,
++    });
++  }
++  for (const k of Object.keys(by_state)) {
++    by_state[k].sort((a, b) => a - b);
++  }
++  return {
++    window_hours: staleHours,
++    window_label: fdbFreshnessWindowLabel(staleHours),
++    switches: outSwitches,
++    by_state,
++  };
++}
++
++/**
++ * FDB coverage freshness across switches (F-13 / UX2.2.4).
++ *
++ * Presentation-only: it does NOT derive currency/state, it reports the newest
++ * measured `SwitchPort.last_fdb_at` and whether it is older than FDB_STALE_HOURS.
++ * The failed `fdb_poll.at` (a poll ATTEMPT time) is deliberately NOT used as
++ * freshness — that misrepresented ~57h-old port data as current.
++ *
++ * Returns null when there is nothing FDB-related to declare, else
++ * { available, stale, newestAt, hoursAgo }.
++ */
++export function fdbCoverageStatus(switches = [], nowMs = Date.now()) {
++  let newestMs = null;
++  let newestIso = "";
++  let anyFdbCapable = false;
++  let anyPollFailed = false;
++  for (const sw of switches || []) {
++    const cap = sw.capabilities || {};
++    if (cap.fdb_supported !== false) anyFdbCapable = true;
++    if (sw.fdb_poll && sw.fdb_poll.ok === false) anyPollFailed = true;
++    for (const port of sw.ports || []) {
++      const ms = _utcMs(port.last_fdb_at);
++      if (ms == null) continue;
++      if (newestMs == null || ms > newestMs) {
++        newestMs = ms;
++        newestIso = port.last_fdb_at;
++      }
++    }
++  }
++  if (newestMs == null) {
++    if (anyFdbCapable && anyPollFailed) {
++      return { available: true, stale: true, newestAt: "", hoursAgo: null };
++    }
++    return null;
++  }
++  const ageMs = nowMs - newestMs;
++  return {
++    available: true,
++    stale: ageMs > FDB_STALE_HOURS * 3_600_000,
++    newestAt: newestIso,
++    hoursAgo: Math.max(0, Math.floor(ageMs / 3_600_000)),
++  };
++}
++
+
+diff -ruN /dev/null b/web/src/observatoryUx.test.js  (estratto: test copertura FDB / O2)
+--- /dev/null
++++ b/web/src/observatoryUx.test.js  (estratto: test copertura FDB / O2)
+@@ -0,0 +1,125 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++import {
++  fdbCoverageReport,
++  fdbCoverageStatus,
++  fdbFreshnessWindowLabel,
++  fdbPortCoverageState,
++  FDB_STALE_HOURS,
++} from "./observatoryUx.js";
++
++test("copertura FDB: freschezza dal last_fdb_at di porta, mai dal poll fallito (F-13)", () => {
++  const now = Date.parse("2026-07-27T22:00:00Z");
++  // Poll fallito ma porte mappate 57h fa → stale, NON fresco.
++  const stale = fdbCoverageStatus(
++    [
++      {
++        capabilities: { fdb_supported: true },
++        fdb_poll: { ok: false, at: "2026-07-27T21:33:40Z" },
++        ports: [
++          { last_fdb_at: "2026-07-25T14:52:30.579101" },
++          { last_fdb_at: "2026-07-25T14:52:35.765498" },
++        ],
++      },
++    ],
++    now,
++  );
++  assert.equal(stale.stale, true);
++  assert.equal(stale.newestAt, "2026-07-25T14:52:35.765498");
++  assert.ok(stale.hoursAgo >= 24);
++
++  // Mappatura recente (2h) → non stale.
++  const fresh = fdbCoverageStatus(
++    [{ capabilities: { fdb_supported: true }, fdb_poll: { ok: true, at: "2026-07-27T20:00:00Z" }, ports: [{ last_fdb_at: "2026-07-27T20:00:00Z" }] }],
++    now,
++  );
++  assert.equal(fresh.stale, false);
++
++  // Nessuna porta FDB + poll fallito su switch FDB-capace → indisponibile dichiarata.
++  const none = fdbCoverageStatus(
++    [{ capabilities: { fdb_supported: true }, fdb_poll: { ok: false, at: "2026-07-27T21:00:00Z" }, ports: [] }],
++    now,
++  );
++  assert.equal(none.stale, true);
++  assert.equal(none.newestAt, "");
++
++  // Switch senza FDB e senza fallimenti → niente da dichiarare.
++  assert.equal(fdbCoverageStatus([{ capabilities: { fdb_supported: false }, ports: [] }], now), null);
++});
++
++test("O2 FDB port states: fresca / vecchia / non_coperta (GS308EP limite)", () => {
++  const now = Date.parse("2026-07-28T12:00:00Z");
++  const fresh = fdbPortCoverageState(
++    { id: 1, number: 1, last_fdb_at: "2026-07-28T10:00:00Z" },
++    { id: 1, capabilities: { fdb_supported: true }, fdb_poll: { ok: true } },
++    now,
++  );
++  assert.equal(fresh.state, "misurata_fresca");
++
++  const old = fdbPortCoverageState(
++    { id: 2, number: 2, last_fdb_at: "2026-07-25T14:52:30Z" },
++    {
++      id: 1,
++      capabilities: { fdb_supported: true },
++      fdb_poll: { ok: false, at: "2026-07-28T11:00:00Z", error: "Timeout" },
++    },
++    now,
++  );
++  assert.equal(old.state, "misurata_vecchia");
++  assert.ok(old.last_fdb_at);
++  assert.ok(old.age_hours > FDB_STALE_HOURS);
++
++  const uncovered = fdbPortCoverageState(
++    { id: 39, number: 1, last_fdb_at: null },
++    {
++      id: 3,
++      capabilities: { fdb_supported: false },
++      fdb_poll: { supported: false, message: "FDB non disponibile su GS308EP" },
++    },
++    now,
++  );
++  assert.equal(uncovered.state, "non_coperta");
++  assert.match(uncovered.reason, /non supportato/i);
++
++  const mute = fdbPortCoverageState(
++    { id: 99, number: 5, last_fdb_at: null },
++    {
++      id: 2,
++      capabilities: { fdb_supported: true },
++      fdb_poll: { ok: false, error: "Timeout: No Response" },
++    },
++    now,
++  );
++  assert.equal(mute.state, "non_coperta");
++  assert.equal(mute.reason, "switch non interrogabile");
++
++  const report = fdbCoverageReport(
++    [
++      {
++        id: 1,
++        name: "LGS",
++        capabilities: { fdb_supported: true },
++        fdb_poll: { ok: false, error: "Timeout" },
++        ports: [
++          { id: 1, number: 1, last_fdb_at: "2026-07-25T14:52:30Z" },
++          { id: 2, number: 2, last_fdb_at: null },
++        ],
++      },
++      {
++        id: 3,
++        name: "GS308EP",
++        capabilities: { fdb_supported: false },
++        fdb_poll: { supported: false },
++        ports: [{ id: 39, number: 1, last_fdb_at: null }],
++      },
++    ],
++    now,
++  );
++  assert.equal(report.window_hours, FDB_STALE_HOURS);
++  assert.match(report.window_label, /freschezza/);
++  assert.deepEqual(report.by_state.misurata_vecchia, [1]);
++  assert.deepEqual(report.by_state.non_coperta, [2, 39]);
++  assert.deepEqual(report.by_state.misurata_fresca, []);
++  assert.ok(fdbFreshnessWindowLabel().includes(String(FDB_STALE_HOURS)));
++});
++
