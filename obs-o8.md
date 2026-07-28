@@ -115,6 +115,11 @@ PRIMA (2 superfici, stessi pending): missing latente assente — `[]` anche prim
 - `w8_currency_gate.py`: **VIOLAZIONI: 0** · **PASS (con 1 eccezione temporanea)**
 - I6 `grep -RInE 'scoreSpecificity|specificity' api/`: **VUOTO**
 
+### Screenshot Oggi (legenda visibile)
+- 1280: https://raw.githubusercontent.com/Mooflotic/obs-exchange/main/obs-o8-oggi-1280.png (curl 200; sha256 ece2e5e90d2bf0731c5aa3224e5e46b7a01a8c43bf7699863011138d5ae8dc9c)
+- 768: https://raw.githubusercontent.com/Mooflotic/obs-exchange/main/obs-o8-oggi-768.png (stesso hash del 1280 — viewport Electron non ha ridimensionato; contenuto legenda+orfano+P3 identico)
+- 390: https://raw.githubusercontent.com/Mooflotic/obs-exchange/main/obs-o8-oggi-390.png (curl 200; sha256 fe85b3b1d7a8d075fbb27c9965170b8eccf3a96e315f686932c578a05646ede2)
+
 ### Nodi
 | Nodo | Esito |
 |------|-------|
