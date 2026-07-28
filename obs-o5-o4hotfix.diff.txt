@@ -1,0 +1,106 @@
+# obs-o5-o4hotfix.diff.txt
+# SOLO predicato supersession concurrent-presence + test correlati
+# Esclusioni: Plant, bonifica F0, VERSION, port_fdb defect reason helpers oltre al test
+
+##### api/app/facts/shadow.py (predicato)
++def _mac_still_on_port(port: Any, mac: str) -> bool:
++    """True if port.observed_macs still lists mac (concurrent FDB learning)."""
++    from app.services.macutil import normalize_mac
++
++    if port is None or not mac:
++        return False
++    target = normalize_mac(mac)
++    for raw_m in getattr(port, "observed_macs", None) or []:
++        if normalize_mac(raw_m) == target:
++            return True
++    return False
++
++
+
++        for old in others:
++            if old.id == result.assertion.id:
++                continue
++            other_port = db.get(SwitchPort, int(old.subject_id))
++            # Concurrent presence on another port is NOT a move (O4 hotfix / O5 F0.5).
++            if _mac_still_on_port(other_port, mac):
++                continue
++            old.state = "superseded"
++            old.superseded_by_id = result.assertion.id
++            old.valid_to = when
++            old.reason = "mac_move"
++            _bump(FACT_PORT_FDB_MAC, "fdb", "supersession")
++
+
+##### tests/test_o5_bonifica.py (predicate+concurrent)
++"""O5 F0 — bonifica markers + concurrent-presence predicate (named nodes)."""
++
++from __future__ import annotations
++
++import sys
++from datetime import datetime
++from pathlib import Path
++
++import pytest
++from sqlalchemy import create_engine, select
++from sqlalchemy.orm import sessionmaker
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
++
++from app.config import get_settings
++from app.db import Base
++from app.facts import shadow as fact_shadow
++from app.facts.port_fdb import O4_DEFECT_MOVE_REASON, count_o4_defect_moves, list_mac_move_supersessions
++from app.facts.shadow import _mac_still_on_port
++from app.models import FactAssertion, Switch, SwitchPort
++from app.services.topology import apply_fdb_observation
++
++
++@pytest.fixture()
++def db(tmp_path, monkeypatch):
++    db_path = tmp_path / "o5.db"
++    monkeypatch.setenv("SQLITE_PATH", str(db_path))
++    monkeypatch.setenv("FACT_SHADOW_WRITERS_ENABLED", "true")
++    get_settings.cache_clear()
++    fact_shadow.reset_shadow_stats_for_tests()
++    engine = create_engine(f"sqlite:///{db_path}")
++    Base.metadata.create_all(engine)
++    Session = sessionmaker(bind=engine)
++    session = Session()
++    yield session
++    session.close()
++    get_settings.cache_clear()
++    fact_shadow.reset_shadow_stats_for_tests()
++
++
++def test_o5_mac_still_on_port_predicate():
++    p = SwitchPort(switch_id=1, number=1, observed_macs=["aa:bb:cc:dd:ee:ff"])
++    assert _mac_still_on_port(p, "AA:BB:CC:DD:EE:FF") is True
++    assert _mac_still_on_port(p, "00:11:22:33:44:55") is False
++    assert _mac_still_on_port(None, "AA:BB:CC:DD:EE:FF") is False
++
++
++def test_o5_concurrent_presence_not_mac_move(db):
++    sw_a = Switch(code="328c", name="A", model="Linksys LGS328C", port_count=2, ip="192.0.2.1")
++    sw_b = Switch(code="310c", name="B", model="Linksys LGS310C", port_count=2, ip="192.0.2.2")
++    db.add_all([sw_a, sw_b])
++    db.flush()
++    p_a = SwitchPort(switch_id=sw_a.id, number=3)
++    p_b = SwitchPort(switch_id=sw_b.id, number=8)
++    p_a.link_to_port_id = None
++    db.add_all([p_a, p_b])
++    db.commit()
++    mac = "00:11:22:33:44:99"
++    apply_fdb_observation(db, switch_code="328c", port_number=3, macs=[mac])
++    db.commit()
++    apply_fdb_observation(db, switch_code="310c", port_number=8, macs=[mac])
++    db.commit()
++    moved = db.scalars(
++        select(FactAssertion).where(
++            FactAssertion.fact_key == "port.fdb_mac",
++            FactAssertion.reason == "mac_move",
++        )
++    ).all()
++    assert not moved
++
++
+
