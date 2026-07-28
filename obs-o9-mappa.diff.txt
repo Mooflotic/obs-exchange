@@ -1,0 +1,246 @@
+# obs-o9-mappa.diff.txt — SOLO Topology (+ nota Plant invariato codice)
+# O9 / 0.10.72
+diff --git a/observatory/web/src/views/Topology.vue b/observatory/web/src/views/Topology.vue
+index e3fec0e..96ea383 100644
+--- a/observatory/web/src/views/Topology.vue
++++ b/observatory/web/src/views/Topology.vue
+@@ -98,6 +98,39 @@ const canvasStyle = computed(() => ({
+   height: `${topologyLayout.value.height * treeScale.value}px`,
+ }));
+ 
++/**
++ * D7: rappresentazione alternativa per schermi stretti. Risponde alla stessa
++ * domanda del grafo («dove sta questo apparato, a cosa è attaccato») come lista
++ * gerarchica per livello, riusando i nodi già posizionati dal layout.
++ */
++const topologyListGroups = computed(() => {
++  const nodes = topologyLayout.value.nodes || [];
++  const byId = Object.fromEntries(nodes.map((n) => [n.id, n]));
++  const groups = new Map();
++  for (const node of nodes) {
++    if (node.virtual) continue;
++    const depth = node.depth ?? 0;
++    if (!groups.has(depth)) groups.set(depth, []);
++    const edge = edgesByTarget.value[node.id];
++    const parent = edge && edge.source !== "internet" ? byId[edge.source] : null;
++    groups.get(depth).push({ node, parentLabel: parent ? compactNodeLabel(parent.label) : "" });
++  }
++  return [...groups.entries()]
++    .sort((a, b) => a[0] - b[0])
++    .map(([depth, items]) => ({
++      depth,
++      label: depth === 0 ? "Radice" : `Livello ${depth}`,
++      items,
++    }));
++});
++
++function listNodeClickable(node) {
++  return (
++    (["endpoint", "ap", "router"].includes(node.kind) && !node.virtual) ||
++    isGs308epTopologyNode(node)
++  );
++}
++
+ const topologyStale = computed(() => {
+   if (loading.value || !data.value.last_observation_at) return false;
+   const ms = parseSeenMs(data.value.last_observation_at);
+@@ -201,7 +234,7 @@ function edgeTooltip(edge) {
+     edge.evidence_conflict ? `Conflitto risolto: ${edge.evidence_conflict}` : "",
+     `Confidenza: ${edge.confidence_badge || "sconosciuta"}${edge.confidence != null ? ` (${Math.round(edge.confidence * 100)}%)` : ""}`,
+     `Osservato: ${observed}`,
+-    `Freshness: ${edge.freshness || (edge.stale ? "stale" : "corrente")}${edge.stale ? " — dato oltre la finestra di aggiornamento" : ""}`,
++    `Freschezza: ${edge.freshness || (edge.stale ? "non recente" : "corrente")}${edge.stale ? " — dato oltre la finestra di aggiornamento" : ""}`,
+   ];
+   if (/porta interna non (rilevabile|osservabile)/i.test(`${edge.label} ${edge.physical_port_label}`)) {
+     details.splice(2, 0, "Porta interna sconosciuta: il GS308EP non espone la porta fisica.");
+@@ -214,7 +247,7 @@ function nodeTooltip(node) {
+   return [
+     node.parent_id === "internet" ? "Upstream: ◎ Internet" : "",
+     `Nome: ${node.label}`,
+-    `Stato: ${isOffline(node) ? "offline / stale" : node.status || "non disponibile"}`,
++    `Stato: ${isOffline(node) ? "offline / non recente" : node.status || "non disponibile"}`,
+     node.ip ? `IP: ${node.ip}` : "IP: non disponibile",
+     node.role ? `Ruolo: ${node.role}` : "",
+     node.category ? `Categoria: ${node.category}` : "",
+@@ -318,14 +351,14 @@ function visibilityChanged() {
+ }
+ 
+ async function applyRouteFocus() {
+-  const q = route.query.asset_id;
++  const q = route.query.asset_id ?? route.query.highlight ?? route.query.asset;
+   if (q == null || q === "") return;
+   const id = String(Array.isArray(q) ? q[0] : q);
+   if (id && assetId.value !== id) await selectAsset(id);
+ }
+ 
+ watch(
+-  () => route.query.asset_id,
++  () => [route.query.asset_id, route.query.highlight, route.query.asset],
+   () => {
+     applyRouteFocus();
+   },
+@@ -366,9 +399,11 @@ onUnmounted(() => {
+       </select>
+       <button class="ghost" @click="selectAsset('')">Pulisci</button>
+       <button @click="load" :disabled="selecting">{{ selecting ? "…" : "Aggiorna" }}</button>
+-      <button class="ghost" aria-label="Riduci topologia" @click="zoom(-0.1)">−</button>
+-      <button class="ghost" aria-label="Adatta topologia alla larghezza" @click="fitTopology">Adatta</button>
+-      <button class="ghost" aria-label="Ingrandisci topologia" @click="zoom(0.1)">+</button>
++      <span class="topology-zoom">
++        <button class="ghost" aria-label="Riduci topologia" @click="zoom(-0.1)">−</button>
++        <button class="ghost" aria-label="Adatta topologia alla larghezza" @click="fitTopology">Adatta</button>
++        <button class="ghost" aria-label="Ingrandisci topologia" @click="zoom(0.1)">+</button>
++      </span>
+       <ToggleSwitch v-model="paused" label="Pausa aggiornamento" />
+       <span class="refresh-state">
+         <template v-if="loading">Caricamento…</template>
+@@ -496,6 +531,48 @@ onUnmounted(() => {
+       </div>
+     </div>
+ 
++    <div v-if="!loading" class="topology-list" data-testid="topology-list">
++      <p class="topology-list__hint muted">
++        Vista compatta: gerarchia dei collegamenti (dove sta un apparato e a cosa è
++        attaccato). Tocca un endpoint per isolarne il percorso.
++      </p>
++      <section
++        v-for="group in topologyListGroups"
++        :key="group.depth"
++        class="topology-list__group"
++      >
++        <h4>{{ group.label }}</h4>
++        <ul>
++          <li
++            v-for="entry in group.items"
++            :key="entry.node.id"
++            class="topology-list__row"
++            :class="{
++              offline: entry.node._offline,
++              'on-path': entry.node.on_path,
++              clickable: listNodeClickable(entry.node),
++            }"
++            :tabindex="listNodeClickable(entry.node) ? 0 : undefined"
++            :role="listNodeClickable(entry.node) ? 'button' : undefined"
++            @click="listNodeClickable(entry.node) && clickEndpoint(entry.node)"
++            @keydown.enter.prevent="listNodeClickable(entry.node) && clickEndpoint(entry.node)"
++          >
++            <span class="node-icon" aria-hidden="true">{{ icon(entry.node) }}</span>
++            <span class="topology-list__copy">
++              <strong>{{ compactNodeLabel(entry.node.label) }}</strong>
++              <small>{{ entry.node.ip || (entry.node.kind === "switch" ? "Switch gestito" : entry.node.media || "IP non disponibile") }}</small>
++              <small v-if="entry.parentLabel" class="topology-list__parent">↳ collegato a {{ entry.parentLabel }}</small>
++            </span>
++            <span
++              class="status-dot"
++              :class="{ offline: entry.node._offline }"
++              aria-hidden="true"
++            ></span>
++          </li>
++        </ul>
++      </section>
++    </div>
++
+     <Branch308Card
+       v-if="showBranch308Card"
+       :topology-edges="data.edges"
+@@ -631,6 +708,71 @@ onUnmounted(() => {
+   position: relative;
+   min-width: 100%;
+ }
++/* D7: la lista gerarchica sostituisce il grafo solo su schermi stretti. */
++.topology-list {
++  display: none;
++}
++.topology-list__hint {
++  margin: 0.75rem 0 0.5rem;
++  font-size: 0.8rem;
++}
++.topology-list__group {
++  margin-bottom: 1rem;
++}
++.topology-list__group h4 {
++  margin: 0 0 0.4rem;
++  font-size: 0.72rem;
++  letter-spacing: 0.04em;
++  color: var(--text-3);
++  text-transform: uppercase;
++}
++.topology-list__group ul {
++  list-style: none;
++  margin: 0;
++  padding: 0;
++  display: flex;
++  flex-direction: column;
++  gap: 0.35rem;
++}
++.topology-list__row {
++  display: flex;
++  align-items: center;
++  gap: 0.6rem;
++  padding: 0.6rem 0.7rem;
++  border: 0.5px solid var(--border);
++  border-radius: var(--radius);
++  background: var(--bg-1);
++  min-width: 0;
++}
++.topology-list__row.clickable {
++  cursor: pointer;
++}
++.topology-list__row.on-path {
++  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
++  background: color-mix(in srgb, var(--accent) 10%, var(--bg-1));
++}
++.topology-list__row.offline {
++  opacity: 0.6;
++}
++.topology-list__copy {
++  display: flex;
++  flex-direction: column;
++  gap: 0.1rem;
++  min-width: 0;
++  flex: 1 1 auto;
++}
++.topology-list__copy strong {
++  font-size: 0.9rem;
++  overflow-wrap: anywhere;
++}
++.topology-list__copy small {
++  color: var(--text-3);
++  font-size: 0.75rem;
++  overflow-wrap: anywhere;
++}
++.topology-list__parent {
++  color: var(--text-2);
++}
+ .topology-stage {
+   position: absolute;
+   top: 0;
+@@ -879,7 +1021,27 @@ onUnmounted(() => {
+ .wifi-step strong {
+   color: var(--accent);
+ }
++@media (max-width: 800px) {
++  /* O9: sotto 800px lista + grafo scrollabile (prima display:none sul canvas = mappa assente). */
++  .topology-workspace {
++    display: flex;
++    flex-direction: column;
++  }
++  .topology-scroll {
++    display: block;
++    min-height: 50vh;
++    max-height: 70vh;
++    order: 2;
++  }
++  .topology-list {
++    display: block;
++    order: 1;
++  }
++  .topology-zoom {
++    display: inline-flex;
++  }
++}
+ @media (max-width: 700px) {
+-  .topology-scroll { min-height: 65vh; }
++  .topology-scroll { min-height: 55vh; }
+ }
+ </style>
