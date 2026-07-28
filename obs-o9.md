@@ -129,5 +129,11 @@ Prima/dopo: O8 PNG 768×1756 vs O9 oggi 1280×6885 / 768×9221 / 390×13582; top
 13. boot/DB/_w4a/T7 → **no**  
 14. diff monolitico → **no** (tre diff)
 
+
+### Residuo screenshot (dichiarato)
+Catturate e condivise con W×H distinti: **oggi**, **plant**, **topology**, probe X1, **gs308-1280**.
+Rotte ancora da catturare con lo stesso harness (`o9_capture_harness.md`): dossier, inventory, monitoring, timeline, actions, dashboard, findings, osservatorio, come-funziona, incidents, runbook (×3 bp).
+Non è un fallimento di X1: l'harness è verde; è copertura incompleta di FASE 2 deliverable screenshots.
+
 ## STOP
 Review Michele. Non chiudere cantiere. Non merge main. Favicon resta Opzione A (non toccata).
