@@ -1,0 +1,1115 @@
+# OBS — W8-T7-RUN2 · ripresa: drift, integrità, STOP a C2
+
+Ramo `feature/obs-currency` · prod **0.10.63** · read-only DB · nessun deploy · nessun bump.
+
+**Canale:** `mooflo@192.168.1.3` + `-i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=8`.
+**`<DC>`:** `docker compose` (senza sudo).
+
+**Redazione:** nessuna credenziale negli output; nessuna sostituzione `<REDACTED>`.
+
+**Esito:** FASE A **verde** · FASE B **verde** · FASE C **STOP a C2** (grep riferimenti hung) · FASE D **`<non eseguito>`**.
+Collector **mai fermato**. Nessun `mv` eseguito.
+
+## Conteggio righe
+
+| Artefatto | `wc -l` |
+|---|---|
+| `obs-w8t7-run2.md` | 1115 |
+| `KNOWN_DEBT.md` | 455 |
+| `obs-w4a-measure-archivio.py` | `<non pubblicato — C3 non eseguito>` |
+
+---
+
+## Regola architetturale (registrata)
+
+`scripts/` in produzione **non è un deposito**. Ogni file eseguibile presente sul NAS deve
+esistere anche nel repo, oppure non deve esistere affatto. **Escluderlo dal gate è VIETATO**:
+convertirebbe un drift rilevato in un punto cieco permanente (stessa ragione del rifiuto di
+escludere per path `wp_gate.py`).
+
+Debito aperto: **`DEBT-PROD-SOURCE-DRIFT`** (priorità media) — vedi `KNOWN_DEBT.md`.
+
+---
+
+## FASE A — Enumerazione esaustiva del drift
+
+### A1_list_local (`wc -l` = 175)
+```
+api/app/__init__.py
+api/app/alembic/env.py
+api/app/alembic/versions/a0c674f1553b_baseline_schema.py
+api/app/alembic/versions/a7b8c9d0e1f2_ip_addresses_unique_iface_ip.py
+api/app/alembic/versions/b1e8c2d9047a_m4_m8_evolution_tables.py
+api/app/alembic/versions/c3a91e7b2048_ssdp_asset_liveness.py
+api/app/alembic/versions/c8d9e0f1a2b3_fingerprint_facts.py
+api/app/alembic/versions/d4b02f8c3159_printer_asset_liveness.py
+api/app/alembic/versions/e5f1a2b3c4d5_chassis_grouping.py
+api/app/alembic/versions/f6c2d0e1a9b7_ip_addresses_role.py
+api/app/alembic/versions/g7d3e4f5a6b7_oui_vendors.py
+api/app/alembic/versions/h8e4f5a6b7c8_flow_direction_bytes.py
+api/app/alembic/versions/i9f6a7b8c9d0_ip_intel.py
+api/app/alembic/versions/j0a1b2c3d4e5_ip_intel_context.py
+api/app/alembic/versions/k1b2c3d4e5f6_ip_intel_context_structured.py
+api/app/alembic/versions/l2c3d4e5f6a7_drop_legacy_observations.py
+api/app/alembic/versions/m3d4e5f6a7b8_fact_assertions.py
+api/app/alembic/versions/n4e5f6a7b8c9_identity_evidence.py
+api/app/auth.py
+api/app/bootstrap.py
+api/app/config.py
+api/app/db.py
+api/app/identity_evidence/__init__.py
+api/app/identity_evidence/circularity.py
+api/app/identity_evidence/classes.py
+api/app/identity_evidence/decisions.py
+api/app/identity_evidence/linker.py
+api/app/identity_evidence/mac_guards.py
+api/app/identity_evidence/presence.py
+api/app/identity_evidence/store.py
+api/app/main.py
+api/app/models.py
+api/app/routers/__init__.py
+api/app/routers/actions.py
+api/app/routers/admin.py
+api/app/routers/ai_routes.py
+api/app/routers/assets.py
+api/app/routers/auth_routes.py
+api/app/routers/chassis.py
+api/app/routers/dashboard.py
+api/app/routers/evolution.py
+api/app/routers/ingest.py
+api/app/routers/monitors.py
+api/app/routers/suggestions.py
+api/app/routers/switches.py
+api/app/routers/system.py
+api/app/schemas.py
+api/app/services/__init__.py
+api/app/services/actions.py
+api/app/services/ai.py
+api/app/services/ai_naming.py
+api/app/services/asset_identity.py
+api/app/services/asustor_health.py
+api/app/services/backup.py
+api/app/services/backup_rotate_core.py
+api/app/services/boot_timing.py
+api/app/services/chassis_grouping.py
+api/app/services/chassis_rename.py
+api/app/services/detectors/__init__.py
+api/app/services/dhcp_names.py
+api/app/services/drift.py
+api/app/services/event_maintenance.py
+api/app/services/field_sources_vocab.py
+api/app/services/findings.py
+api/app/services/fingerprint_facts.py
+api/app/services/flows_summary.py
+api/app/services/fritz_hostfilter.py
+api/app/services/habits.py
+api/app/services/identity.py
+api/app/services/identity_fusion.py
+api/app/services/interface_roles.py
+api/app/services/internet_health.py
+api/app/services/inventory.py
+api/app/services/ip_intel.py
+api/app/services/ip_intel_context.py
+api/app/services/mac_ip_policy.py
+api/app/services/macutil.py
+api/app/services/materialize.py
+api/app/services/migrate.py
+api/app/services/monitoring.py
+api/app/services/name_proposal_chassis.py
+api/app/services/notifications.py
+api/app/services/observations_store.py
+api/app/services/os_scan_guard.py
+api/app/services/oui_store.py
+api/app/services/physical_links.py
+api/app/services/port_naming.py
+api/app/services/port_roles.py
+api/app/services/printer.py
+api/app/services/reliability_metrics.py
+api/app/services/retention.py
+api/app/services/scan_profiles.py
+api/app/services/scan_readiness.py
+api/app/services/scans.py
+api/app/services/schema_migrations.py
+api/app/services/snapshots.py
+api/app/services/speedtest.py
+api/app/services/suggest.py
+api/app/services/switch_capabilities.py
+api/app/services/timeline.py
+api/app/services/topology.py
+api/app/services/trust.py
+api/app/services/wan_telemetry.py
+api/app/services/watch.py
+api/app/services/wifi_associations.py
+collector/collector/__init__.py
+collector/collector/adapters/__init__.py
+collector/collector/adapters/asustor_snmp.py
+collector/collector/adapters/flow_stub.py
+collector/collector/adapters/fritz.py
+collector/collector/adapters/mdns_ssdp.py
+collector/collector/adapters/nmap_scan.py
+collector/collector/adapters/printer.py
+collector/collector/adapters/safe_fingerprint.py
+collector/collector/adapters/snmp_lldp.py
+collector/collector/adapters/zeek_conn.py
+collector/collector/adapters/zeek_dhcp_names.py
+collector/collector/adapters/zeek_intel.py
+collector/collector/config.py
+collector/collector/main.py
+collector/collector/probe_asustor_snmp.py
+collector/collector/providers/__init__.py
+collector/collector/providers/base.py
+collector/collector/providers/fritz_hosts.py
+collector/collector/providers/nmap_hosts.py
+collector/collector/providers/printer_hosts.py
+collector/collector/providers/ssdp_hosts.py
+collector/collector/scan_jobs.py
+scripts/adopted_dump.py
+scripts/annotate_asset98_oui.py
+scripts/apply_cass_facts.py
+scripts/assert_b2_cass_inspect.py
+scripts/assert_b2_cassiopea_retry.py
+scripts/assert_b2_live.py
+scripts/assert_backend_filo.py
+scripts/assert_grouping_card_live.py
+scripts/assert_grouping_fase_b_live.py
+scripts/assert_ondata4.py
+scripts/backup_rotate.py
+scripts/classify_nuovo_followup.py
+scripts/classify_nuovo_ro.py
+scripts/dossier_asset98_followup.py
+scripts/dossier_asset98_ro.py
+scripts/enable_watch_asset98.py
+scripts/ip_intel_backfill.py
+scripts/ip_intel_context.py
+scripts/ip_intel_context_export.py
+scripts/ip_intel_context_run.py
+scripts/ip_intel_context_struct_migrate.py
+scripts/live_qa_v050.py
+scripts/migrate_kuma_fase2_to_ping.py
+scripts/migrate_kuma_to_native.py
+scripts/miss_classify_2h.py
+scripts/normalize_empty_manual_names.py
+scripts/obs_db_slim_p1_drop_dup_indexes.py
+scripts/oui_refresh.py
+scripts/probe_asset98_monday_ssid.py
+scripts/probe_echo_ouis.py
+scripts/probe_guest_flags.py
+scripts/recon_flip_last2.py
+scripts/recon_grouping_virtual_mac_fase_a.py
+scripts/reconcile_fdb_events.py
+scripts/reset_calibration_epoch.py
+scripts/unmark_post_cutoff_provenance.py
+scripts/w5_gate.py
+scripts/w5b_measure.py
+scripts/w6_gate.py
+scripts/w6review_measure.py
+scripts/w7_g7.py
+scripts/w7_macip_blast.py
+scripts/w7_wire_predict.py
+scripts/w7c_measure.py
+scripts/wp_diagnose.py
+scripts/wp_gate.py
+scripts/wp_predict.py
+```
+
+### A2_list_nas (`wc -l` = 176)
+```
+api/app/__init__.py
+api/app/alembic/env.py
+api/app/alembic/versions/a0c674f1553b_baseline_schema.py
+api/app/alembic/versions/a7b8c9d0e1f2_ip_addresses_unique_iface_ip.py
+api/app/alembic/versions/b1e8c2d9047a_m4_m8_evolution_tables.py
+api/app/alembic/versions/c3a91e7b2048_ssdp_asset_liveness.py
+api/app/alembic/versions/c8d9e0f1a2b3_fingerprint_facts.py
+api/app/alembic/versions/d4b02f8c3159_printer_asset_liveness.py
+api/app/alembic/versions/e5f1a2b3c4d5_chassis_grouping.py
+api/app/alembic/versions/f6c2d0e1a9b7_ip_addresses_role.py
+api/app/alembic/versions/g7d3e4f5a6b7_oui_vendors.py
+api/app/alembic/versions/h8e4f5a6b7c8_flow_direction_bytes.py
+api/app/alembic/versions/i9f6a7b8c9d0_ip_intel.py
+api/app/alembic/versions/j0a1b2c3d4e5_ip_intel_context.py
+api/app/alembic/versions/k1b2c3d4e5f6_ip_intel_context_structured.py
+api/app/alembic/versions/l2c3d4e5f6a7_drop_legacy_observations.py
+api/app/alembic/versions/m3d4e5f6a7b8_fact_assertions.py
+api/app/alembic/versions/n4e5f6a7b8c9_identity_evidence.py
+api/app/auth.py
+api/app/bootstrap.py
+api/app/config.py
+api/app/db.py
+api/app/identity_evidence/__init__.py
+api/app/identity_evidence/circularity.py
+api/app/identity_evidence/classes.py
+api/app/identity_evidence/decisions.py
+api/app/identity_evidence/linker.py
+api/app/identity_evidence/mac_guards.py
+api/app/identity_evidence/presence.py
+api/app/identity_evidence/store.py
+api/app/main.py
+api/app/models.py
+api/app/routers/__init__.py
+api/app/routers/actions.py
+api/app/routers/admin.py
+api/app/routers/ai_routes.py
+api/app/routers/assets.py
+api/app/routers/auth_routes.py
+api/app/routers/chassis.py
+api/app/routers/dashboard.py
+api/app/routers/evolution.py
+api/app/routers/ingest.py
+api/app/routers/monitors.py
+api/app/routers/suggestions.py
+api/app/routers/switches.py
+api/app/routers/system.py
+api/app/schemas.py
+api/app/services/__init__.py
+api/app/services/actions.py
+api/app/services/ai.py
+api/app/services/ai_naming.py
+api/app/services/asset_identity.py
+api/app/services/asustor_health.py
+api/app/services/backup.py
+api/app/services/backup_rotate_core.py
+api/app/services/boot_timing.py
+api/app/services/chassis_grouping.py
+api/app/services/chassis_rename.py
+api/app/services/detectors/__init__.py
+api/app/services/dhcp_names.py
+api/app/services/drift.py
+api/app/services/event_maintenance.py
+api/app/services/field_sources_vocab.py
+api/app/services/findings.py
+api/app/services/fingerprint_facts.py
+api/app/services/flows_summary.py
+api/app/services/fritz_hostfilter.py
+api/app/services/habits.py
+api/app/services/identity.py
+api/app/services/identity_fusion.py
+api/app/services/interface_roles.py
+api/app/services/internet_health.py
+api/app/services/inventory.py
+api/app/services/ip_intel.py
+api/app/services/ip_intel_context.py
+api/app/services/mac_ip_policy.py
+api/app/services/macutil.py
+api/app/services/materialize.py
+api/app/services/migrate.py
+api/app/services/monitoring.py
+api/app/services/name_proposal_chassis.py
+api/app/services/notifications.py
+api/app/services/observations_store.py
+api/app/services/os_scan_guard.py
+api/app/services/oui_store.py
+api/app/services/physical_links.py
+api/app/services/port_naming.py
+api/app/services/port_roles.py
+api/app/services/printer.py
+api/app/services/reliability_metrics.py
+api/app/services/retention.py
+api/app/services/scan_profiles.py
+api/app/services/scan_readiness.py
+api/app/services/scans.py
+api/app/services/schema_migrations.py
+api/app/services/snapshots.py
+api/app/services/speedtest.py
+api/app/services/suggest.py
+api/app/services/switch_capabilities.py
+api/app/services/timeline.py
+api/app/services/topology.py
+api/app/services/trust.py
+api/app/services/wan_telemetry.py
+api/app/services/watch.py
+api/app/services/wifi_associations.py
+collector/collector/__init__.py
+collector/collector/adapters/__init__.py
+collector/collector/adapters/asustor_snmp.py
+collector/collector/adapters/flow_stub.py
+collector/collector/adapters/fritz.py
+collector/collector/adapters/mdns_ssdp.py
+collector/collector/adapters/nmap_scan.py
+collector/collector/adapters/printer.py
+collector/collector/adapters/safe_fingerprint.py
+collector/collector/adapters/snmp_lldp.py
+collector/collector/adapters/zeek_conn.py
+collector/collector/adapters/zeek_dhcp_names.py
+collector/collector/adapters/zeek_intel.py
+collector/collector/config.py
+collector/collector/main.py
+collector/collector/probe_asustor_snmp.py
+collector/collector/providers/__init__.py
+collector/collector/providers/base.py
+collector/collector/providers/fritz_hosts.py
+collector/collector/providers/nmap_hosts.py
+collector/collector/providers/printer_hosts.py
+collector/collector/providers/ssdp_hosts.py
+collector/collector/scan_jobs.py
+scripts/_w4a_measure.py
+scripts/adopted_dump.py
+scripts/annotate_asset98_oui.py
+scripts/apply_cass_facts.py
+scripts/assert_b2_cass_inspect.py
+scripts/assert_b2_cassiopea_retry.py
+scripts/assert_b2_live.py
+scripts/assert_backend_filo.py
+scripts/assert_grouping_card_live.py
+scripts/assert_grouping_fase_b_live.py
+scripts/assert_ondata4.py
+scripts/backup_rotate.py
+scripts/classify_nuovo_followup.py
+scripts/classify_nuovo_ro.py
+scripts/dossier_asset98_followup.py
+scripts/dossier_asset98_ro.py
+scripts/enable_watch_asset98.py
+scripts/ip_intel_backfill.py
+scripts/ip_intel_context.py
+scripts/ip_intel_context_export.py
+scripts/ip_intel_context_run.py
+scripts/ip_intel_context_struct_migrate.py
+scripts/live_qa_v050.py
+scripts/migrate_kuma_fase2_to_ping.py
+scripts/migrate_kuma_to_native.py
+scripts/miss_classify_2h.py
+scripts/normalize_empty_manual_names.py
+scripts/obs_db_slim_p1_drop_dup_indexes.py
+scripts/oui_refresh.py
+scripts/probe_asset98_monday_ssid.py
+scripts/probe_echo_ouis.py
+scripts/probe_guest_flags.py
+scripts/recon_flip_last2.py
+scripts/recon_grouping_virtual_mac_fase_a.py
+scripts/reconcile_fdb_events.py
+scripts/reset_calibration_epoch.py
+scripts/unmark_post_cutoff_provenance.py
+scripts/w5_gate.py
+scripts/w5b_measure.py
+scripts/w6_gate.py
+scripts/w6review_measure.py
+scripts/w7_g7.py
+scripts/w7_macip_blast.py
+scripts/w7_wire_predict.py
+scripts/w7c_measure.py
+scripts/wp_diagnose.py
+scripts/wp_gate.py
+scripts/wp_predict.py
+```
+
+### A3_diff (integrale)
+```
+128a129
+> scripts/_w4a_measure.py
+```
+
+**Esito A:** lunghezze 175/176 = criterio gate. Diff = **una sola** riga: `scripts/_w4a_measure.py` solo sul NAS. Nessun file presente nel repo e assente sul NAS. **VERDE.**
+
+---
+
+## FASE B — Integrità di contenuto (facts/ INCLUSO)
+
+### B1_sha_local (`wc -l` = 181)
+```
+42f3f44795c4c14546b4fde5b5c015e962f1a22bbe7fa5e76a51accd2d966e09  api/app/__init__.py
+31af0ab13c2f908a8557f2909ef63b3e2f16b2c402f446da79779b2636632a5c  api/app/alembic/env.py
+0912c2076068a7d864996f06990fd1cf4634e134e730b427c19b8c78e5337c91  api/app/alembic/versions/a0c674f1553b_baseline_schema.py
+9553a320699051d6b380ff3044552be575cfe6e8deb275310f2879fd6829176f  api/app/alembic/versions/a7b8c9d0e1f2_ip_addresses_unique_iface_ip.py
+01571e013bbb8d24dc9dcd4e3bb30967be6bba9caf8b55defd242d079a0812c0  api/app/alembic/versions/b1e8c2d9047a_m4_m8_evolution_tables.py
+a0f219e1ecd2a9d3c6b4f535d4e8515fd9a102c5605ec1565d40c752aecff62a  api/app/alembic/versions/c3a91e7b2048_ssdp_asset_liveness.py
+1d23a85e173c95e6b7a7b0f027cf256ad29b14c5af6df0ef8d8ab0670568506a  api/app/alembic/versions/c8d9e0f1a2b3_fingerprint_facts.py
+05b23c543f2a9b9efefad89ccc08e0ff6d3ce0494edc6a5b2ef771e9e188ee0a  api/app/alembic/versions/d4b02f8c3159_printer_asset_liveness.py
+9c56d5eaea2c7c8e623363644b7371a3a0f0666265a565a0410be7f49a7941d2  api/app/alembic/versions/e5f1a2b3c4d5_chassis_grouping.py
+4c2376d7166371e8d9becedf04e2a5ecaca1299b0c6bbbba8abfe03bcfbc8a15  api/app/alembic/versions/f6c2d0e1a9b7_ip_addresses_role.py
+1072d9c2e1fdff193df1ad6ac3759d64d2f13eea73227aac8275258962157017  api/app/alembic/versions/g7d3e4f5a6b7_oui_vendors.py
+b471106ece5a4ea037dd3a190acbd3d3145e7cae2c39eecc309c7b0f574d1fd2  api/app/alembic/versions/h8e4f5a6b7c8_flow_direction_bytes.py
+ae48010cf35e777bbee42c64af43d0c3283e05032e908049adf7860d029ced83  api/app/alembic/versions/i9f6a7b8c9d0_ip_intel.py
+fb4a2d4d665b135f966a89ba6e8e03de98a3719f20fd368f6da2a47401e8c57c  api/app/alembic/versions/j0a1b2c3d4e5_ip_intel_context.py
+9139bbe801c824a82a2c469c55cab39fc017decbb71355a03c11fb8add411a2d  api/app/alembic/versions/k1b2c3d4e5f6_ip_intel_context_structured.py
+56df0a47a8810ed99d062c66de437743b3eef7e09f2f2a286fdce353d4999274  api/app/alembic/versions/l2c3d4e5f6a7_drop_legacy_observations.py
+6e68776805f6af8784c6793ad7ac58c69efb46bd3222941b99bb2982255a902d  api/app/alembic/versions/m3d4e5f6a7b8_fact_assertions.py
+e1a261519dec7ad4f80b0ba63e616e2de24699502cdcc8b9c2a22bad0dfadb99  api/app/alembic/versions/n4e5f6a7b8c9_identity_evidence.py
+ecccbe822fa4d171ed8d11105fa9e5664ea5061c2c7e4aeab7b071781f7ed49d  api/app/auth.py
+c8d1318afb0d6fb454eb6e6de3111ff4cd77259ee6a2f9a56980d467a9140441  api/app/bootstrap.py
+07d4e22001b44f0a79cb3b47604b3dd3f9ba0f2d3ef8b96ff601f3e5013cca83  api/app/config.py
+9fe5116d595712962435a1ea2d0c56ba7302d28d11229685681663ec724787d6  api/app/db.py
+f41700604c7b5b4a22beb925cb89c11c5d7d523031aee533b4f10ac25d411295  api/app/facts/__init__.py
+dd6211a38ad87dd67499a0f87c34bda9f13386d257dceed9f4dda092351a0588  api/app/facts/registry.py
+d056e90523988f2fffd1a8ca7c1ee8ce873535ffbc822d215af69982d8ec3e36  api/app/facts/resolver.py
+a35305df3c9c97e3b8a05f725f628868af64c2501430ef9fbe63da73d6a2a338  api/app/facts/shadow.py
+d8dee5e60cd440f9e42193819e6e9bcb615d46e9abfdb17c11b4ad8b72d6340e  api/app/identity_evidence/__init__.py
+f15a48473bca9e9f96a3a9d7ee74eb19715b69a50c3763a340ae8777c83fce37  api/app/identity_evidence/circularity.py
+af195ea9e7a236098d42bdab79e71a8e20a36d54ed2fc1961f8d37f270c9dd44  api/app/identity_evidence/classes.py
+437db8ddd11b6166a1d1a376d9ce632af7bdd87a963b9eda5ea614d9850cc2f2  api/app/identity_evidence/decisions.py
+462a18b3c1f41ef4a0232647f42335b4eefa55281d58944fd8cbef76c9041e49  api/app/identity_evidence/linker.py
+5ba8f95042535246cc089e50feb6412d56e6edf298cd879a1b376f30f0b556ce  api/app/identity_evidence/mac_guards.py
+b7075c33de2808b2d21ae12d879339104e0cca2b948e04e8cf7d0eb20515a05c  api/app/identity_evidence/presence.py
+92018684b4b18280fa450f6fde44d1bd8e0911671878cd37fce6ef454816bf1b  api/app/identity_evidence/store.py
+5b3ef1012efe70ee483d9cbb3c84e4ae6ec2c1e5bc9a89ebcff715e13217b786  api/app/main.py
+25e206a19edf252f44bccfb10973e5dc4012a9d44ac4f6ed6bad98079eccf35a  api/app/models.py
+1f54ad6d81835514ba83e264dd451fd7b89b033d4af0851adbb35f3cc91a36b0  api/app/routers/__init__.py
+d5810cdb64552ff54ae48f84d3769243b2c92f8bbcf14d56f1edb1f22cee25b5  api/app/routers/actions.py
+bd7fd3b054daef1ab20534b634d30b5b645cc0d2ecc6a41072f41cfc5a84b272  api/app/routers/admin.py
+ac58e7b64e7a21b7caceaa1aa42d481f9d412a41cd76f0994d2b56c2eb0a7655  api/app/routers/ai_routes.py
+cb55ae645aa1384efcfb7bd284254e335ee1348902c95220fd0dada76b69729f  api/app/routers/assets.py
+61891dc16afb072b9be9e7902cf9f40eff9b305c1b9d2a53c6d51ac85e72d39b  api/app/routers/auth_routes.py
+e2c6d73fb3932be9e62c662402e02839a324b70d3dc12f818c551567e63a04c4  api/app/routers/chassis.py
+1c97716b59e2b64a5065d101cab114945e51e3071e83c8ac2927cdc70622408f  api/app/routers/dashboard.py
+48d6cb0d9f3cfc35fb4e967c810a018f4a6d6c1db9243d96678646b225b02b70  api/app/routers/evolution.py
+8765c85767af5b5a59f3398203a28a819f35e6c9a7efb96c8f36835d2bdf9a4f  api/app/routers/ingest.py
+d87c4b0c7a986f3fedff191c0ae8b750401f57dc71e28c54be70be108b8804a5  api/app/routers/monitors.py
+646b8de8c33210b659185e6e436229948bdf6ed1738a3a5770d89ff737975c0e  api/app/routers/suggestions.py
+e66b838a328646acee18a057351e348d806fdd127e33eeefb6f65d3b57af44bb  api/app/routers/switches.py
+06a378fb57cff653aa378cff0cc9f937520f7288653fda67786a25c495ebabab  api/app/routers/system.py
+36a4e21bccfc9c2e6ba53a672c10c4b4414acaf81401a297299cca46353a9753  api/app/schemas.py
+6599341b223f4fb7d072decd5a0b6c0c8ae60cdb3b103da178e7f476706a1e05  api/app/services/__init__.py
+3a6826742c0a5dcdf36c30b218a6142a771f4f3b5df43e01b181d2f1538ac3d6  api/app/services/actions.py
+07404786acbf36e9f85c9420857aec2df1dab6c70cae42f990c8ed83aff32a48  api/app/services/ai.py
+f62d829022e8d65e99d5eb1a61c34d8eb43467c514aef538bb9b4d4e48be1ebf  api/app/services/ai_naming.py
+3dc8f6e1afb361104a3724f7b6a2f8c001c1ca01490d6dc61d2c2963b3a0477a  api/app/services/asset_identity.py
+69ccce4ad16cc907fde662a879d4c050a3f4195c3fa1b7528a55d13fa1c3c6e6  api/app/services/asustor_health.py
+c5d4a5843d8e54511cc3608dca9b36b3979d9aad2b84678d727b4d4bbe149318  api/app/services/backup.py
+b07efb137b478ad54320e21483e9df18edfcbccff24ff58c57ac319300d71f2e  api/app/services/backup_rotate_core.py
+843eeeebec418984c9d6d93f22e02addb0b1392798e1cf8e0950b12c7797821f  api/app/services/boot_timing.py
+c83b6811d3cc040c1410f8c69b144ef738f9a361fa1b607f494a927e3ffddd4c  api/app/services/chassis_grouping.py
+d51e262c09731ce95de054931185fb4984607070779c2ec80d3b3f79ef98cc36  api/app/services/chassis_rename.py
+d35db4b74b7e70e803d79ed70049280f116fa3ea36b0833f64d73c743d59a16a  api/app/services/detectors/__init__.py
+ec160ce3e5df6df28900d0bf5a8dbd497831908e3491934039133bd950e7d458  api/app/services/dhcp_names.py
+2c57483eeee2324693b1d299a0679cc69e29236cf09003bd39b35b434634334a  api/app/services/drift.py
+2bc8f4defb0c77837bc4b1c3581ebc8efaa0bdc0479c3b719599ffbc8bd08376  api/app/services/event_maintenance.py
+bd6fe154b59b10bb9ad896074cce90d4f1e1e3e407e601fd378fc3cb7462eeb3  api/app/services/field_sources_vocab.py
+0aa6a6f35e2d43805ea603f58b0659b1cfbce40fbf1eb680c81a22715d343289  api/app/services/findings.py
+afd534b90e7348a33fbbacbc6e65d57b3c20ac3f1a39551f37b865ef47fe5596  api/app/services/fingerprint_facts.py
+9d9786e0811d09a895dcc4744175f43f45fd17169b9ed6b84237c7b27144155a  api/app/services/flows_summary.py
+2ef0375836ed77622286cfcff3ae4b95dc39fe884549d0cf5c7f7f203af52444  api/app/services/fritz_hostfilter.py
+8504dfe1fe0cc2d0d1df6cf8cb0e879f2b434c43ce06d9d49a36d4ebd3a9658b  api/app/services/habits.py
+b88ddeb1abb793880274d232dd29a8e6d1548368a39d29c8a4f02330c6db6c28  api/app/services/identity.py
+837cd948ece95f4a411a027be6625fef38dd467ceec75f964a90eb9612424961  api/app/services/identity_fusion.py
+5a64d7ad986cd3f899eb1ffd7431dc0795e675d5230dbe2cbf92e988f661bb5b  api/app/services/interface_roles.py
+51f0e5caf263b0317499e9063041637a14773ee900b5104d41dd9d6d6abce75b  api/app/services/internet_health.py
+40e9022bd84cfeb28851f24fc6a55c6fbcdecb41ae9d38dd44643331ea673dc6  api/app/services/inventory.py
+ff62c60f31ae581299fad811eebb951f63711a336e7ab24269b9113b96ed825d  api/app/services/ip_intel.py
+29c347c6591668148f498a65f1e7d30a976953bcab84a5573361da4fd6c6ace8  api/app/services/ip_intel_context.py
+60483a0afd4f8c08d915098777a861c1012e9b45241c01a034382ddb23218bc4  api/app/services/mac_ip_policy.py
+1bdc8b935fb33d0c65d6bf35de4b66327c18e9b5f82291894fcf2caefcc05156  api/app/services/macutil.py
+85ee6c3e6789e175e258715da2fe79490c01fbd2669f122f5bed69c5ddfc1bb7  api/app/services/materialize.py
+46b06003d6448ac614f4e0ada9b82bbdc0344da7101ccaf2184867b1b98e2b30  api/app/services/migrate.py
+9702717ca0615a8d9ddfcf9b251a902e30601391283c0654d428688b2702e317  api/app/services/monitoring.py
+c4a69fde0a926971de32201d7a09fdf3cd18b0d1d515d70837d0c35aaaf23356  api/app/services/name_proposal_chassis.py
+982ff2d3c7b71f5c857db4fecbdd1471d95cf3a03c9636bbeab1bab7d7077414  api/app/services/notifications.py
+dcc24e31e27d9ee00eb869cee5f37b21074831f153179c53acadf06bf6b00344  api/app/services/observations_store.py
+807ec7e8d11cd9f18aff5d07f83a45dfdabbab526cec99f6aed8e1fe0fac4430  api/app/services/os_scan_guard.py
+1a0e44bb667020d3bd22ad52cf7bba45dfd215df7a532e832e92e5f1eac6fbef  api/app/services/oui_store.py
+ebaf727b66c2e9418015aa8cc31b5484945e252c530fe34b1a633dde399ceb31  api/app/services/physical_links.py
+99d58941d793ef4c83fbdeb76c6d5cd481f8c3517b53b4d424e0b09e5fb0c406  api/app/services/port_naming.py
+2cb4290b36bf92ab7c769a660daf31451660e2a4554c9af41b27f20754dd40c9  api/app/services/port_roles.py
+4a6d171f2b462a96ec46dc2c91568ad81b6ae35876c9e64ce191105e113ab050  api/app/services/printer.py
+35ccf354fb30492f1139aa59673690d19244275619830d56170b8def93ba1915  api/app/services/reliability_metrics.py
+09f1925e119a0ad0324cd700200f4ffd92c80005140681476023ba85b3fae87d  api/app/services/retention.py
+bf74fdecd43be235033a6cd6aff77ae6d755837b7a3b5f102676f3599a860d06  api/app/services/scan_profiles.py
+4619cdd400d7abf436160f076b6072f70eb0e3365fdec2f8491852ab41087440  api/app/services/scan_readiness.py
+65c7bd253108699d7d4bf288877fe6f5fbd1f4f3f5f25e791e046e4c626a107b  api/app/services/scans.py
+db02395a8abf4f76b999a0250c4b7e52516c6a4cf2db55a00fed416859e4ae83  api/app/services/schema_migrations.py
+4b9e20230bc1999b683a40f3af355d9d69be106ee94e2e356164fa43f7374fb0  api/app/services/snapshots.py
+19d985b327921f8ca84763f4be2dc625b3e67a6f3f76cbd2cfa2f2fcd4d0f7e3  api/app/services/speedtest.py
+ab1d67b49bd8f1a31826987c1799a3a8686f8a9acb3dae1c92716f337fa665bf  api/app/services/suggest.py
+45de5ad2e0fa2f44660ca1fca85f52e2f022742f6045a8ab0ee79db37422f387  api/app/services/switch_capabilities.py
+45e8eb112ac9c30cd67851265e46febfad8b2e3c740407c71efd76f74d7fb8bb  api/app/services/timeline.py
+958f899e53d9b6b3fad7e9f45b62ae4377ebe744b4b27b84115da163b694833a  api/app/services/topology.py
+76270c82ac9a954a1042c4f3de9f362a7dba2eca824564fb1c54e8cd68425897  api/app/services/trust.py
+895c8d95d99ab11b93895da0821a79c0eb50a63fb9d80be9e78442d729b4940d  api/app/services/wan_telemetry.py
+995cbdaf457b11a0133d4a292cd09ccd95c629a3bd79402722d2430181aa0a27  api/app/services/watch.py
+250c1bfdb230711d811b542346b5de99ac773fe5e67d06e867e53905a4eca7b5  api/app/services/wifi_associations.py
+24f2d6778fa7e543df0660c7b532553ca04088bac9580c8ee22ab025c402ac29  collector/collector/__init__.py
+badc68df2d34467021c9b30ab672dcfb43285d4463a0de2a0002be84d111e429  collector/collector/adapters/__init__.py
+f6ad5f3d59895a083583b59f9c70f6cdd8ca57bd304caa09d2e543e85dc85d35  collector/collector/adapters/asustor_snmp.py
+2f74d546a7b33eb93d02d8023bf0d3ec6e6e9bc764f5a4a19c7ec457f3676b72  collector/collector/adapters/flow_stub.py
+dd5c8d5b63abbed966c6826b0b9633c2abf79cfef386d34903d9e0d6721867aa  collector/collector/adapters/fritz.py
+35221380b363a6dcec9ee08c66dbddf2770d0fad64db6af1ddc6b9fa14fcf01e  collector/collector/adapters/mdns_ssdp.py
+6884cd021d731632fd589d81c8149647484806bcfeecb1b20228e5a2f5c47999  collector/collector/adapters/nmap_scan.py
+82a7fe25ef95ae82f58c001ea940a6818d6c56179c874bc3d47dfd9f0beffe85  collector/collector/adapters/printer.py
+50ce0655e18d4ffcfc48248e2b3d6612258c7539f00a5dfefb19251315c39361  collector/collector/adapters/safe_fingerprint.py
+cab2dc2c4503c9729c73f3f8b9514ac8f2a1e6e8f6dd8d2f970e1c3e0a7ac88e  collector/collector/adapters/snmp_lldp.py
+953daaae4eceb2535ef365c2826467c9ac90f89dd7be0248ecaf8adb194b7e7f  collector/collector/adapters/zeek_conn.py
+02ef19ad92532270b3b99d80338d314d68d83a863b6eb11e63d8f5d1f7c51256  collector/collector/adapters/zeek_dhcp_names.py
+76628635a196fa87d69e51b71490c00f8ed595c765e91b54b236bd06cfa80697  collector/collector/adapters/zeek_intel.py
+9e09c142c8c0fd6c3d71ab910ec4c6752bce60dc480f8a05407fdf390ea3676a  collector/collector/config.py
+ae82f9bf7c15dfd4ddc151a8aa37fb5b2ff91bc4edcc5f16fd65ed1ec25fe17b  collector/collector/main.py
+2ab5e8104975748623d8496eb425606b83d6a16e5d75488a4af876376a735d01  collector/collector/probe_asustor_snmp.py
+2a9bead6f73f8b4ce78d69bc191dd29ff764e35a4e3d86ebaa41d266b479ac19  collector/collector/providers/__init__.py
+1b3eb619f12a3df80a2e9d6bbec12787cae6711537e466c63c2c73e6b82827f5  collector/collector/providers/base.py
+3c83b5b4d407a2c926d299a20ccc6e3f3e761bdea7e762254444ba8fcb24b189  collector/collector/providers/fritz_hosts.py
+8a9162ed7ddb42eb4f2c86233ccc8843da79645b4e50d17e8d68518fe76e5a60  collector/collector/providers/nmap_hosts.py
+f2a53c37ae0ecad52684083f8d746ba73d579b004d1f1a356237eaeb3cb028b9  collector/collector/providers/printer_hosts.py
+e2ded93afa40e04fb572ad728adf67476421690e2e801fa281b26a447fc3c429  collector/collector/providers/ssdp_hosts.py
+96177652e0bea95c071a0c4cbcc00038d04de7100c1da16b105c87e40c766de9  collector/collector/scan_jobs.py
+cd8f4ff74cf9908f50efc608d5628b860d53930b86eae16ff3a2a74874abd10e  scripts/adopted_dump.py
+f41b8726687cca06cd2966b62f9b11cca04268b35258850f825d2b35edbf6e03  scripts/annotate_asset98_oui.py
+09a1a13dc0fd2ca40b15cc7ff34d1921b3b3d7273eddb9c7e3c4aac40b691925  scripts/apply_cass_facts.py
+526f2b51413a616c9e1bd5f3c3e75c74d7ea3b28313eb05976f21ffd971b93ad  scripts/assert_b2_cass_inspect.py
+caa9e6e3d52a868c1d97b5c5db6249adc7a079fcb9f220289f1ec57a9bb4a940  scripts/assert_b2_cassiopea_retry.py
+8e0d747a262c5b696c761b097cc5508a9fa9b481e7cab834c58704b1fa600510  scripts/assert_b2_live.py
+1a0b3efc22179f3cceeec9faf777c772661117ee6172c3b0083ade371f643ae5  scripts/assert_backend_filo.py
+df22ddf59ecb3f4606b0b64c3e4fa39136336d3eecbfce8e3f27e4aae7d042af  scripts/assert_grouping_card_live.py
+3d65d365bc18a60868fc07041225c9d6fed8e6c0455818c0b3fb8ea5e4064609  scripts/assert_grouping_fase_b_live.py
+354a568c3d9a256d6d38c6685bd9c67d0ba910ab23b3ffa859c6852ee30fdb83  scripts/assert_ondata4.py
+71f11b59b3515dd02519e134dcc3d6519466d3bf75981b5559136ab77cc4b849  scripts/backup_rotate.py
+9f489ff4fceaae7c632ea30d983286db73de9f8ad156fb132076f91ef3cc1106  scripts/classify_nuovo_followup.py
+78d83b5b25ece818008a4e4ee50bba85c80799e301cc986e77f1b5185911252e  scripts/classify_nuovo_ro.py
+24911d3a1a8c2560b2ace8128c52391752763f334d898107dd1347b39a354ec7  scripts/dossier_asset98_followup.py
+9d5f70b6aca4c749aaa460f881f778c68aed05fea1dac63e058a4d4486a1f4a2  scripts/dossier_asset98_ro.py
+35efb9541cd0c074b1bbe4e78cc228ff3af06bde20d97592b7207c276b128f51  scripts/enable_watch_asset98.py
+ec4a94b433fe9d8ca8e97b9f5985091ee11aef7cdc4e4f38457cdfee6ff650fb  scripts/ip_intel_backfill.py
+1c197dee1d3d7a2eea6a8e8722dffccc6ab01a2d9a232a17c09a5e629799578e  scripts/ip_intel_context.py
+88dab0798dd1f7c208493d4b335f02f7798821396eeb9d20c752d9480aa3ae53  scripts/ip_intel_context_export.py
+4ebb5cd304e263069481c7303c1ff53efac34659225254a80bdb0eb644f878ee  scripts/ip_intel_context_run.py
+16c327fcc9a2f61bc7d5705c7fb4e5c0e5508ff1a3be730f16054711f5221f4b  scripts/ip_intel_context_struct_migrate.py
+5405b7ca190c24abbb71d042e17125afd17f9eba51e4227d0a6fcece63884c8b  scripts/live_qa_v050.py
+d19f8b6b28206df5819c6f4e71aa1cd53ae4e738735e003a7c0e849109a774f7  scripts/migrate_kuma_fase2_to_ping.py
+3b42a05f92248511da75b15a36292229ceec40847b32a49a6e987d42582cc77c  scripts/migrate_kuma_to_native.py
+4138d4387ce0978da0b276f3593aab79fc400c05a40484a3796eb12398efe356  scripts/miss_classify_2h.py
+f1c6a0251b809623e5b4ea6fa664806790cf2cefc329a7ba511c9c45db6a09d6  scripts/normalize_empty_manual_names.py
+9d56cfb9cba5021d9586fba449effe0081d64fd3f50e68b37d57ad63e9cfacf7  scripts/obs_db_slim_p1_drop_dup_indexes.py
+6a3d82c88eef30c2bc113bdd94de060e0710f274291b551848c0fce878d4f7ed  scripts/oui_refresh.py
+f3c00907ae109d92e22521692400ee58e2bb40b52a4ff1f19dc682b18781f5d5  scripts/probe_asset98_monday_ssid.py
+7a5f6a8cd5aae2ed7f3b869183ea5c0ea7c9df26665d4e49108c065733fee4bd  scripts/probe_echo_ouis.py
+7a632c8919cf41fcf5a7f2cb6331e2d5d44521319afc036396d474144d22f654  scripts/probe_guest_flags.py
+d2cd164beca8bc43e2ecabe85237d405a191e02d487ab94a9f6c991574dd37a6  scripts/recon_flip_last2.py
+789b30d290d83ad1051a95e1540fde4fcc0d2b0528fc091e724147cc524e712f  scripts/recon_grouping_virtual_mac_fase_a.py
+d229da5b8e980530c0062976ebdc700cb020b716dea569d975e128f0844c6c9b  scripts/reconcile_fdb_events.py
+3fc9551c87cbf9d9c2b903efa782d0f86d5976817e4e885c4f7c7951cd1fc301  scripts/reset_calibration_epoch.py
+f30c77b6432ee5946865dd70fddec934978fada04a7978df40bde009658215c8  scripts/unmark_post_cutoff_provenance.py
+8951dedde5e9012e8600965c47f79f31dbf404fcfce5187bc57dc83884eae996  scripts/w5_gate.py
+d24fcaaf4faa99a6859df46750fecda9f8f9cc114eafa561322c4835e925faad  scripts/w5b_measure.py
+430af8e4b47c75bd35cdf035c92b10e30a14160d198647ccc56cf9828ad73404  scripts/w6_gate.py
+cdb0ffac17a010de8f9dcfeaef969f360b2fa19d2c6300aa8c857e73020cdc1f  scripts/w6review_measure.py
+79eb95b2925648cc44ab4a7f57b893be99aa3fa3d19b2cbd1475f88328bffa84  scripts/w7_g7.py
+352f451dbe7d485506bad96eed75d622233817166f3d58f05729d01034084a27  scripts/w7_macip_blast.py
+9e0be374e517c70178e817610d5c191189301c8a05ffc34cd79571369d0e8bf7  scripts/w7_wire_predict.py
+c4e9ee22ebf931b1c4be0366702c447609ea539efd7847e7b7be00fb64ed1786  scripts/w7c_measure.py
+80744e430c356f955f635bc7244a814b638b98fc9ef42de56171213187475802  scripts/w8_currency_gate.py
+e440305cf3cdb6d94bed14a688f48ef6ddc2a403944ac725f82aafcddea8ae0e  scripts/w8_g8_equivalence.py
+6f09ca635d0584b0730dc9272590c6e2d3bcc2f6e266e1a5d8e51d4e90da7647  scripts/wp_diagnose.py
+483f4b8744ac432caefaad6a7b8452bc318e8801d581943df98b42321cd4f167  scripts/wp_gate.py
+f7c348dcd9ac021b452b1e385894fb73bc79cbc90044fb40b9b2ab2f31b90eea  scripts/wp_predict.py
+```
+
+### B2_sha_nas (`wc -l` = 182)
+```
+42f3f44795c4c14546b4fde5b5c015e962f1a22bbe7fa5e76a51accd2d966e09  api/app/__init__.py
+31af0ab13c2f908a8557f2909ef63b3e2f16b2c402f446da79779b2636632a5c  api/app/alembic/env.py
+0912c2076068a7d864996f06990fd1cf4634e134e730b427c19b8c78e5337c91  api/app/alembic/versions/a0c674f1553b_baseline_schema.py
+9553a320699051d6b380ff3044552be575cfe6e8deb275310f2879fd6829176f  api/app/alembic/versions/a7b8c9d0e1f2_ip_addresses_unique_iface_ip.py
+01571e013bbb8d24dc9dcd4e3bb30967be6bba9caf8b55defd242d079a0812c0  api/app/alembic/versions/b1e8c2d9047a_m4_m8_evolution_tables.py
+a0f219e1ecd2a9d3c6b4f535d4e8515fd9a102c5605ec1565d40c752aecff62a  api/app/alembic/versions/c3a91e7b2048_ssdp_asset_liveness.py
+1d23a85e173c95e6b7a7b0f027cf256ad29b14c5af6df0ef8d8ab0670568506a  api/app/alembic/versions/c8d9e0f1a2b3_fingerprint_facts.py
+05b23c543f2a9b9efefad89ccc08e0ff6d3ce0494edc6a5b2ef771e9e188ee0a  api/app/alembic/versions/d4b02f8c3159_printer_asset_liveness.py
+9c56d5eaea2c7c8e623363644b7371a3a0f0666265a565a0410be7f49a7941d2  api/app/alembic/versions/e5f1a2b3c4d5_chassis_grouping.py
+4c2376d7166371e8d9becedf04e2a5ecaca1299b0c6bbbba8abfe03bcfbc8a15  api/app/alembic/versions/f6c2d0e1a9b7_ip_addresses_role.py
+1072d9c2e1fdff193df1ad6ac3759d64d2f13eea73227aac8275258962157017  api/app/alembic/versions/g7d3e4f5a6b7_oui_vendors.py
+b471106ece5a4ea037dd3a190acbd3d3145e7cae2c39eecc309c7b0f574d1fd2  api/app/alembic/versions/h8e4f5a6b7c8_flow_direction_bytes.py
+ae48010cf35e777bbee42c64af43d0c3283e05032e908049adf7860d029ced83  api/app/alembic/versions/i9f6a7b8c9d0_ip_intel.py
+fb4a2d4d665b135f966a89ba6e8e03de98a3719f20fd368f6da2a47401e8c57c  api/app/alembic/versions/j0a1b2c3d4e5_ip_intel_context.py
+9139bbe801c824a82a2c469c55cab39fc017decbb71355a03c11fb8add411a2d  api/app/alembic/versions/k1b2c3d4e5f6_ip_intel_context_structured.py
+56df0a47a8810ed99d062c66de437743b3eef7e09f2f2a286fdce353d4999274  api/app/alembic/versions/l2c3d4e5f6a7_drop_legacy_observations.py
+6e68776805f6af8784c6793ad7ac58c69efb46bd3222941b99bb2982255a902d  api/app/alembic/versions/m3d4e5f6a7b8_fact_assertions.py
+e1a261519dec7ad4f80b0ba63e616e2de24699502cdcc8b9c2a22bad0dfadb99  api/app/alembic/versions/n4e5f6a7b8c9_identity_evidence.py
+ecccbe822fa4d171ed8d11105fa9e5664ea5061c2c7e4aeab7b071781f7ed49d  api/app/auth.py
+c8d1318afb0d6fb454eb6e6de3111ff4cd77259ee6a2f9a56980d467a9140441  api/app/bootstrap.py
+07d4e22001b44f0a79cb3b47604b3dd3f9ba0f2d3ef8b96ff601f3e5013cca83  api/app/config.py
+9fe5116d595712962435a1ea2d0c56ba7302d28d11229685681663ec724787d6  api/app/db.py
+f41700604c7b5b4a22beb925cb89c11c5d7d523031aee533b4f10ac25d411295  api/app/facts/__init__.py
+dd6211a38ad87dd67499a0f87c34bda9f13386d257dceed9f4dda092351a0588  api/app/facts/registry.py
+d056e90523988f2fffd1a8ca7c1ee8ce873535ffbc822d215af69982d8ec3e36  api/app/facts/resolver.py
+a35305df3c9c97e3b8a05f725f628868af64c2501430ef9fbe63da73d6a2a338  api/app/facts/shadow.py
+d8dee5e60cd440f9e42193819e6e9bcb615d46e9abfdb17c11b4ad8b72d6340e  api/app/identity_evidence/__init__.py
+f15a48473bca9e9f96a3a9d7ee74eb19715b69a50c3763a340ae8777c83fce37  api/app/identity_evidence/circularity.py
+af195ea9e7a236098d42bdab79e71a8e20a36d54ed2fc1961f8d37f270c9dd44  api/app/identity_evidence/classes.py
+437db8ddd11b6166a1d1a376d9ce632af7bdd87a963b9eda5ea614d9850cc2f2  api/app/identity_evidence/decisions.py
+462a18b3c1f41ef4a0232647f42335b4eefa55281d58944fd8cbef76c9041e49  api/app/identity_evidence/linker.py
+5ba8f95042535246cc089e50feb6412d56e6edf298cd879a1b376f30f0b556ce  api/app/identity_evidence/mac_guards.py
+b7075c33de2808b2d21ae12d879339104e0cca2b948e04e8cf7d0eb20515a05c  api/app/identity_evidence/presence.py
+92018684b4b18280fa450f6fde44d1bd8e0911671878cd37fce6ef454816bf1b  api/app/identity_evidence/store.py
+5b3ef1012efe70ee483d9cbb3c84e4ae6ec2c1e5bc9a89ebcff715e13217b786  api/app/main.py
+25e206a19edf252f44bccfb10973e5dc4012a9d44ac4f6ed6bad98079eccf35a  api/app/models.py
+1f54ad6d81835514ba83e264dd451fd7b89b033d4af0851adbb35f3cc91a36b0  api/app/routers/__init__.py
+d5810cdb64552ff54ae48f84d3769243b2c92f8bbcf14d56f1edb1f22cee25b5  api/app/routers/actions.py
+bd7fd3b054daef1ab20534b634d30b5b645cc0d2ecc6a41072f41cfc5a84b272  api/app/routers/admin.py
+ac58e7b64e7a21b7caceaa1aa42d481f9d412a41cd76f0994d2b56c2eb0a7655  api/app/routers/ai_routes.py
+cb55ae645aa1384efcfb7bd284254e335ee1348902c95220fd0dada76b69729f  api/app/routers/assets.py
+61891dc16afb072b9be9e7902cf9f40eff9b305c1b9d2a53c6d51ac85e72d39b  api/app/routers/auth_routes.py
+e2c6d73fb3932be9e62c662402e02839a324b70d3dc12f818c551567e63a04c4  api/app/routers/chassis.py
+1c97716b59e2b64a5065d101cab114945e51e3071e83c8ac2927cdc70622408f  api/app/routers/dashboard.py
+48d6cb0d9f3cfc35fb4e967c810a018f4a6d6c1db9243d96678646b225b02b70  api/app/routers/evolution.py
+8765c85767af5b5a59f3398203a28a819f35e6c9a7efb96c8f36835d2bdf9a4f  api/app/routers/ingest.py
+d87c4b0c7a986f3fedff191c0ae8b750401f57dc71e28c54be70be108b8804a5  api/app/routers/monitors.py
+646b8de8c33210b659185e6e436229948bdf6ed1738a3a5770d89ff737975c0e  api/app/routers/suggestions.py
+e66b838a328646acee18a057351e348d806fdd127e33eeefb6f65d3b57af44bb  api/app/routers/switches.py
+06a378fb57cff653aa378cff0cc9f937520f7288653fda67786a25c495ebabab  api/app/routers/system.py
+36a4e21bccfc9c2e6ba53a672c10c4b4414acaf81401a297299cca46353a9753  api/app/schemas.py
+6599341b223f4fb7d072decd5a0b6c0c8ae60cdb3b103da178e7f476706a1e05  api/app/services/__init__.py
+3a6826742c0a5dcdf36c30b218a6142a771f4f3b5df43e01b181d2f1538ac3d6  api/app/services/actions.py
+07404786acbf36e9f85c9420857aec2df1dab6c70cae42f990c8ed83aff32a48  api/app/services/ai.py
+f62d829022e8d65e99d5eb1a61c34d8eb43467c514aef538bb9b4d4e48be1ebf  api/app/services/ai_naming.py
+3dc8f6e1afb361104a3724f7b6a2f8c001c1ca01490d6dc61d2c2963b3a0477a  api/app/services/asset_identity.py
+69ccce4ad16cc907fde662a879d4c050a3f4195c3fa1b7528a55d13fa1c3c6e6  api/app/services/asustor_health.py
+c5d4a5843d8e54511cc3608dca9b36b3979d9aad2b84678d727b4d4bbe149318  api/app/services/backup.py
+b07efb137b478ad54320e21483e9df18edfcbccff24ff58c57ac319300d71f2e  api/app/services/backup_rotate_core.py
+843eeeebec418984c9d6d93f22e02addb0b1392798e1cf8e0950b12c7797821f  api/app/services/boot_timing.py
+c83b6811d3cc040c1410f8c69b144ef738f9a361fa1b607f494a927e3ffddd4c  api/app/services/chassis_grouping.py
+d51e262c09731ce95de054931185fb4984607070779c2ec80d3b3f79ef98cc36  api/app/services/chassis_rename.py
+d35db4b74b7e70e803d79ed70049280f116fa3ea36b0833f64d73c743d59a16a  api/app/services/detectors/__init__.py
+ec160ce3e5df6df28900d0bf5a8dbd497831908e3491934039133bd950e7d458  api/app/services/dhcp_names.py
+2c57483eeee2324693b1d299a0679cc69e29236cf09003bd39b35b434634334a  api/app/services/drift.py
+2bc8f4defb0c77837bc4b1c3581ebc8efaa0bdc0479c3b719599ffbc8bd08376  api/app/services/event_maintenance.py
+bd6fe154b59b10bb9ad896074cce90d4f1e1e3e407e601fd378fc3cb7462eeb3  api/app/services/field_sources_vocab.py
+0aa6a6f35e2d43805ea603f58b0659b1cfbce40fbf1eb680c81a22715d343289  api/app/services/findings.py
+afd534b90e7348a33fbbacbc6e65d57b3c20ac3f1a39551f37b865ef47fe5596  api/app/services/fingerprint_facts.py
+9d9786e0811d09a895dcc4744175f43f45fd17169b9ed6b84237c7b27144155a  api/app/services/flows_summary.py
+2ef0375836ed77622286cfcff3ae4b95dc39fe884549d0cf5c7f7f203af52444  api/app/services/fritz_hostfilter.py
+8504dfe1fe0cc2d0d1df6cf8cb0e879f2b434c43ce06d9d49a36d4ebd3a9658b  api/app/services/habits.py
+b88ddeb1abb793880274d232dd29a8e6d1548368a39d29c8a4f02330c6db6c28  api/app/services/identity.py
+837cd948ece95f4a411a027be6625fef38dd467ceec75f964a90eb9612424961  api/app/services/identity_fusion.py
+5a64d7ad986cd3f899eb1ffd7431dc0795e675d5230dbe2cbf92e988f661bb5b  api/app/services/interface_roles.py
+51f0e5caf263b0317499e9063041637a14773ee900b5104d41dd9d6d6abce75b  api/app/services/internet_health.py
+40e9022bd84cfeb28851f24fc6a55c6fbcdecb41ae9d38dd44643331ea673dc6  api/app/services/inventory.py
+ff62c60f31ae581299fad811eebb951f63711a336e7ab24269b9113b96ed825d  api/app/services/ip_intel.py
+29c347c6591668148f498a65f1e7d30a976953bcab84a5573361da4fd6c6ace8  api/app/services/ip_intel_context.py
+60483a0afd4f8c08d915098777a861c1012e9b45241c01a034382ddb23218bc4  api/app/services/mac_ip_policy.py
+1bdc8b935fb33d0c65d6bf35de4b66327c18e9b5f82291894fcf2caefcc05156  api/app/services/macutil.py
+85ee6c3e6789e175e258715da2fe79490c01fbd2669f122f5bed69c5ddfc1bb7  api/app/services/materialize.py
+46b06003d6448ac614f4e0ada9b82bbdc0344da7101ccaf2184867b1b98e2b30  api/app/services/migrate.py
+9702717ca0615a8d9ddfcf9b251a902e30601391283c0654d428688b2702e317  api/app/services/monitoring.py
+c4a69fde0a926971de32201d7a09fdf3cd18b0d1d515d70837d0c35aaaf23356  api/app/services/name_proposal_chassis.py
+982ff2d3c7b71f5c857db4fecbdd1471d95cf3a03c9636bbeab1bab7d7077414  api/app/services/notifications.py
+dcc24e31e27d9ee00eb869cee5f37b21074831f153179c53acadf06bf6b00344  api/app/services/observations_store.py
+807ec7e8d11cd9f18aff5d07f83a45dfdabbab526cec99f6aed8e1fe0fac4430  api/app/services/os_scan_guard.py
+1a0e44bb667020d3bd22ad52cf7bba45dfd215df7a532e832e92e5f1eac6fbef  api/app/services/oui_store.py
+ebaf727b66c2e9418015aa8cc31b5484945e252c530fe34b1a633dde399ceb31  api/app/services/physical_links.py
+99d58941d793ef4c83fbdeb76c6d5cd481f8c3517b53b4d424e0b09e5fb0c406  api/app/services/port_naming.py
+2cb4290b36bf92ab7c769a660daf31451660e2a4554c9af41b27f20754dd40c9  api/app/services/port_roles.py
+4a6d171f2b462a96ec46dc2c91568ad81b6ae35876c9e64ce191105e113ab050  api/app/services/printer.py
+35ccf354fb30492f1139aa59673690d19244275619830d56170b8def93ba1915  api/app/services/reliability_metrics.py
+09f1925e119a0ad0324cd700200f4ffd92c80005140681476023ba85b3fae87d  api/app/services/retention.py
+bf74fdecd43be235033a6cd6aff77ae6d755837b7a3b5f102676f3599a860d06  api/app/services/scan_profiles.py
+4619cdd400d7abf436160f076b6072f70eb0e3365fdec2f8491852ab41087440  api/app/services/scan_readiness.py
+65c7bd253108699d7d4bf288877fe6f5fbd1f4f3f5f25e791e046e4c626a107b  api/app/services/scans.py
+db02395a8abf4f76b999a0250c4b7e52516c6a4cf2db55a00fed416859e4ae83  api/app/services/schema_migrations.py
+4b9e20230bc1999b683a40f3af355d9d69be106ee94e2e356164fa43f7374fb0  api/app/services/snapshots.py
+19d985b327921f8ca84763f4be2dc625b3e67a6f3f76cbd2cfa2f2fcd4d0f7e3  api/app/services/speedtest.py
+ab1d67b49bd8f1a31826987c1799a3a8686f8a9acb3dae1c92716f337fa665bf  api/app/services/suggest.py
+45de5ad2e0fa2f44660ca1fca85f52e2f022742f6045a8ab0ee79db37422f387  api/app/services/switch_capabilities.py
+45e8eb112ac9c30cd67851265e46febfad8b2e3c740407c71efd76f74d7fb8bb  api/app/services/timeline.py
+958f899e53d9b6b3fad7e9f45b62ae4377ebe744b4b27b84115da163b694833a  api/app/services/topology.py
+76270c82ac9a954a1042c4f3de9f362a7dba2eca824564fb1c54e8cd68425897  api/app/services/trust.py
+895c8d95d99ab11b93895da0821a79c0eb50a63fb9d80be9e78442d729b4940d  api/app/services/wan_telemetry.py
+995cbdaf457b11a0133d4a292cd09ccd95c629a3bd79402722d2430181aa0a27  api/app/services/watch.py
+250c1bfdb230711d811b542346b5de99ac773fe5e67d06e867e53905a4eca7b5  api/app/services/wifi_associations.py
+24f2d6778fa7e543df0660c7b532553ca04088bac9580c8ee22ab025c402ac29  collector/collector/__init__.py
+badc68df2d34467021c9b30ab672dcfb43285d4463a0de2a0002be84d111e429  collector/collector/adapters/__init__.py
+f6ad5f3d59895a083583b59f9c70f6cdd8ca57bd304caa09d2e543e85dc85d35  collector/collector/adapters/asustor_snmp.py
+2f74d546a7b33eb93d02d8023bf0d3ec6e6e9bc764f5a4a19c7ec457f3676b72  collector/collector/adapters/flow_stub.py
+dd5c8d5b63abbed966c6826b0b9633c2abf79cfef386d34903d9e0d6721867aa  collector/collector/adapters/fritz.py
+35221380b363a6dcec9ee08c66dbddf2770d0fad64db6af1ddc6b9fa14fcf01e  collector/collector/adapters/mdns_ssdp.py
+6884cd021d731632fd589d81c8149647484806bcfeecb1b20228e5a2f5c47999  collector/collector/adapters/nmap_scan.py
+82a7fe25ef95ae82f58c001ea940a6818d6c56179c874bc3d47dfd9f0beffe85  collector/collector/adapters/printer.py
+50ce0655e18d4ffcfc48248e2b3d6612258c7539f00a5dfefb19251315c39361  collector/collector/adapters/safe_fingerprint.py
+cab2dc2c4503c9729c73f3f8b9514ac8f2a1e6e8f6dd8d2f970e1c3e0a7ac88e  collector/collector/adapters/snmp_lldp.py
+953daaae4eceb2535ef365c2826467c9ac90f89dd7be0248ecaf8adb194b7e7f  collector/collector/adapters/zeek_conn.py
+02ef19ad92532270b3b99d80338d314d68d83a863b6eb11e63d8f5d1f7c51256  collector/collector/adapters/zeek_dhcp_names.py
+76628635a196fa87d69e51b71490c00f8ed595c765e91b54b236bd06cfa80697  collector/collector/adapters/zeek_intel.py
+9e09c142c8c0fd6c3d71ab910ec4c6752bce60dc480f8a05407fdf390ea3676a  collector/collector/config.py
+ae82f9bf7c15dfd4ddc151a8aa37fb5b2ff91bc4edcc5f16fd65ed1ec25fe17b  collector/collector/main.py
+2ab5e8104975748623d8496eb425606b83d6a16e5d75488a4af876376a735d01  collector/collector/probe_asustor_snmp.py
+2a9bead6f73f8b4ce78d69bc191dd29ff764e35a4e3d86ebaa41d266b479ac19  collector/collector/providers/__init__.py
+1b3eb619f12a3df80a2e9d6bbec12787cae6711537e466c63c2c73e6b82827f5  collector/collector/providers/base.py
+3c83b5b4d407a2c926d299a20ccc6e3f3e761bdea7e762254444ba8fcb24b189  collector/collector/providers/fritz_hosts.py
+8a9162ed7ddb42eb4f2c86233ccc8843da79645b4e50d17e8d68518fe76e5a60  collector/collector/providers/nmap_hosts.py
+f2a53c37ae0ecad52684083f8d746ba73d579b004d1f1a356237eaeb3cb028b9  collector/collector/providers/printer_hosts.py
+e2ded93afa40e04fb572ad728adf67476421690e2e801fa281b26a447fc3c429  collector/collector/providers/ssdp_hosts.py
+96177652e0bea95c071a0c4cbcc00038d04de7100c1da16b105c87e40c766de9  collector/collector/scan_jobs.py
+3cf69e6ae26cf65365a3664304aa7988a315f23e27ba7047827ba1aa009c5941  scripts/_w4a_measure.py
+cd8f4ff74cf9908f50efc608d5628b860d53930b86eae16ff3a2a74874abd10e  scripts/adopted_dump.py
+f41b8726687cca06cd2966b62f9b11cca04268b35258850f825d2b35edbf6e03  scripts/annotate_asset98_oui.py
+09a1a13dc0fd2ca40b15cc7ff34d1921b3b3d7273eddb9c7e3c4aac40b691925  scripts/apply_cass_facts.py
+526f2b51413a616c9e1bd5f3c3e75c74d7ea3b28313eb05976f21ffd971b93ad  scripts/assert_b2_cass_inspect.py
+caa9e6e3d52a868c1d97b5c5db6249adc7a079fcb9f220289f1ec57a9bb4a940  scripts/assert_b2_cassiopea_retry.py
+8e0d747a262c5b696c761b097cc5508a9fa9b481e7cab834c58704b1fa600510  scripts/assert_b2_live.py
+1a0b3efc22179f3cceeec9faf777c772661117ee6172c3b0083ade371f643ae5  scripts/assert_backend_filo.py
+df22ddf59ecb3f4606b0b64c3e4fa39136336d3eecbfce8e3f27e4aae7d042af  scripts/assert_grouping_card_live.py
+3d65d365bc18a60868fc07041225c9d6fed8e6c0455818c0b3fb8ea5e4064609  scripts/assert_grouping_fase_b_live.py
+354a568c3d9a256d6d38c6685bd9c67d0ba910ab23b3ffa859c6852ee30fdb83  scripts/assert_ondata4.py
+71f11b59b3515dd02519e134dcc3d6519466d3bf75981b5559136ab77cc4b849  scripts/backup_rotate.py
+9f489ff4fceaae7c632ea30d983286db73de9f8ad156fb132076f91ef3cc1106  scripts/classify_nuovo_followup.py
+78d83b5b25ece818008a4e4ee50bba85c80799e301cc986e77f1b5185911252e  scripts/classify_nuovo_ro.py
+24911d3a1a8c2560b2ace8128c52391752763f334d898107dd1347b39a354ec7  scripts/dossier_asset98_followup.py
+9d5f70b6aca4c749aaa460f881f778c68aed05fea1dac63e058a4d4486a1f4a2  scripts/dossier_asset98_ro.py
+35efb9541cd0c074b1bbe4e78cc228ff3af06bde20d97592b7207c276b128f51  scripts/enable_watch_asset98.py
+ec4a94b433fe9d8ca8e97b9f5985091ee11aef7cdc4e4f38457cdfee6ff650fb  scripts/ip_intel_backfill.py
+1c197dee1d3d7a2eea6a8e8722dffccc6ab01a2d9a232a17c09a5e629799578e  scripts/ip_intel_context.py
+88dab0798dd1f7c208493d4b335f02f7798821396eeb9d20c752d9480aa3ae53  scripts/ip_intel_context_export.py
+4ebb5cd304e263069481c7303c1ff53efac34659225254a80bdb0eb644f878ee  scripts/ip_intel_context_run.py
+16c327fcc9a2f61bc7d5705c7fb4e5c0e5508ff1a3be730f16054711f5221f4b  scripts/ip_intel_context_struct_migrate.py
+5405b7ca190c24abbb71d042e17125afd17f9eba51e4227d0a6fcece63884c8b  scripts/live_qa_v050.py
+d19f8b6b28206df5819c6f4e71aa1cd53ae4e738735e003a7c0e849109a774f7  scripts/migrate_kuma_fase2_to_ping.py
+3b42a05f92248511da75b15a36292229ceec40847b32a49a6e987d42582cc77c  scripts/migrate_kuma_to_native.py
+4138d4387ce0978da0b276f3593aab79fc400c05a40484a3796eb12398efe356  scripts/miss_classify_2h.py
+f1c6a0251b809623e5b4ea6fa664806790cf2cefc329a7ba511c9c45db6a09d6  scripts/normalize_empty_manual_names.py
+9d56cfb9cba5021d9586fba449effe0081d64fd3f50e68b37d57ad63e9cfacf7  scripts/obs_db_slim_p1_drop_dup_indexes.py
+6a3d82c88eef30c2bc113bdd94de060e0710f274291b551848c0fce878d4f7ed  scripts/oui_refresh.py
+f3c00907ae109d92e22521692400ee58e2bb40b52a4ff1f19dc682b18781f5d5  scripts/probe_asset98_monday_ssid.py
+7a5f6a8cd5aae2ed7f3b869183ea5c0ea7c9df26665d4e49108c065733fee4bd  scripts/probe_echo_ouis.py
+7a632c8919cf41fcf5a7f2cb6331e2d5d44521319afc036396d474144d22f654  scripts/probe_guest_flags.py
+d2cd164beca8bc43e2ecabe85237d405a191e02d487ab94a9f6c991574dd37a6  scripts/recon_flip_last2.py
+789b30d290d83ad1051a95e1540fde4fcc0d2b0528fc091e724147cc524e712f  scripts/recon_grouping_virtual_mac_fase_a.py
+d229da5b8e980530c0062976ebdc700cb020b716dea569d975e128f0844c6c9b  scripts/reconcile_fdb_events.py
+3fc9551c87cbf9d9c2b903efa782d0f86d5976817e4e885c4f7c7951cd1fc301  scripts/reset_calibration_epoch.py
+f30c77b6432ee5946865dd70fddec934978fada04a7978df40bde009658215c8  scripts/unmark_post_cutoff_provenance.py
+8951dedde5e9012e8600965c47f79f31dbf404fcfce5187bc57dc83884eae996  scripts/w5_gate.py
+d24fcaaf4faa99a6859df46750fecda9f8f9cc114eafa561322c4835e925faad  scripts/w5b_measure.py
+430af8e4b47c75bd35cdf035c92b10e30a14160d198647ccc56cf9828ad73404  scripts/w6_gate.py
+cdb0ffac17a010de8f9dcfeaef969f360b2fa19d2c6300aa8c857e73020cdc1f  scripts/w6review_measure.py
+79eb95b2925648cc44ab4a7f57b893be99aa3fa3d19b2cbd1475f88328bffa84  scripts/w7_g7.py
+352f451dbe7d485506bad96eed75d622233817166f3d58f05729d01034084a27  scripts/w7_macip_blast.py
+9e0be374e517c70178e817610d5c191189301c8a05ffc34cd79571369d0e8bf7  scripts/w7_wire_predict.py
+c4e9ee22ebf931b1c4be0366702c447609ea539efd7847e7b7be00fb64ed1786  scripts/w7c_measure.py
+80744e430c356f955f635bc7244a814b638b98fc9ef42de56171213187475802  scripts/w8_currency_gate.py
+e440305cf3cdb6d94bed14a688f48ef6ddc2a403944ac725f82aafcddea8ae0e  scripts/w8_g8_equivalence.py
+6f09ca635d0584b0730dc9272590c6e2d3bcc2f6e266e1a5d8e51d4e90da7647  scripts/wp_diagnose.py
+483f4b8744ac432caefaad6a7b8452bc318e8801d581943df98b42321cd4f167  scripts/wp_gate.py
+f7c348dcd9ac021b452b1e385894fb73bc79cbc90044fb40b9b2ab2f31b90eea  scripts/wp_predict.py
+```
+
+### B3_sha_diff (integrale)
+```
+132a133
+> 3cf69e6ae26cf65365a3664304aa7988a315f23e27ba7047827ba1aa009c5941  scripts/_w4a_measure.py
+```
+
+**Esito B:** unica differenza = presenza di `scripts/_w4a_measure.py` sul solo NAS.
+File condivisi con hash diverso: **nessuno**. `api/app/facts/**` confrontato e **identico**. **VERDE.**
+
+---
+
+## FASE C — Ruling `_w4a_measure.py`
+
+### C1_stat
+```
+-rw-r--r--    1 mooflo   users         7646 Jul 26 01:59 scripts/_w4a_measure.py
+241 scripts/_w4a_measure.py
+3cf69e6ae26cf65365a3664304aa7988a315f23e27ba7047827ba1aa009c5941  scripts/_w4a_measure.py
+```
+
+### C1_content (integrale)
+```
+"""W4a.1 one-shot measure — run inside api container. Delete after wave."""
+from __future__ import annotations
+
+import json
+import sqlite3
+from collections import defaultdict
+
+con = sqlite3.connect("/data/db/observatory.db")
+con.row_factory = sqlite3.Row
+
+assets = con.execute(
+    "select id,name,chassis_id,meta,status,last_seen,source_reported_at,presence_state from assets"
+).fetchall()
+ifaces = con.execute("select id,asset_id,mac,is_primary from interfaces").fetchall()
+ips = con.execute(
+    "select interface_id,ip,is_current,source from ip_addresses where is_current=1"
+).fetchall()
+props = con.execute(
+    "select id,asset_id,source,value,confidence,status,created_at,updated_at from name_proposals"
+).fetchall()
+
+iface_by_asset: dict[int, list] = defaultdict(list)
+for i in ifaces:
+    iface_by_asset[i["asset_id"]].append(i)
+ip_by_iface = {r["interface_id"]: r for r in ips}
+
+
+def name_origin(meta_raw, name: str) -> str:
+    meta = json.loads(meta_raw) if meta_raw else {}
+    overrides = {str(x) for x in (meta.get("manual_overrides") or [])}
+    fs = (meta.get("field_sources") or {}).get("name") or {}
+    src = str(fs.get("source") or "").lower()
+    if "name" in overrides or "nome" in overrides or src.startswith("manual"):
+        return "manual"
+    if src:
+        return src.split()[0]
+    if (name or "").strip():
+        return "unknown_nonempty"
+    return "absent"
+
+
+by_chassis: dict[int, list] = defaultdict(list)
+for a in assets:
+    cid = a["chassis_id"]
+    if not cid:
+        continue
+    macs = [i["mac"] for i in iface_by_asset.get(a["id"], [])]
+    cur_ips = []
+    for i in iface_by_asset.get(a["id"], []):
+        ip = ip_by_iface.get(i["id"])
+        if ip:
+            cur_ips.append(ip["ip"])
+    by_chassis[int(cid)].append(
+        {
+            "asset_id": a["id"],
+            "name": a["name"] or "",
+            "origin": name_origin(a["meta"], a["name"] or ""),
+            "macs": macs,
+            "ips": cur_ips,
+        }
+    )
+
+multi = [(cid, ms) for cid, ms in by_chassis.items() if len(ms) >= 2]
+manual_groups = [
+    (cid, ms) for cid, ms in by_chassis.items() if any(m["origin"] == "manual" for m in ms)
+]
+multi_manual = []
+for cid, ms in by_chassis.items():
+    manuals = sorted(
+        {m["name"] for m in ms if m["origin"] == "manual" and m["name"].strip()}
+    )
+    if len(manuals) > 1:
+        multi_manual.append((cid, manuals))
+
+print("groups>=2", len(multi))
+print("groups>=1 manual", len(manual_groups))
+for cid, ms in manual_groups:
+    print("  manual chassis", cid, [(m["asset_id"], m["name"], m["macs"]) for m in ms])
+print("groups>1 distinct manual", len(multi_manual), multi_manual)
+
+target = {"D8:EC:5E:CC:1C:05", "D8:EC:5E:CC:1C:08", "D8:EC:5E:C5:7E:C7"}
+for cid, ms in by_chassis.items():
+    macs = set()
+    for m in ms:
+        for mac in m["macs"]:
+            macs.add((mac or "").upper())
+    if target & macs:
+        print("LGS-related chassis", cid)
+        for m in ms:
+            print(" ", m)
+
+print("--- assets detail ---")
+for aid in (3, 143, 147, 151, 2, 109):
+    a = con.execute(
+        "select id,name,chassis_id,meta from assets where id=?", (aid,)
+    ).fetchone()
+    if not a:
+        print("missing", aid)
+        continue
+    meta = json.loads(a["meta"] or "{}")
+    print(
+        "asset",
+        aid,
+        "name",
+        repr(a["name"]),
+        "chassis",
+        a["chassis_id"],
+        "overrides",
+        meta.get("manual_overrides"),
+        "fs.name",
+        (meta.get("field_sources") or {}).get("name"),
+    )
+    print(
+        "  macs",
+        [r[0] for r in con.execute("select mac from interfaces where asset_id=?", (aid,))],
+    )
+    print(
+        "  pending",
+        [
+            dict(p)
+            for p in con.execute(
+                "select id,source,value,status,confidence from name_proposals "
+                "where asset_id=? and status='pending'",
+                (aid,),
+            )
+        ],
+    )
+
+print("--- Switch Linksys ---")
+for r in con.execute(
+    "select id,asset_id,source,value,status,confidence from name_proposals "
+    "where value like '%Linksys%' order by id"
+):
+    a = con.execute(
+        "select id,name,chassis_id from assets where id=?", (r["asset_id"],)
+    ).fetchone()
+    macs = [
+        x[0]
+        for x in con.execute(
+            "select mac from interfaces where asset_id=?", (r["asset_id"],)
+        )
+    ]
+    print(dict(r), "aname", a["name"], "chassis", a["chassis_id"], "macs", macs)
+
+pending = [p for p in props if (p["status"] or "pending") == "pending"]
+print("pending", len(pending), "total", len(props))
+asset_chassis = {a["id"]: a["chassis_id"] for a in assets}
+
+set_a = []
+for p in pending:
+    cid = asset_chassis.get(p["asset_id"])
+    if not cid:
+        continue
+    members = by_chassis.get(int(cid)) or []
+    if any(m["origin"] == "manual" for m in members) and (p["source"] or "").lower() != "manual":
+        set_a.append(int(p["id"]))
+
+key_ids: dict[tuple, list[int]] = defaultdict(list)
+for p in pending:
+    cid = asset_chassis.get(p["asset_id"])
+    if not cid:
+        continue
+    key = (int(cid), (p["value"] or "").strip().casefold())
+    key_ids[key].append(int(p["id"]))
+set_b = sorted({pid for ids in key_ids.values() if len(ids) >= 2 for pid in ids})
+
+set_c = []
+for p in pending:
+    cid = asset_chassis.get(p["asset_id"])
+    if not cid:
+        continue
+    if len(by_chassis.get(int(cid)) or []) >= 2:
+        set_c.append(int(p["id"]))
+
+A, B, C = set(set_a), set(set_b), set(set_c)
+print("|A|", len(A), "ids", sorted(A))
+print("|B|", len(B), "ids", sorted(B))
+print("|C|", len(C), "ids", sorted(C))
+print(
+    "quotas",
+    round(100 * len(A) / 412, 3),
+    round(100 * len(B) / 412, 3),
+    round(100 * len(C) / 412, 3),
+)
+
+suppress_dedup = []
+keep_dedup = []
+for _key, ids in key_ids.items():
+    if len(ids) < 2:
+        continue
+    keep = max(ids)
+    keep_dedup.append(keep)
+    for i in ids:
+        if i != keep:
+            suppress_dedup.append(i)
+print("B keep", sorted(keep_dedup), "B extras", sorted(suppress_dedup))
+
+# Treat unknown_nonempty on chassis as "current name present" for sibling presentation
+# but A requires authority >= manual. Report both.
+set_a_broad = []
+for p in pending:
+    cid = asset_chassis.get(p["asset_id"])
+    if not cid:
+        continue
+    members = by_chassis.get(int(cid)) or []
+    has_named = any((m["name"] or "").strip() for m in members)
+    # authority: only suppress if ANY member is manual OR (name locked)
+    # broad diagnostic: nonempty name on chassis + lower source
+    if has_named and (p["source"] or "").lower() != "manual":
+        # only if target asset itself is unnamed or different — still diagnostic
+        set_a_broad.append(int(p["id"]))
+print("|A_broad nonempty chassis|", len(set_a_broad), sorted(set_a_broad))
+
+fritz_ids = [
+    46, 53, 68, 73, 98, 212, 224, 236, 242, 299, 301, 303, 308, 318, 320, 322,
+    324, 326, 328, 330, 332, 334, 336, 338, 340, 342,
+]
+print("fritz∩A", sorted(set(fritz_ids) & A))
+print("fritz∩B", sorted(set(fritz_ids) & B))
+print("fritz∩C", sorted(set(fritz_ids) & C))
+for r in con.execute(
+    "select id,asset_id,source,value,status from name_proposals where id in (%s)"
+    % ",".join(str(i) for i in fritz_ids)
+):
+    a = con.execute(
+        "select id,last_seen,source_reported_at,presence_state from assets where id=?",
+        (r["asset_id"],),
+    ).fetchone()
+    print(
+        "NP",
+        r["id"],
+        r["value"],
+        "asset",
+        a["id"],
+        "last_seen",
+        a["last_seen"],
+        "src_rep",
+        a["source_reported_at"],
+        "pres",
+        a["presence_state"],
+    )
+```
+
+### C2_refs
+```
+(vuoto — comando hung e interrotto dopo ~345s senza output)
+```
+
+**C2 refs — FALLIMENTO OPERATIVO:** il comando prescritto
+`grep -rn '_w4a_measure' . | grep -v '^./scripts/_w4a_measure.py'`
+è rimasto **senza output per ~345s** (probabile scansione di alberi enormi sotto
+`web/node_modules` / `data/`). Processo SSH locale interrotto. File `C2_refs.txt` vuoto.
+**Non è una prova di «nessun riferimento».** Condizione di prosecuzione **non soddisfatta**.
+
+Verifica hang cleanup: nessun processo `grep`/`_w4a_measure` residuo sul NAS
+(`/tmp/w8out2/C2_hang_cleanup_check.txt` → solo `done`).
+
+### C2_cron
+```
+cron_exit=1
+```
+(`cron_exit=1` = nessuna riga match su crontab.)
+
+### C2_writes
+```
+grep_exit=1
+```
+(`grep_exit=1` = nessun pattern di scrittura nel file. Il contenuto è solo `SELECT` via `sqlite3`.)
+
+### C3 / C3_gate / archivio
+`<non eseguito>` — C2 refs non verificabile → **VIETATO spostare**. Nessun `mv`, nessun publish di `obs-w4a-measure-archivio.py`.
+
+---
+
+## FASE D — Sequenza T7
+
+`<non eseguito>` — FASE C non verde.
+
+---
+
+## Tabella previsione (§T5) → osservato → scarto
+
+| Voce | Previsione | Osservato | Scarto |
+|---|---|---|---|
+| drift enumerato | 1 file extra | sì: solo `_w4a_measure.py` | nessuno |
+| integrità albero (facts incl.) | identica sui condivisi | sì | nessuno |
+| `_w4a` archiviato/mv | se C2 ok | **no** (C2 refs hung) | STOP |
+| gate NAS 175 | dopo mv | `<non eseguito>` | — |
+| G8 / probe / wp_gate / I6 / chassis | §T5 | `<non eseguito>` | — |
+| collector | start dopo stop | **mai fermato** | — |
+
+---
+
+## ASSERT FINALE
+
+```
+drift-enumerato-esaustivo=sì (175 vs 176; solo scripts/_w4a_measure.py) ·
+integrità-albero-py (facts inclusi)=OK (0 hash divergenti sui condivisi) ·
+_w4a_measure archiviato=no · mv=no (STOP C2 refs hung) ·
+gate NAS file scansionati=<non eseguito> ·
+needs_apply=<non eseguito> · T_backup=<non eseguito> · structural=<non eseguito> ·
+observations assente da sqlite_master=<non eseguito> · breaker=<non eseguito> ·
+convergenza=<non eseguito> · currency-gate selftest PASS=<non eseguito> ·
+currency-gate scan NAS: violazioni=<non eseguito>, permanenti=<non eseguito>,
+  temporanee=<non eseguito>, esito=<non eseguito> ·
+repo-vs-NAS identico=<non eseguito post-C3> ·
+G8 asset.name DIVERGE=<non eseguito> · G8 os.guess DIVERGE=<non eseguito> ·
+G8 mutate-probe DIVERGE=1 su id=3 (pre-cond R=<non eseguito>)=<non eseguito> ·
+I6 vuoto=<non eseguito> · AD rimisurato=<non eseguito> · assets(COUNT Asset)=<non eseguito> ·
+collector riavviato=n/a (mai fermato) · chassis LGS310C=<non eseguito> ·
+chassis LGS328C=<non eseguito>
+```
+
+**STOP per review.** Serve decisione su come verificare i riferimenti a `_w4a_measure`
+(grep scoped pre-autorizzato, esclusione esplicita di `web/node_modules`/`data/`, ecc.)
+prima di consentire il `mv` in `_attic/`. Nessun avanzamento a W3, nessun merge.
