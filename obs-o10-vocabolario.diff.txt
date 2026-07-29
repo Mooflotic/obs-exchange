@@ -1,0 +1,21 @@
+# O10 W1 — vocabolario visivo (file nuovi + applicazioni #4/#8)
+# Nuovi: web/src/visualVocab.js · visualVocab.test.js · components/ui/VisualBadge.vue
+# Modificati: StatusBadge.vue (title + muted AA) · ReadySlot.vue · Dossier.vue (unica resa provenance)
+
+# --- Dossier.vue (#4) ---
+- <span class="chip">{{ what.name_kind }}</span>
+- <span v-if="what.provenance?.label" class="muted"> · {{ what.provenance.label }}</span>
++ <VisualBadge :label="nameProvenance.badge.label" :tone="nameProvenance.badge.tone" :title="nameProvenance.badge.title" />
++ note sola se nameProvenance.note
+
+# --- ReadySlot.vue (#8) ---
+- <span v-if="!ready" class="badge muted-badge">in attesa</span>
+- .ready-slot:not(.ready) { opacity: 0.88; border-style: dashed; }
++ <VisualBadge via slotStateBadge(ready) />  /* waiting|ready */
++ stessa card shell dei KPI live
+
+# --- StatusBadge.vue ---
++ prop title
++ .muted { color: var(--text-2); } /* WCAG AA: era --text-3 ≈ 3.47:1 */
+
+# Test: visualVocab.test.js (5) — PASS
