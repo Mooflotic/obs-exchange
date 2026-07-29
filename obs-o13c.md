@@ -66,12 +66,12 @@ Nessun IP di destinazione / hostname / SNI in questo artefatto (solo aggregati).
 | create ext+int | **821** |
 | vs previsione primo giorno 4 292 | **sotto** (−80 % circa) — **nessun kill switch** |
 | cap 2 000/giorno | non raggiunto (`deferred=0`) |
-| baseline | **ready** nello stesso ciclo (`deferred_creates==0`) — scarto vs «differita ~3 giorni» |
+| baseline | **ready** nello stesso ciclo (`deferred_creates==0`) — scarto vs «differita ~3 giorni» **[Corretto in O13C-FIX]** |
 | card N5 / signals | **0** (novità solo `first_seen` *dopo* `baseline_ready_at`) — allineato alla previsione «0 al primo ciclo» sul piano novità post-baseline |
 | breaker | **chiuso** |
 | approx_bytes tabella | ~146 KiB ≪ 50 MiB |
 
-**Scarto volume:** il grano ibrido (int senza porta/proto) collassa molte chiavi collector `(src,dst,dport,proto)` → meno righe DB delle 4 292 O13B (G0_ext+G1_int su finestra multi-giorno). Il primo ciclo ha letto un corpus corrente più stretto del giorno O13B completo.
+**Scarto volume 821 vs 4292 [Corretto in O13C-FIX]:** causa dominante = finestra ~1 h / **30 175** conn vs **631 194**/day O13B (ratio ≈ **20.9**), **non** hybrid key collapse. Il grano ibrido contribuisce secondariamente; il corpus del primo ciclo era un pezzo del giorno O13B, non un collasso di chiavi.
 
 ### Associazione (aggregati, no IP)
 
