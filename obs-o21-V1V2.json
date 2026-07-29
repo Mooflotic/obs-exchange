@@ -1,0 +1,610 @@
+{
+  "V1": {
+    "pre_sha256": "0076029e44a45f00a9c52e5dc21984b86bf509ede553f3bd11d68b054f43ec33",
+    "post_sha256": "2c738a05d7a4b38d083f71ff99f48e7fb25fc4a8066b05ac5f650baa719b6f0f",
+    "pre_1280": {
+      "oggi": {
+        "h_pagina": 15430,
+        "census": {
+          "network_nodes": 0,
+          "topology_paths": 0,
+          "list_parents": 0,
+          "inference_marks": 0,
+          "h_pagina": 15430
+        },
+        "len_ph": 50,
+        "len_bad": 50,
+        "conditions": {
+          "non_dichiarata": 50
+        },
+        "groups": [
+          {
+            "n": 40,
+            "text": "—",
+            "title": "",
+            "cond": "non_dichiarata",
+            "dist": false
+          },
+          {
+            "n": 10,
+            "text": "–",
+            "title": "",
+            "cond": "non_dichiarata",
+            "dist": false
+          }
+        ]
+      },
+      "topology": {
+        "h_pagina": 5559,
+        "census": {
+          "network_nodes": 29,
+          "topology_paths": 27,
+          "list_parents": 27,
+          "inference_marks": 1,
+          "h_pagina": 5559
+        },
+        "len_ph": 0,
+        "len_bad": 0,
+        "conditions": {},
+        "groups": []
+      },
+      "inventory": {
+        "h_pagina": 6305,
+        "census": {
+          "network_nodes": 0,
+          "topology_paths": 0,
+          "list_parents": 0,
+          "inference_marks": 0,
+          "h_pagina": 6305
+        },
+        "len_ph": 0,
+        "len_bad": 0,
+        "conditions": {},
+        "groups": []
+      },
+      "gs308": {
+        "h_pagina": 1916,
+        "census": {
+          "network_nodes": 0,
+          "topology_paths": 0,
+          "list_parents": 0,
+          "inference_marks": 1,
+          "h_pagina": 1916
+        },
+        "len_ph": 0,
+        "len_bad": 0,
+        "conditions": {},
+        "groups": []
+      },
+      "monitoring": {
+        "h_pagina": 1228,
+        "census": {
+          "network_nodes": 0,
+          "topology_paths": 0,
+          "list_parents": 0,
+          "inference_marks": 0,
+          "h_pagina": 1228
+        },
+        "len_ph": 7,
+        "len_bad": 5,
+        "conditions": {
+          "ambiguo": 3,
+          "sorgente_non_disponibile": 2,
+          "non_dichiarata": 2
+        },
+        "groups": [
+          {
+            "n": 3,
+            "text": "—",
+            "title": "",
+            "cond": "ambiguo",
+            "dist": false
+          },
+          {
+            "n": 2,
+            "text": "—",
+            "title": "",
+            "cond": "non_dichiarata",
+            "dist": false
+          },
+          {
+            "n": 1,
+            "text": "—",
+            "title": "Traffico non disponibile: nessun poll SNMP riuscito su questo switch (assente ≠ ",
+            "cond": "sorgente_non_disponibile",
+            "dist": true
+          },
+          {
+            "n": 1,
+            "text": "—",
+            "title": "Contatori errori non disponibili senza poll SNMP riuscito.",
+            "cond": "sorgente_non_disponibile",
+            "dist": true
+          }
+        ]
+      },
+      "timeline": {
+        "h_pagina": 11384,
+        "census": {
+          "network_nodes": 0,
+          "topology_paths": 0,
+          "list_parents": 0,
+          "inference_marks": 0,
+          "h_pagina": 11384
+        },
+        "len_ph": 0,
+        "len_bad": 0,
+        "conditions": {},
+        "groups": []
+      },
+      "findings": {
+        "h_pagina": 900,
+        "census": {
+          "network_nodes": 0,
+          "topology_paths": 0,
+          "list_parents": 0,
+          "inference_marks": 0,
+          "h_pagina": 900
+        },
+        "len_ph": 0,
+        "len_bad": 0,
+        "conditions": {},
+        "groups": []
+      },
+      "incidents": {
+        "h_pagina": 900,
+        "census": {
+          "network_nodes": 0,
+          "topology_paths": 0,
+          "list_parents": 0,
+          "inference_marks": 0,
+          "h_pagina": 900
+        },
+        "len_ph": 0,
+        "len_bad": 0,
+        "conditions": {},
+        "groups": []
+      },
+      "plant": {
+        "h_pagina": 2228,
+        "census": {
+          "network_nodes": 0,
+          "topology_paths": 0,
+          "list_parents": 0,
+          "inference_marks": 1,
+          "h_pagina": 2228
+        },
+        "len_ph": 8,
+        "len_bad": 8,
+        "conditions": {
+          "non_dichiarata": 8
+        },
+        "groups": [
+          {
+            "n": 8,
+            "text": "—",
+            "title": "Link SNMP non misurabile su questo switch",
+            "cond": "non_dichiarata",
+            "dist": false
+          }
+        ]
+      },
+      "actions": {
+        "h_pagina": 36515,
+        "census": {
+          "network_nodes": 0,
+          "topology_paths": 0,
+          "list_parents": 0,
+          "inference_marks": 0,
+          "h_pagina": 36515
+        },
+        "len_ph": 0,
+        "len_bad": 0,
+        "conditions": {},
+        "groups": []
+      },
+      "dashboard": {
+        "h_pagina": 2140,
+        "census": {
+          "network_nodes": 0,
+          "topology_paths": 0,
+          "list_parents": 0,
+          "inference_marks": 0,
+          "h_pagina": 2140
+        },
+        "len_ph": 0,
+        "len_bad": 0,
+        "conditions": {},
+        "groups": []
+      },
+      "osservatorio": {
+        "h_pagina": 900,
+        "census": {
+          "network_nodes": 0,
+          "topology_paths": 0,
+          "list_parents": 0,
+          "inference_marks": 0,
+          "h_pagina": 900
+        },
+        "len_ph": 0,
+        "len_bad": 0,
+        "conditions": {},
+        "groups": []
+      },
+      "dossier": {
+        "h_pagina": 2192,
+        "census": {
+          "network_nodes": 0,
+          "topology_paths": 0,
+          "list_parents": 0,
+          "inference_marks": 3,
+          "h_pagina": 2192
+        },
+        "len_ph": 0,
+        "len_bad": 0,
+        "conditions": {},
+        "groups": []
+      }
+    },
+    "post_1280": {
+      "oggi": {
+        "h_pagina": 15430,
+        "census": {
+          "network_nodes": 0,
+          "topology_paths": 0,
+          "list_parents": 0,
+          "inference_marks": 0,
+          "h_pagina": 15430
+        },
+        "len_ph": 0,
+        "len_bad": 0,
+        "conditions": {},
+        "groups": []
+      },
+      "topology": {
+        "h_pagina": 7015,
+        "census": {
+          "network_nodes": 47,
+          "topology_paths": 46,
+          "list_parents": 46,
+          "inference_marks": 1,
+          "h_pagina": 7015
+        },
+        "len_ph": 0,
+        "len_bad": 0,
+        "conditions": {},
+        "groups": []
+      },
+      "inventory": {
+        "h_pagina": 6305,
+        "census": {
+          "network_nodes": 0,
+          "topology_paths": 0,
+          "list_parents": 0,
+          "inference_marks": 0,
+          "h_pagina": 6305
+        },
+        "len_ph": 0,
+        "len_bad": 0,
+        "conditions": {},
+        "groups": []
+      },
+      "gs308": {
+        "h_pagina": 1916,
+        "census": {
+          "network_nodes": 0,
+          "topology_paths": 0,
+          "list_parents": 0,
+          "inference_marks": 1,
+          "h_pagina": 1916
+        },
+        "len_ph": 0,
+        "len_bad": 0,
+        "conditions": {},
+        "groups": []
+      },
+      "monitoring": {
+        "h_pagina": 1228,
+        "census": {
+          "network_nodes": 0,
+          "topology_paths": 0,
+          "list_parents": 0,
+          "inference_marks": 0,
+          "h_pagina": 1228
+        },
+        "len_ph": 5,
+        "len_bad": 0,
+        "conditions": {
+          "limite_strutturale": 3,
+          "sorgente_non_disponibile": 2
+        },
+        "groups": [
+          {
+            "n": 2,
+            "text": "—",
+            "title": "limite strutturale — SNMP non supportato su questo switch (≠ traffico a 0)",
+            "cond": "limite_strutturale",
+            "dist": true
+          },
+          {
+            "n": 2,
+            "text": "—",
+            "title": "sorgente non disponibile — latenza non ancora misurata (≠ host assente, ≠ 0 ms)",
+            "cond": "sorgente_non_disponibile",
+            "dist": true
+          },
+          {
+            "n": 1,
+            "text": "—",
+            "title": "limite strutturale — contatori errori non interrogabili via SNMP",
+            "cond": "limite_strutturale",
+            "dist": true
+          }
+        ]
+      },
+      "timeline": {
+        "h_pagina": 11384,
+        "census": {
+          "network_nodes": 0,
+          "topology_paths": 0,
+          "list_parents": 0,
+          "inference_marks": 0,
+          "h_pagina": 11384
+        },
+        "len_ph": 0,
+        "len_bad": 0,
+        "conditions": {},
+        "groups": []
+      },
+      "findings": {
+        "h_pagina": 900,
+        "census": {
+          "network_nodes": 0,
+          "topology_paths": 0,
+          "list_parents": 0,
+          "inference_marks": 0,
+          "h_pagina": 900
+        },
+        "len_ph": 0,
+        "len_bad": 0,
+        "conditions": {},
+        "groups": []
+      },
+      "incidents": {
+        "h_pagina": 900,
+        "census": {
+          "network_nodes": 0,
+          "topology_paths": 0,
+          "list_parents": 0,
+          "inference_marks": 0,
+          "h_pagina": 900
+        },
+        "len_ph": 0,
+        "len_bad": 0,
+        "conditions": {},
+        "groups": []
+      },
+      "plant": {
+        "h_pagina": 2228,
+        "census": {
+          "network_nodes": 0,
+          "topology_paths": 0,
+          "list_parents": 0,
+          "inference_marks": 1,
+          "h_pagina": 2228
+        },
+        "len_ph": 8,
+        "len_bad": 0,
+        "conditions": {
+          "limite_strutturale": 8
+        },
+        "groups": [
+          {
+            "n": 8,
+            "text": "—",
+            "title": "limite strutturale — Link SNMP non misurabile su questo switch (≠ porta down, ≠ ",
+            "cond": "limite_strutturale",
+            "dist": true
+          }
+        ]
+      },
+      "actions": {
+        "h_pagina": 36487,
+        "census": {
+          "network_nodes": 0,
+          "topology_paths": 0,
+          "list_parents": 0,
+          "inference_marks": 0,
+          "h_pagina": 36487
+        },
+        "len_ph": 0,
+        "len_bad": 0,
+        "conditions": {},
+        "groups": []
+      },
+      "dashboard": {
+        "h_pagina": 2140,
+        "census": {
+          "network_nodes": 0,
+          "topology_paths": 0,
+          "list_parents": 0,
+          "inference_marks": 0,
+          "h_pagina": 2140
+        },
+        "len_ph": 0,
+        "len_bad": 0,
+        "conditions": {},
+        "groups": []
+      },
+      "osservatorio": {
+        "h_pagina": 900,
+        "census": {
+          "network_nodes": 0,
+          "topology_paths": 0,
+          "list_parents": 0,
+          "inference_marks": 0,
+          "h_pagina": 900
+        },
+        "len_ph": 0,
+        "len_bad": 0,
+        "conditions": {},
+        "groups": []
+      },
+      "dossier": {
+        "h_pagina": 2192,
+        "census": {
+          "network_nodes": 0,
+          "topology_paths": 0,
+          "list_parents": 0,
+          "inference_marks": 3,
+          "h_pagina": 2192
+        },
+        "len_ph": 0,
+        "len_bad": 0,
+        "conditions": {},
+        "groups": []
+      }
+    },
+    "diff_enumerated": [
+      {
+        "route": "oggi",
+        "pre_len_ph": 50,
+        "post_len_ph": 0,
+        "pre_bad": 50,
+        "post_bad": 0,
+        "pre_cond": {
+          "non_dichiarata": 50
+        },
+        "post_cond": {},
+        "pre_groups": [
+          {
+            "n": 40,
+            "text": "—",
+            "title": "",
+            "cond": "non_dichiarata",
+            "dist": false
+          },
+          {
+            "n": 10,
+            "text": "–",
+            "title": "",
+            "cond": "non_dichiarata",
+            "dist": false
+          }
+        ],
+        "post_groups": []
+      },
+      {
+        "route": "monitoring",
+        "pre_len_ph": 7,
+        "post_len_ph": 5,
+        "pre_bad": 5,
+        "post_bad": 0,
+        "pre_cond": {
+          "ambiguo": 3,
+          "sorgente_non_disponibile": 2,
+          "non_dichiarata": 2
+        },
+        "post_cond": {
+          "limite_strutturale": 3,
+          "sorgente_non_disponibile": 2
+        },
+        "pre_groups": [
+          {
+            "n": 3,
+            "text": "—",
+            "title": "",
+            "cond": "ambiguo",
+            "dist": false
+          },
+          {
+            "n": 2,
+            "text": "—",
+            "title": "",
+            "cond": "non_dichiarata",
+            "dist": false
+          },
+          {
+            "n": 1,
+            "text": "—",
+            "title": "Traffico non disponibile: nessun poll SNMP riuscito su questo switch (assente ≠ ",
+            "cond": "sorgente_non_disponibile",
+            "dist": true
+          },
+          {
+            "n": 1,
+            "text": "—",
+            "title": "Contatori errori non disponibili senza poll SNMP riuscito.",
+            "cond": "sorgente_non_disponibile",
+            "dist": true
+          }
+        ],
+        "post_groups": [
+          {
+            "n": 2,
+            "text": "—",
+            "title": "limite strutturale — SNMP non supportato su questo switch (≠ traffico a 0)",
+            "cond": "limite_strutturale",
+            "dist": true
+          },
+          {
+            "n": 2,
+            "text": "—",
+            "title": "sorgente non disponibile — latenza non ancora misurata (≠ host assente, ≠ 0 ms)",
+            "cond": "sorgente_non_disponibile",
+            "dist": true
+          },
+          {
+            "n": 1,
+            "text": "—",
+            "title": "limite strutturale — contatori errori non interrogabili via SNMP",
+            "cond": "limite_strutturale",
+            "dist": true
+          }
+        ]
+      },
+      {
+        "route": "plant",
+        "pre_len_ph": 8,
+        "post_len_ph": 8,
+        "pre_bad": 8,
+        "post_bad": 0,
+        "pre_cond": {
+          "non_dichiarata": 8
+        },
+        "post_cond": {
+          "limite_strutturale": 8
+        },
+        "pre_groups": [
+          {
+            "n": 8,
+            "text": "—",
+            "title": "Link SNMP non misurabile su questo switch",
+            "cond": "non_dichiarata",
+            "dist": false
+          }
+        ],
+        "post_groups": [
+          {
+            "n": 8,
+            "text": "—",
+            "title": "limite strutturale — Link SNMP non misurabile su questo switch (≠ porta down, ≠ ",
+            "cond": "limite_strutturale",
+            "dist": true
+          }
+        ]
+      }
+    ],
+    "len_diff_asserted": 3
+  },
+  "V2": {
+    "note": "D1 aggiunge data-i2-condition + title vocab; nessun dato di rete rimosso",
+    "informative_removals": [],
+    "classification_added_bucket": [
+      "Monitoring: data-i2-condition su poll/traffico/errori/latency/up_ratio/speedtest/history",
+      "Plant: data-i2-condition=limite_strutturale su dot-na SNMP"
+    ],
+    "len_removals_asserted": 0,
+    "len_classif_added_asserted": 2
+  }
+}
