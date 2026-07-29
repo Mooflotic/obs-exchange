@@ -1,0 +1,19 @@
+# O10 W3/W4/W5 — leggibilità, #9 sticky Salva, #10 incidents
+# File: matrix.css · Findings.vue · findingsO10.test.js · Incidents.vue · StatusBadge (muted)
+
+# --- contrasto (WCAG 2.1 AA, misurato) ---
+# text-3 #667085 su bg-0: 3.74:1 FAIL AA-normal → non più per testo meta
+# text-2 #98a2b3 su bg-0: 7.23:1 PASS
+# StatusBadge.muted → --text-2
+# Inventory .inv-dev-meta / .inv-subtitle / .inv-empty / .inv-stale-note → --inv-mut
+
+# --- matrix.css ---
++ .table-scroll-x th/td.col-action { position:sticky; right:0; … }
++ .md-body th/td { overflow-wrap:anywhere; white-space:normal }
+
+# --- Findings.vue #9 ---
++ th/td.col-action su Salva
+# Test fixture findingsO10.test.js — K4: live findings resta vuoto/non esercitato
+
+# --- Incidents.vue #10 ---
++ grid minmax 260px; wrap; acked senza dashed/opacity parallela
