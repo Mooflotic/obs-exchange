@@ -1,0 +1,1273 @@
+{
+  "count": 246,
+  "id_min": 327,
+  "id_max": 584,
+  "range_declared": "327..584",
+  "slot_count": 258,
+  "missing_in_range": [
+    342,
+    346,
+    347,
+    348,
+    349,
+    385,
+    400,
+    401,
+    402,
+    418,
+    425,
+    442
+  ],
+  "missing_count": 12,
+  "extra_outside_range": [],
+  "extra_count": 0,
+  "items": [
+    {
+      "id": 327,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 328,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 329,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 330,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 331,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 332,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 333,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 334,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 335,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 336,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 337,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 338,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 339,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 340,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 341,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 343,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 344,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 345,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 350,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 351,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 352,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 353,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 354,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 355,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 356,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 357,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 358,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 359,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 360,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 361,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 362,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 363,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 364,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 365,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 366,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 367,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 368,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 369,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 370,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 371,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 372,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 373,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 374,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 375,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 376,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 377,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 378,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 379,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 380,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 381,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 382,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 383,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 384,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 386,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 387,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 388,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 389,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 390,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 391,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 392,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 393,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 394,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 395,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 396,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 397,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 398,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 399,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 403,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 404,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 405,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 406,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 407,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 408,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 409,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 410,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 411,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 412,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 413,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 414,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 415,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 416,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 417,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 419,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 420,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 421,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 422,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 423,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 424,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 426,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 427,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 428,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 429,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 430,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 431,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 432,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 433,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 434,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 435,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 436,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 437,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 438,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 439,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 440,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 441,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 443,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 444,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 445,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 446,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 447,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 448,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 449,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 450,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 451,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 452,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 453,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 454,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 455,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 456,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 457,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 458,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 459,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 460,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 461,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 462,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 463,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 464,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 465,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 466,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 467,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 468,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 469,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 470,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 471,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 472,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 473,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 474,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 475,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 476,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 477,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 478,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 479,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 480,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 481,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 482,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 483,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 484,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 485,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 486,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 487,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 488,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 489,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 490,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 491,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 492,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 493,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 494,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 495,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 496,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 497,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 498,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 499,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 500,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 501,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 502,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 503,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 504,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 505,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 506,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 507,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 508,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 509,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 510,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 511,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 512,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 513,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 514,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 515,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 516,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 517,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 518,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 519,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 520,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 521,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 522,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 523,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 524,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 525,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 526,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 527,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 528,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 529,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 530,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 531,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 532,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 533,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 534,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 535,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 536,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 537,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 538,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 539,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 540,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 541,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 542,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 543,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 544,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 545,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 546,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 547,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 548,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 549,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 550,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 551,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 552,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 553,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 554,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 555,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 556,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 557,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 558,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 559,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 560,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 561,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 562,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 563,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 564,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 565,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 566,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 567,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 568,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 569,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 570,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 571,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 572,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 573,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 574,
+      "scope": "ext",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 575,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 576,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 577,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 578,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 579,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 580,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 581,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 582,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 583,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    },
+    {
+      "id": 584,
+      "scope": "int",
+      "marker": "emitted_on_invalid_baseline"
+    }
+  ],
+  "o13d_marker": "obs-o13d",
+  "note": "no IP/MAC/names; id+scope+marker only",
+  "gap_explanation": "258 id in 327..584; 246 marked emitted_on_invalid_baseline; 12 gap ids exist as egress rows but were never novelty candidates (first_seen before premature ready_at 2026-07-29T09:59:03Z) \u2014 not post-mark creates; not deleted; simply outside the N5 emission set.",
+  "gap_ids": [
+    342,
+    346,
+    347,
+    348,
+    349,
+    385,
+    400,
+    401,
+    402,
+    418,
+    425,
+    442
+  ]
+}
