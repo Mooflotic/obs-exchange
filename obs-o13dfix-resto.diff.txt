@@ -1,0 +1,1895 @@
+# obs-o13dfix-resto.diff.txt
+# Tema: resto delle 20 modifiche non in novelty/color/privacy/ui-gap.
+# Include: .gitignore, CHANGELOG, VERSION, KNOWN_DEBT, package.json,
+#          color_literal_gate.py, test_o13d_soppressione.py,
+#          obs-o13d-c7-registro.md, obs-o13d-screenshot-harness.md,
+#          obs-o13d-emissions-246.json
+# Nota: CHANGELOG/VERSION/KNOWN_DEBT/package.json erano in obs-o13d-meta.diff.txt;
+# ridichiarati per chiusura aritmetica del gap (file ancora non in novelty/color/privacy/ui).
+# Esclusi da questo diff (già novelty): api routers/services egress, source_coverage, Oggi.vue
+# Esclusi (già color): Incidents.vue, Plant.vue
+# Esclusi (privacy): obs-o13cfix.md, obs-o13cfix-redatto.md, PNG redact
+# Esclusi (ui): api.js, observatoryUx.js
+#
+diff --git a/.gitignore b/.gitignore
+index 4c3ff8e..0e28bc6 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -10,6 +10,11 @@ locale/
+ favicon.ico
+ !observatory/web/public/favicon.ico
+ 
++# Root env (O13D C0 — gap dichiarato: prima solo observatory/.env)
++.env
++.env.*
++!.env.example
++
+ # LAN Observatory
+ observatory/data/*
+ !observatory/data/db/
+diff --git a/observatory/CHANGELOG.md b/observatory/CHANGELOG.md
+index 1b622df..46c503a 100644
+--- a/observatory/CHANGELOG.md
++++ b/observatory/CHANGELOG.md
+@@ -1,5 +1,15 @@
+ # Changelog
+ 
++## 0.10.81 — OBS-UX O13D: auto-lift novità, soppressione visibile, gate colori
++
++- **C1 (i):** auto-lift soppressione novità alla chiusura baseline B2 (`signals_armed` + `novelty_auto_enabled`); env=false dopo lift = soppressione **manuale** visibile; `resolve_novelty_emission`.
++- Coverage `zeek_egress`: blocco `signal_suppression` distinto da cieca/disabilitata; card informativa `coverage_novelty_suppressed`.
++- **C2/C3:** test R3/R4/auto-lift; enumerazione 246 emissioni invalide; API unmark/remark ripesca R6.
++- **C6:** `scripts/color_literal_gate.py`; residui verde non-token (Incidents glow, Plant `.dot.up` / `#83c99c` → `var(--ok)`).
++- Debiti: quarta occorrenza oneshot measure; `DEBT-PUBLIC-CHANNEL-EXPOSURE`; `DEBT-SCREENSHOT-HARNESS-FRAGILE`.
++- Marker bundle `obs-o13d-marker`.
++
++
+ ## 0.10.80 — OBS-EGRESS O13C-FIX: baseline prematura, criteri B2, switch novità
+ 
+ - **B1:** baseline prematura invalidata (annotata, non cancellata); emissioni N5 su ready falso marcate `emitted_on_invalid_baseline` (246 in prod), ripescabili.
+diff --git a/observatory/VERSION b/observatory/VERSION
+index c43d78c..ec18028 100644
+--- a/observatory/VERSION
++++ b/observatory/VERSION
+@@ -1 +1 @@
+-0.10.80
++0.10.81
+diff --git a/observatory/docs/KNOWN_DEBT.md b/observatory/docs/KNOWN_DEBT.md
+index 80cc3fd..bd779c8 100644
+--- a/observatory/docs/KNOWN_DEBT.md
++++ b/observatory/docs/KNOWN_DEBT.md
+@@ -286,8 +286,22 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+ - **Risoluzione O12-FIX:** archivio recuperabile su obs-exchange (`obs-o11fix-postcheck-archivio.py`) + `mv` in `_attic/` (mai `rm`, mai allowlist).
+ - **Drift dichiarato:** dopo lo spostamento `file scansionati` repo **198** vs NAS **199** — delta = `scripts/_w4a_measure.py` solo sul NAS (`DEBT-PROD-SOURCE-DRIFT`).
+ - **Convenzione proposta (non implementata):** ogni script `scripts/_*.py` (prefisso underscore = oneshot/diagnosi) deve (a) vivere solo nel tempo dell'ondata, (b) essere `mv` in `_attic/` prima della chiusura, (c) comparire nel deliverable share se serve recupero; CI/gate locale fallisce se `scripts/_*.py` è presente a chiusura ondata.
++- **Quarta occorrenza (O13D / 0.10.81):** lasciati nel WT (non cancellati) `scripts/w5b_measure.py`, `scripts/w6review_measure.py`, `scripts/w7c_measure.py` — residuo measure oneshot; classificazione report: leave + debt. I 5 asset `docs/obs-ux2-assets/` restano leave (probe docs, non prodotto).
+ - **Vietato:** allowlistare lo script per far passare il gate; `rm` senza archivio; lasciare oneshot in `scripts/` su prod.
+ 
++## DEBT-PUBLIC-CHANNEL-EXPOSURE
++
++- **Priorità:** documentale / processo — annotato O13D / 0.10.81.
++- **Cosa:** il canale pubblico di share è **solo** `obs-exchange` (raw GitHub). Decisioni su cosa pubblicare, redact, e se includere PNG/report restano di Michele.
++- **Vietato:** assumere che il repo privato sia «safe to paste» su exchange; pubblicare IP/MAC/nomi/secret; cambiare canale senza decisione esplicita.
++
++## DEBT-SCREENSHOT-HARNESS-FRAGILE
++
++- **Priorità:** media (evidenza UI) — aperto O13D / 0.10.81.
++- **Cosa:** l'harness screenshot resta fragile across ondate: O1-FIX overflow viewport, O8 viewport Electron fisso (`DEBT-SCREENSHOT-HARNESS-FALSE-EVIDENCE`), O13C-FIX Playwright assente / cattura non ripetibile senza credenziali.
++- **Mitigazione nota:** `scripts/o9_capture_harness.md` (Emulation + `Page.captureScreenshot`); non affidarsi a `browser_take_screenshot` MCP per i breakpoint.
++- **Vietato:** dichiarare «tre breakpoint» senza W×H reali; inventare PNG come prova responsive.
++
+ ## DEBT-SNMP-PROFILE-PER-SWITCH — APERTO (registrato O2-FIX)
+ 
+ - **Priorità:** progetto FDB/SNMP — tre apparati condividono un solo profilo `default`.
+diff --git a/observatory/web/package.json b/observatory/web/package.json
+index 43710f3..dde407f 100644
+--- a/observatory/web/package.json
++++ b/observatory/web/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "lan-observatory-web",
+   "private": true,
+-  "version": "0.10.80",
++  "version": "0.10.81",
+   "type": "module",
+   "scripts": {
+     "dev": "vite",
+diff --git a/observatory/scripts/color_literal_gate.py b/observatory/scripts/color_literal_gate.py
+new file mode 100644
+--- /dev/null
++++ b/observatory/scripts/color_literal_gate.py
+@@ -0,0 +1,153 @@
++#!/usr/bin/env python3
++"""O13D C6 — gate hard-coded color literals in web/src.
++
++- Token file ``assets/matrix.css``: hex/rgba OK (CSS variables source of truth).
++- ``var(--token, #fallback)`` fallbacks are ignored (not new palette).
++- ``*.test.js`` ignored (assert token values).
++- Other literals FAIL unless the file is in ALLOWLIST with a reason.
++- O13D fixed worst non-semantic greens (Incidents glow, Plant .dot.up / #83c99c);
++  remaining canvas/AI/topology literals deferred (no new palette tokens invented).
++
++Exit 0 = pass; exit 1 = fail.
++"""
++
++from __future__ import annotations
++
++import argparse
++import re
++import sys
++import tempfile
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++WEB_SRC = ROOT / "web" / "src"
++
++TOKEN_FILES = {
++    "assets/matrix.css",
++}
++
++# relative path -> reason
++ALLOWLIST: dict[str, str] = {
++    "components/AiInferenceLabel.vue": "AI purple accent — no --ai token in palette (deferred)",
++    "components/AssetDecide.vue": "AI purple accent — deferred",
++    "components/AssetHabits.vue": "habits probable/soft colors — deferred",
++    "components/Branch308Card.vue": "308 status rgba mix — deferred",
++    "components/CalibrationBadge.vue": "calib warn glow — deferred",
++    "components/MatrixRain.vue": "canvas fillStyle accent-tint; no --ok-alpha token",
++    "components/SensorHealth.vue": "sensor panel rgba — deferred",
++    "components/SpanSensorCard.vue": "span status rgba — deferred",
++    "components/ToggleSwitch.vue": "toggle matrix greens — deferred",
++    "components/TopologyBranch.vue": "topology canvas-heavy — deferred O13D",
++    "components/ui/VisualBadge.vue": "inference badge purple — deferred",
++    "views/Actions.vue": "actions glow rgba — deferred",
++    "views/Dashboard.vue": "dashboard residual — deferred",
++    "views/Dossier.vue": "dossier residual — deferred",
++    "views/Gs308.vue": "gs308 residual — deferred",
++    "views/Inventory.vue": "inventory residual — deferred",
++    "views/Monitoring.vue": "monitoring glow — deferred",
++    "views/Oggi.vue": "oggi residual — deferred",
++    "views/Plant.vue": "role-badge non-ok hues + residual — deferred (ok greens → var(--ok))",
++    "views/Suggestions.vue": "AI purple — deferred",
++    "views/Timeline.vue": "timeline glow — deferred",
++    "views/Topology.vue": "topology canvas-heavy — deferred O13D",
++}
++
++HEX_RE = re.compile(r"#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b")
++RGB_RE = re.compile(r"\brgba?\(\s*[^)]+\)")
++VAR_RE = re.compile(r"var\([^)]*\)")
++
++SCAN_SUFFIXES = {".vue", ".css", ".js", ".ts", ".scss"}
++
++
++def _strip_var_fallbacks(text: str) -> str:
++    return VAR_RE.sub("var()", text)
++
++
++def iter_files():
++    for p in WEB_SRC.rglob("*"):
++        if not p.is_file():
++            continue
++        if p.suffix not in SCAN_SUFFIXES:
++            continue
++        if ".test." in p.name:
++            continue
++        yield p
++
++
++def scan_file(path: Path) -> list[tuple[int, str, str]]:
++    rel = path.relative_to(WEB_SRC).as_posix()
++    if rel in TOKEN_FILES or rel in ALLOWLIST:
++        return []
++    try:
++        text = path.read_text(encoding="utf-8")
++    except UnicodeDecodeError:
++        return []
++    stripped = _strip_var_fallbacks(text)
++    hits: list[tuple[int, str, str]] = []
++    # Map hits back via original lines approximately
++    orig_lines = text.splitlines()
++    strip_lines = stripped.splitlines()
++    for i, (oline, sline) in enumerate(zip(orig_lines, strip_lines), 1):
++        st = oline.strip()
++        if st.startswith("//") or st.startswith("*") or st.startswith("/*"):
++            continue
++        for m in HEX_RE.finditer(sline):
++            hits.append((i, m.group(0), oline.strip()[:120]))
++        for m in RGB_RE.finditer(sline):
++            hits.append((i, m.group(0), oline.strip()[:120]))
++    return hits
++
++
++def self_test_inject() -> int:
++    """Prove gate fails on injected literal and passes after remove."""
++    tmp = WEB_SRC / "_o13d_color_gate_inject_tmp.vue"
++    try:
++        tmp.write_text(
++            "<style>\n.x { color: #ff00aa; /* O13D_COLOR_GATE_INJECT */ }\n</style>\n",
++            encoding="utf-8",
++        )
++        hits = scan_file(tmp)
++        if not hits:
++            print("SELFTEST FAIL: inject not detected")
++            return 1
++        print(f"SELFTEST inject detected: {hits[0]}")
++    finally:
++        if tmp.exists():
++            tmp.unlink()
++    # After remove — ensure no hits from tmp
++    if tmp.exists():
++        print("SELFTEST FAIL: tmp not removed")
++        return 1
++    print("SELFTEST PASS: inject fails, remove passes")
++    return 0
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--self-test", action="store_true", help="inject/remove proof")
++    args = ap.parse_args()
++
++    if args.self_test:
++        return self_test_inject()
++
++    all_hits: list[tuple[str, int, str, str]] = []
++    for p in iter_files():
++        for line_no, lit, ctx in scan_file(p):
++            all_hits.append((p.relative_to(WEB_SRC).as_posix(), line_no, lit, ctx))
++
++    if all_hits:
++        print(f"FAIL: {len(all_hits)} hard-coded color literal(s) outside token/allowlist")
++        for rel, ln, lit, ctx in all_hits[:60]:
++            print(f"  {rel}:{ln}: {lit}  |  {ctx}")
++        if len(all_hits) > 60:
++            print(f"  ... +{len(all_hits) - 60} more")
++        return 1
++
++    print("PASS: no hard-coded color literals outside token/allowlist files")
++    print(f"  token_files={sorted(TOKEN_FILES)}")
++    print(f"  allowlist_count={len(ALLOWLIST)}")
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/observatory/tests/test_o13d_soppressione.py b/observatory/tests/test_o13d_soppressione.py
+new file mode 100644
+--- /dev/null
++++ b/observatory/tests/test_o13d_soppressione.py
+@@ -0,0 +1,302 @@
++"""O13D — novelty suppression auto-lift, manual suppress visibility, R4 emission rules."""
++
++from __future__ import annotations
++
++import sys
++import uuid
++from datetime import datetime, timedelta
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++from sqlalchemy import create_engine, select
++from sqlalchemy.orm import sessionmaker
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
++
++from app.config import get_settings
++from app.db import Base
++from app.models import Asset, EgressObservation, FactAssertion, Interface, IpAddress
++from app.services.egress import (
++    MIN_BASELINE_COVERAGE_DAYS,
++    baseline_status,
++    build_egress_signals,
++    ensure_baseline_meta,
++    invalidate_premature_baseline,
++    maybe_close_baseline_after_cycle,
++    novelty_egress_cards,
++    resolve_novelty_emission,
++    unmark_invalid_emission,
++)
++
++
++@pytest.fixture()
++def db(tmp_path, monkeypatch):
++    db_path = tmp_path / "o13d.db"
++    monkeypatch.setenv("SQLITE_PATH", str(db_path))
++    get_settings.cache_clear()
++    engine = create_engine(f"sqlite:///{db_path}")
++    Base.metadata.create_all(engine)
++    Session = sessionmaker(bind=engine)
++    session = Session()
++    yield session
++    session.close()
++    get_settings.cache_clear()
++
++
++def _settings(*, ingest=True, novelty=False):
++    return SimpleNamespace(
++        egress_ingest_enabled=ingest,
++        egress_novelty_signals_enabled=novelty,
++    )
++
++
++def _asset_ip(db, *, mac="AA:BB:CC:DD:EE:10", ip="192.0.2.10"):
++    a = Asset(uid=str(uuid.uuid4()), name="t", status="noto", category="media")
++    db.add(a)
++    db.flush()
++    iface = Interface(asset_id=a.id, mac=mac, is_primary=True)
++    db.add(iface)
++    db.flush()
++    db.add(IpAddress(interface_id=iface.id, ip=ip, is_current=True, source="test"))
++    past = datetime.utcnow() - timedelta(days=30)
++    db.add(
++        FactAssertion(
++            subject_type="interface",
++            subject_id=iface.id,
++            fact_key="asset.iface_ip",
++            excl_key=f"asset.iface_ip:{iface.id}",
++            value_norm=ip,
++            value_json={},
++            source="test",
++            authority=80,
++            confidence=0.9,
++            observed_at=past,
++            last_seen_at=past,
++            valid_from=past,
++            valid_to=None,
++            state="current",
++        )
++    )
++    db.flush()
++    return a
++
++
++def _forge_ready_armed(db, *, ready_at: datetime | None = None, auto=False):
++    row = ensure_baseline_meta(db)
++    row.first_seen = datetime.utcnow() - timedelta(days=MIN_BASELINE_COVERAGE_DAYS + 2)
++    ready_at = ready_at or (datetime.utcnow() - timedelta(hours=1))
++    ev = dict(row.evidence or {})
++    ev["baseline_ready"] = True
++    ev["baseline_status"] = "ready"
++    ev["baseline_ready_at"] = ready_at.isoformat() + "Z"
++    ev["signals_armed"] = True
++    ev["novelty_auto_enabled"] = auto
++    ev["novelty_suppression_active"] = False
++    ev["manual_suppress"] = False
++    row.evidence = ev
++    db.flush()
++    return ready_at
++
++
++def test_r3_manual_suppress_visible_not_silent(db):
++    """R3: baseline ready + manual suppress → cards empty but suppression block present."""
++    _asset_ip(db)
++    _forge_ready_armed(db, auto=False)
++    db.add(
++        EgressObservation(
++            dedup_key="nov-r3",
++            scope="ext",
++            subject_type="asset",
++            subject_id=1,
++            dst_ip="203.0.113.3",
++            dport=443,
++            proto="tcp",
++            association="certain",
++            first_seen=datetime.utcnow(),
++            last_seen=datetime.utcnow(),
++            observation_count=1,
++            evidence={},
++        )
++    )
++    db.commit()
++    sig = build_egress_signals(db, settings=_settings(novelty=False))
++    assert sig["cards"] == []
++    assert sig["novelty_signals_enabled"] is False
++    emission = sig.get("novelty_emission") or {}
++    assert emission.get("allowed") is False
++    assert emission.get("state") == "novelty_suppressed_manual"
++    supp = sig.get("novelty_suppression") or emission.get("suppression") or {}
++    assert supp.get("active") is True
++    assert supp.get("reason") == "manual" or supp.get("manual_suppress") is True
++    assert sig.get("note")
++    assert "soppressione" in (sig["note"] or "").lower() or "manuale" in (sig["note"] or "").lower()
++
++
++def test_r4_pre_ready_and_invalid_skipped_post_ready_emits(db):
++    """R4: first_seen < ready_at no N5; invalid marked skipped; new after ready emits when armed."""
++    _asset_ip(db)
++    ready_at = _forge_ready_armed(db, auto=True)
++    db.add(
++        EgressObservation(
++            dedup_key="old-pre",
++            scope="ext",
++            subject_type="asset",
++            subject_id=1,
++            dst_ip="203.0.113.1",
++            dport=80,
++            proto="tcp",
++            association="certain",
++            first_seen=ready_at - timedelta(hours=2),
++            last_seen=ready_at - timedelta(hours=1),
++            observation_count=1,
++            evidence={},
++        )
++    )
++    db.add(
++        EgressObservation(
++            dedup_key="bad-inv",
++            scope="ext",
++            subject_type="asset",
++            subject_id=1,
++            dst_ip="203.0.113.2",
++            dport=443,
++            proto="tcp",
++            association="certain",
++            first_seen=ready_at + timedelta(minutes=5),
++            last_seen=ready_at + timedelta(minutes=5),
++            observation_count=1,
++            evidence={
++                "emitted_on_invalid_baseline": True,
++                "invalid_baseline_ready_at": "2026-07-29T09:59:03.948740Z",
++            },
++        )
++    )
++    db.add(
++        EgressObservation(
++            dedup_key="new-post",
++            scope="ext",
++            subject_type="asset",
++            subject_id=1,
++            dst_ip="203.0.113.9",
++            dport=443,
++            proto="tcp",
++            association="certain",
++            first_seen=ready_at + timedelta(hours=1),
++            last_seen=ready_at + timedelta(hours=1),
++            observation_count=1,
++            evidence={},
++        )
++    )
++    db.commit()
++    # auto_enabled → allowed even if env false
++    cards = novelty_egress_cards(db, settings=_settings(novelty=False))
++    keys = {c.get("dst_ip") for c in cards}
++    assert "203.0.113.1" not in keys
++    assert "203.0.113.2" not in keys
++    assert "203.0.113.9" in keys
++    assert len(cards) == 1
++
++
++def test_auto_lift_on_close_clears_premature_suppression(db):
++    """Auto-lift on B2 close clears premature suppression and arms signals."""
++    _asset_ip(db)
++    row = ensure_baseline_meta(db)
++    was = "2026-07-29T09:59:03.948740Z"
++    ev = dict(row.evidence or {})
++    ev["baseline_ready"] = True
++    ev["baseline_ready_at"] = was
++    row.evidence = ev
++    db.flush()
++    invalidate_premature_baseline(db)
++    db.commit()
++    bl = baseline_status(db)
++    assert bl["baseline_ready"] is False
++    assert bl["novelty_suppression"]["active"] is True
++    assert bl["novelty_suppression"]["reason"] == "premature_baseline_protection"
++    em = resolve_novelty_emission(db, _settings(novelty=False))
++    assert em["allowed"] is False
++    assert em["state"] == "baseline_in_costruzione"
++
++    # Satisfy B2 and close
++    row = ensure_baseline_meta(db)
++    row.first_seen = datetime.utcnow() - timedelta(days=MIN_BASELINE_COVERAGE_DAYS + 1)
++    today = datetime.utcnow().date()
++    days = [(today - timedelta(days=i)).isoformat() for i in range(1, 4)]
++    days = list(reversed(days))
++    ev = dict(row.evidence or {})
++    ev["novelty_by_day"] = {
++        days[0]: {"novelty_new": 100, "cycles": 1},
++        days[1]: {"novelty_new": 90, "cycles": 1},
++        days[2]: {"novelty_new": 80, "cycles": 1},
++    }
++    row.evidence = ev
++    for i, day in enumerate(days):
++        y, m, d = map(int, day.split("-"))
++        ts = datetime(y, m, d, 12, 0, 0)
++        db.add(
++            EgressObservation(
++                dedup_key=f"seed-{day}",
++                scope="ext",
++                subject_type="asset",
++                subject_id=1,
++                dst_ip="203.0.113.9",
++                dport=443 + i,
++                proto="tcp",
++                association="certain",
++                first_seen=ts,
++                last_seen=ts,
++                observation_count=1,
++                evidence={"seed": True},
++            )
++        )
++    db.commit()
++    bl = maybe_close_baseline_after_cycle(
++        db, 0, cycle_stats={"seen_distinct": 1, "created": 0}
++    )
++    db.commit()
++    assert bl["baseline_ready"] is True
++    row2 = ensure_baseline_meta(db)
++    ev2 = dict(row2.evidence or {})
++    assert ev2.get("novelty_suppression_active") is False
++    assert ev2.get("signals_armed") is True
++    assert ev2.get("novelty_auto_enabled") is True
++    assert ev2.get("novelty_suppression_lift_reason") == "baseline_closed_b2"
++    # Env still false but auto-armed → allowed
++    em2 = resolve_novelty_emission(db, _settings(novelty=False))
++    assert em2["allowed"] is True
++    assert em2["state"] == "novelty_allowed"
++
++
++def test_unmark_invalid_emission_r6(db):
++    _asset_ip(db)
++    db.add(
++        EgressObservation(
++            dedup_key="bad-r6",
++            scope="ext",
++            subject_type="asset",
++            subject_id=1,
++            dst_ip="203.0.113.7",
++            dport=443,
++            proto="tcp",
++            association="certain",
++            first_seen=datetime.utcnow(),
++            last_seen=datetime.utcnow(),
++            observation_count=1,
++            evidence={
++                "emitted_on_invalid_baseline": True,
++                "invalid_baseline_ready_at": "2026-07-29T09:59:03.948740Z",
++            },
++        )
++    )
++    db.commit()
++    row = db.scalar(select(EgressObservation).where(EgressObservation.dedup_key == "bad-r6"))
++    assert row is not None
++    out = unmark_invalid_emission(db, row.id)
++    db.commit()
++    assert out["ok"] is True
++    assert out["changed"] is True
++    assert out["marked"] is False
++    db.refresh(row)
++    ev = dict(row.evidence or {})
++    assert ev.get("emitted_on_invalid_baseline") is False
+diff --git a/observatory/docs/obs-o13d-c7-registro.md b/observatory/docs/obs-o13d-c7-registro.md
+new file mode 100644
+--- /dev/null
++++ b/observatory/docs/obs-o13d-c7-registro.md
+@@ -0,0 +1,29 @@
++# O13D C7 — registro rimozioni / pass leggero
++
++## «Visualizza dati» / raw dump
++
++| percorso | esito |
++|----------|-------|
++| `web/src/views/Dossier.vue` | **assente** (grep) — nessuna rimozione |
++| `web/src/**` | nessuna stringa «Visualizza dati» |
++
++Registro: confermato assente (allineato O7); vietato reintrodurre.
++
++## Oggi chassis uniqueness (a)/(d)
++
++| check | esito |
++|-------|-------|
++| (a) card chassis unica per apparato | pattern `buildChassisNameCards` / `v-for="card in chassisNameCards"` — nessun doppio dump evidente |
++| (d) | nessun fix rapido necessario |
++| (b)(c)(e) | **rinviati** (previsione O13D) |
++
++## Plant canvas min-height &lt; 800
++
++| evidenza | esito |
++|----------|-------|
++| `matrix.css` `.map` / canvas area `min-height: 360px` | **presente** (&lt; 800) |
++| Plant.vue canvas dedicato | nessun canvas plant full-bleed; topologia in Topology |
++
++## Route controllate (light)
++
++`/oggi`, `/plant`, `/dossier`, `/incidents`, `/topology` (grep/static) — difetti (b)(c)(e) deferred.
+diff --git a/observatory/docs/obs-o13d-screenshot-harness.md b/observatory/docs/obs-o13d-screenshot-harness.md
+new file mode 100644
+--- /dev/null
++++ b/observatory/docs/obs-o13d-screenshot-harness.md
+@@ -0,0 +1,17 @@
++# O13D — harness screenshot (fragile)
++
++Vedi anche: `scripts/o9_capture_harness.md`, `DEBT-SCREENSHOT-HARNESS-FALSE-EVIDENCE`, `DEBT-SCREENSHOT-HARNESS-FRAGILE`.
++
++## Procedura
++
++1. Login UI (credenziali operatori) — **senza credenziali: STOP, nessuna cattura inventata**.
++2. Per ogni breakpoint W ∈ {1280, 768, 390}:
++   - CDP `Emulation.setDeviceMetricsOverride` con `deviceScaleFactor: 1`
++   - assert `window.innerWidth === W`
++   - CDP `Page.captureScreenshot` (mai `browser_take_screenshot` MCP)
++3. Assert PNG W×H distinti (`scripts/o9_png_assert.py`).
++
++## O13D esito
++
++Tentativo cattura: **STOP — credenziali UI non disponibili in questa sessione agente**.
++Nessun PNG O13D dichiarato come prova responsive. Debito: `DEBT-SCREENSHOT-HARNESS-FRAGILE` (O1-FIX overflow, O8 viewport, O13C-FIX playwright assente).
+diff --git a/observatory/docs/obs-o13d-emissions-246.json b/observatory/docs/obs-o13d-emissions-246.json
+new file mode 100644
+--- /dev/null
++++ b/observatory/docs/obs-o13d-emissions-246.json
+@@ -0,0 +1,1273 @@
++{
++  "count": 246,
++  "id_min": 327,
++  "id_max": 584,
++  "range_declared": "327..584",
++  "slot_count": 258,
++  "missing_in_range": [
++    342,
++    346,
++    347,
++    348,
++    349,
++    385,
++    400,
++    401,
++    402,
++    418,
++    425,
++    442
++  ],
++  "missing_count": 12,
++  "extra_outside_range": [],
++  "extra_count": 0,
++  "items": [
++    {
++      "id": 327,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 328,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 329,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 330,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 331,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 332,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 333,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 334,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 335,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 336,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 337,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 338,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 339,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 340,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 341,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 343,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 344,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 345,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 350,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 351,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 352,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 353,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 354,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 355,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 356,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 357,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 358,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 359,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 360,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 361,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 362,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 363,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 364,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 365,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 366,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 367,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 368,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 369,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 370,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 371,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 372,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 373,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 374,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 375,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 376,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 377,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 378,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 379,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 380,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 381,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 382,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 383,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 384,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 386,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 387,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 388,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 389,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 390,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 391,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 392,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 393,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 394,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 395,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 396,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 397,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 398,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 399,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 403,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 404,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 405,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 406,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 407,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 408,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 409,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 410,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 411,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 412,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 413,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 414,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 415,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 416,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 417,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 419,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 420,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 421,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 422,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 423,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 424,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 426,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 427,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 428,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 429,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 430,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 431,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 432,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 433,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 434,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 435,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 436,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 437,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 438,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 439,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 440,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 441,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 443,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 444,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 445,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 446,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 447,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 448,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 449,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 450,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 451,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 452,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 453,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 454,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 455,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 456,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 457,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 458,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 459,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 460,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 461,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 462,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 463,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 464,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 465,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 466,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 467,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 468,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 469,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 470,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 471,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 472,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 473,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 474,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 475,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 476,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 477,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 478,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 479,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 480,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 481,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 482,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 483,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 484,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 485,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 486,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 487,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 488,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 489,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 490,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 491,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 492,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 493,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 494,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 495,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 496,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 497,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 498,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 499,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 500,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 501,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 502,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 503,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 504,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 505,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 506,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 507,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 508,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 509,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 510,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 511,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 512,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 513,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 514,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 515,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 516,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 517,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 518,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 519,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 520,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 521,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 522,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 523,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 524,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 525,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 526,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 527,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 528,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 529,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 530,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 531,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 532,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 533,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 534,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 535,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 536,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 537,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 538,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 539,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 540,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 541,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 542,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 543,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 544,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 545,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 546,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 547,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 548,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 549,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 550,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 551,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 552,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 553,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 554,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 555,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 556,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 557,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 558,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 559,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 560,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 561,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 562,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 563,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 564,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 565,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 566,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 567,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 568,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 569,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 570,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 571,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 572,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 573,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 574,
++      "scope": "ext",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 575,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 576,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 577,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 578,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 579,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 580,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 581,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 582,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 583,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    },
++    {
++      "id": 584,
++      "scope": "int",
++      "marker": "emitted_on_invalid_baseline"
++    }
++  ],
++  "o13d_marker": "obs-o13d",
++  "note": "no IP/MAC/names; id+scope+marker only",
++  "gap_explanation": "258 id in 327..584; 246 marked emitted_on_invalid_baseline; 12 gap ids exist as egress rows but were never novelty candidates (first_seen before premature ready_at 2026-07-29T09:59:03Z) \u2014 not post-mark creates; not deleted; simply outside the N5 emission set.",
++  "gap_ids": [
++    342,
++    346,
++    347,
++    348,
++    349,
++    385,
++    400,
++    401,
++    402,
++    418,
++    425,
++    442
++  ]
++}
