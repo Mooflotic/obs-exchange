@@ -1,0 +1,21 @@
+components/AiInferenceLabel.vue:36: #9b7bd4 | FERMO D3: AI purple (#9b7bd4/#c4a0ff/#6b4aa8) — nessun token --ai in matrix.css; non inventare palette
+components/AssetDecide.vue:295: #c4a0ff | FERMO D3: AI purple su .src.ai (#c4a0ff/#6b4aa8/#1a1228) — nessun --ai
+components/AssetHabits.vue:331: #c47a2c | habits probable/soft (#c47a2c/#6a9cc8/#c45c5c) — non canvas/AI; deferred oltre D3
+components/Branch308Card.vue:172: rgba(255, 255, 255, 0.06) | 308 status rgba mix (ok/warn/muted) — residual non-token; deferred oltre canvas/AI
+components/CalibrationBadge.vue:87: #0e1912 | calib warn glow rgba(230,195,92) + #0e1912 — deferred oltre canvas/AI
+components/MatrixRain.vue:42: rgba(${bgR}, ${bgG}, ${bgB}, 0.045) | canvas: rgba() assemblato a runtime da getComputedStyle(--ok/--bg-0); nessun literal di palette fissa (gate vede template rgba)
+components/SensorHealth.vue:147: rgba(8, 14, 10, 0.55) | sensor panel rgba — deferred oltre canvas/AI
+components/SpanSensorCard.vue:134: rgba(120, 120, 120, 0.25) | span status rgba — deferred oltre canvas/AI
+components/TopologyBranch.vue:184: #9b82e8 | FERMO D3: solo residual AP purple #9b82e8 (nessun token ruolo-AP); verdi albero → var(--ok) in O13D-FIX
+components/ui/VisualBadge.vue:39: #c4b5fd | FERMO D3: inference badge purple (#c4b5fd/#8b7cf7) — nessun --ai
+views/Actions.vue:598: rgba(61, 255, 138, 0.12) | actions glow rgba(61,255,138,*) — residual decorativo non-canvas; deferred
+views/Dashboard.vue:376: rgba(26, 51, 36, 0.9) | dashboard residual rgba — deferred oltre canvas/AI
+views/Dossier.vue:664: rgba(180, 160, 80, 0.1) | FERMO D3: blocco INFERENZA IA purple rgba(155,123,212)/#c4b0e8 — nessun --ai; warn/ok già su token dove possibile
+views/Gs308.vue:411: rgba(255, 255, 255, 0.12) | gs308 status rgba / #9ab0e0 infer — deferred oltre canvas/AI
+views/Inventory.vue:767: rgba(2, 5, 2, 0.6) | FERMO D3: AI purple inventory (#c4a0ff/#6b4aa8) — nessun --ai
+views/Monitoring.vue:809: rgba(61, 255, 138, 0.32) | monitoring glow rgba(61,255,138,*) — deferred oltre canvas/AI
+views/Oggi.vue:2494: #e4b866 | oggi residual #e4b866 / color-mix — deferred oltre canvas/AI
+views/Plant.vue:1056: #e4b866 | role-badge non-ok hues (#e4b866/#75b9e8/…) + empty-state borders — ok greens già var(--ok); deferred oltre canvas/AI
+views/Suggestions.vue:117: #1a1228 | FERMO D3: AI purple (#c4a0ff/#6b4aa8/#1a1228) — nessun --ai
+views/Timeline.vue:356: #6a5520 | timeline glow rgba(61,255,138,*) — deferred oltre canvas/AI
+views/Topology.vue:847: #9b82e8 | FERMO D3: residual AP/group purple #9b82e8/#775fbd/#131323 (nessun token ruolo-AP); verdi griglia/edge/glow → var(--ok) in O13D-FIX
