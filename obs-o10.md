@@ -119,3 +119,45 @@ Favicon armonizzazione: **rinviata**.
 ## STOP
 
 STOP per review. Non avvio armonizzazione favicon. Non chiudo cantiere. Non merge main. FA 251 intatto.
+
+## Share (commit-pinned)
+
+Asset SHA (PNG+diff+previsioni): 
+Base: 
+
+| file | note | sha256 |
+|---|---|---|
+| [obs-o10-dashboard-1280.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-dashboard-1280.png) | 1280×900 |  |
+| [obs-o10-dashboard-390.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-dashboard-390.png) | 390×900 |  |
+| [obs-o10-dashboard-768.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-dashboard-768.png) | 768×900 |  |
+| [obs-o10-densita.diff.txt](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-densita.diff.txt) | 22 lines |  |
+| [obs-o10-dossier-noto-1280.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-dossier-noto-1280.png) | 1280×900 |  |
+| [obs-o10-dossier-noto-390.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-dossier-noto-390.png) | 390×900 |  |
+| [obs-o10-dossier-noto-768.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-dossier-noto-768.png) | 768×900 |  |
+| [obs-o10-findings-1280.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-findings-1280.png) | 1280×900 |  |
+| [obs-o10-findings-390.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-findings-390.png) | 390×900 |  |
+| [obs-o10-findings-768.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-findings-768.png) | 768×900 |  |
+| [obs-o10-incidents-1280.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-incidents-1280.png) | 1280×900 |  |
+| [obs-o10-incidents-390.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-incidents-390.png) | 390×900 |  |
+| [obs-o10-incidents-768.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-incidents-768.png) | 768×900 |  |
+| [obs-o10-inventory-1280.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-inventory-1280.png) | 1280×900 |  |
+| [obs-o10-inventory-390.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-inventory-390.png) | 390×6386 |  |
+| [obs-o10-inventory-768.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-inventory-768.png) | 768×900 |  |
+| [obs-o10-leggibilita.diff.txt](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-leggibilita.diff.txt) | 19 lines |  |
+| [obs-o10-monitoring-1280.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-monitoring-1280.png) | 1280×900 |  |
+| [obs-o10-monitoring-390.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-monitoring-390.png) | 390×1431 |  |
+| [obs-o10-monitoring-768.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-monitoring-768.png) | 768×900 |  |
+| [obs-o10-oggi-1280.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-oggi-1280.png) | 1280×900 |  |
+| [obs-o10-oggi-390.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-oggi-390.png) | 390×13228 |  |
+| [obs-o10-oggi-768.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-oggi-768.png) | 768×900 |  |
+| [obs-o10-plant-1280.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-plant-1280.png) | 1280×900 |  |
+| [obs-o10-plant-390.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-plant-390.png) | 390×5442 |  |
+| [obs-o10-plant-768.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-plant-768.png) | 768×900 |  |
+| [obs-o10-previsioni.md](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-previsioni.md) | 59 lines |  |
+| [obs-o10-runbook-1280.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-runbook-1280.png) | 1280×900 |  |
+| [obs-o10-runbook-390.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-runbook-390.png) | 390×10780 |  |
+| [obs-o10-runbook-768.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-runbook-768.png) | 768×900 |  |
+| [obs-o10-timeline-1280.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-timeline-1280.png) | 1280×900 |  |
+| [obs-o10-timeline-390.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-timeline-390.png) | 390×13400 |  |
+| [obs-o10-timeline-768.png](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-timeline-768.png) | 768×900 |  |
+| [obs-o10-vocabolario.diff.txt](https://raw.githubusercontent.com/Mooflotic/obs-exchange/256f30785d530d32a26697da0b67813572479801/obs-o10-vocabolario.diff.txt) | 21 lines |  |
