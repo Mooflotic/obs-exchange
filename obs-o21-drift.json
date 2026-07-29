@@ -1,0 +1,22 @@
+{
+  "phase": "post_deploy",
+  "NAS_count": 80,
+  "repo_count": 79,
+  "solo_NAS": [
+    "scripts/_w4a_measure.py"
+  ],
+  "solo_repo": [],
+  "solo_NAS_enumerated": [
+    "scripts/_w4a_measure.py"
+  ],
+  "solo_repo_enumerated": [],
+  "expected": {
+    "solo_NAS": [
+      "scripts/_w4a_measure.py"
+    ],
+    "solo_repo": []
+  },
+  "orphans": [],
+  "DRIFT_OK": true,
+  "note": "solo_repo non vuoto = script locali non syncati o esclusi da rsync; DRIFT_OK=orphans NAS assenti oltre _w4a"
+}
