@@ -1,0 +1,2358 @@
+=== NEW routers/behavior.py ===
+diff --git a/observatory/api/app/routers/behavior.py b/observatory/api/app/routers/behavior.py
+new file mode 100644
+index 0000000..cfff1cc
+--- /dev/null
++++ b/observatory/api/app/routers/behavior.py
+@@ -0,0 +1,75 @@
++"""O11 — behaviour signals API (Oggi cards). No new top-level hub."""
++
++from __future__ import annotations
++
++from fastapi import APIRouter, Depends, Request
++from pydantic import BaseModel
++from sqlalchemy.orm import Session
++
++from app.auth import check_csrf, require_user
++from app.config import Settings, get_settings
++from app.db import get_db
++from app.models import User
++from app.services.behaviour import (
++    acknowledge_behavior_signal,
++    baseline_status,
++    build_behavior_signals,
++    mark_baseline_ready,
++)
++
++router = APIRouter(prefix="/api/behavior", tags=["behavior"])
++
++
++class AckBody(BaseModel):
++    uid: str
++    action: str = "acknowledge"
++    reason: str = ""
++
++
++class BaselineReadyBody(BaseModel):
++    reason: str = ""
++
++
++@router.get("/signals")
++def get_signals(db: Session = Depends(get_db), user: User = Depends(require_user)):
++    return build_behavior_signals(db)
++
++
++@router.get("/baseline")
++def get_baseline(db: Session = Depends(get_db), user: User = Depends(require_user)):
++    return baseline_status(db)
++
++
++@router.post("/baseline/ready")
++def post_baseline_ready(
++    body: BaselineReadyBody,
++    request: Request,
++    db: Session = Depends(get_db),
++    user: User = Depends(require_user),
++    settings: Settings = Depends(get_settings),
++):
++    """Explicit Michele action — marks behavioural baseline ready (Z5 exit)."""
++    check_csrf(request, settings)
++    out = mark_baseline_ready(db, user_id=user.id, reason=body.reason)
++    db.commit()
++    return {"ok": True, **out}
++
++
++@router.post("/ack")
++def post_ack(
++    body: AckBody,
++    request: Request,
++    db: Session = Depends(get_db),
++    user: User = Depends(require_user),
++    settings: Settings = Depends(get_settings),
++):
++    check_csrf(request, settings)
++    row = acknowledge_behavior_signal(
++        db,
++        uid=body.uid,
++        action=body.action,
++        reason=body.reason,
++        user_id=user.id,
++    )
++    db.commit()
++    return {"ok": True, "uid": row.uid, "status": row.status, "kind": row.kind}
+=== NEW services/behaviour.py ===
+diff --git a/observatory/api/app/services/behaviour.py b/observatory/api/app/services/behaviour.py
+new file mode 100644
+index 0000000..194eb0a
+--- /dev/null
++++ b/observatory/api/app/services/behaviour.py
+@@ -0,0 +1,752 @@
++"""O11 — Zeek behaviour evidence: ingest, freshness, character-change, Oggi cards.
++
++F-7: write evidence, derive state. No invented numeric thresholds for character
++change (structural set comparison only). Baseline starts in costruzione until
++intentional observation depth is declared sufficient (A4 / Z5).
++"""
++
++from __future__ import annotations
++
++import hashlib
++import logging
++from datetime import datetime
++from typing import Any
++
++from sqlalchemy import func, select
++from sqlalchemy.orm import Session
++
++from app.facts.ip_association import (
++    associate_ip_at,
++    associate_mac_direct,
++    subject_for_association,
++)
++from app.models import (
++    Asset,
++    Chassis,
++    Interface,
++    Suggestion,
++    ZeekBehaviorEvidence,
++    utcnow,
++)
++from app.services.fdb_defense import FDB_STALE_HOURS
++
++log = logging.getLogger("observatory.behaviour")
++
++# Breaker ceilings — same numeric contract as fact shadow (do not raise).
++MAX_EVIDENCE_ROWS = 20_000
++MAX_GROWTH_PER_DAY = 2_000
++MAX_TABLE_BYTES = 50 * 1024 * 1024
++
++SENSOR_ID = "zeek-span"
++KINDS_FP = frozenset({"ja4", "ja4s", "ja4d", "dhcp_param_list", "dhcp_vendor", "dhcp_hostname"})
++
++# O11 A4: JA4 was never consumed before this wave → baseline in construction.
++# Flip only via explicit admin/Michele action (acknowledge baseline_ready), never auto.
++BASELINE_META_KIND = "_baseline"
++BASELINE_META_DEDUP = "meta|baseline|o11"
++
++
++def _norm_mac(mac: str | None) -> str:
++    return (mac or "").replace("-", ":").strip().upper()
++
++
++def _parse_ts(value: Any) -> datetime | None:
++    if value is None:
++        return None
++    if isinstance(value, datetime):
++        return value.replace(tzinfo=None) if value.tzinfo else value
++    if isinstance(value, (int, float)):
++        return datetime.utcfromtimestamp(float(value))
++    text = str(value).strip()
++    if not text:
++        return None
++    try:
++        return datetime.utcfromtimestamp(float(text))
++    except ValueError:
++        pass
++    try:
++        if text.endswith("Z"):
++            text = text[:-1] + "+00:00"
++        dt = datetime.fromisoformat(text)
++        if dt.tzinfo is not None:
++            from datetime import timezone
++
++            return dt.astimezone(timezone.utc).replace(tzinfo=None)
++        return dt
++    except ValueError:
++        return None
++
++
++def _dedup_key(kind: str, value: str, mac: str, ip: str, association: str) -> str:
++    raw = f"{kind}|{value}|{mac or ip}|{association}"
++    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:64]
++
++
++def evidence_table_stats(db: Session) -> dict[str, Any]:
++    total = db.scalar(select(func.count()).select_from(ZeekBehaviorEvidence)) or 0
++    today_start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
++    today = (
++        db.scalar(
++            select(func.count())
++            .select_from(ZeekBehaviorEvidence)
++            .where(ZeekBehaviorEvidence.first_seen >= today_start)
++        )
++        or 0
++    )
++    # Approximate size via payload lengths (no DB file maintenance).
++    rows = db.scalars(select(ZeekBehaviorEvidence)).all()
++    approx = sum(
++        len((r.dedup_key or ""))
++        + len(r.kind or "")
++        + len(r.value or "")
++        + len(r.src_ip or "")
++        + len(r.src_mac or "")
++        + 64
++        for r in rows
++    )
++    return {
++        "rows_total": int(total),
++        "rows_today": int(today),
++        "approx_bytes": int(approx),
++        "ceilings": {
++            "rows_total": MAX_EVIDENCE_ROWS,
++            "rows_today": MAX_GROWTH_PER_DAY,
++            "bytes": MAX_TABLE_BYTES,
++        },
++    }
++
++
++def evaluate_evidence_breaker(db: Session) -> tuple[bool, str]:
++    st = evidence_table_stats(db)
++    if st["rows_total"] >= MAX_EVIDENCE_ROWS:
++        return True, f"zeek_behavior_evidence rows_total={st['rows_total']} >= {MAX_EVIDENCE_ROWS}"
++    if st["rows_today"] >= MAX_GROWTH_PER_DAY:
++        return True, f"zeek_behavior_evidence rows_today={st['rows_today']} >= {MAX_GROWTH_PER_DAY}"
++    if st["approx_bytes"] >= MAX_TABLE_BYTES:
++        return True, f"zeek_behavior_evidence approx_bytes={st['approx_bytes']} >= {MAX_TABLE_BYTES}"
++    return False, ""
++
++
++def freshness_for_observed_at(observed_at: datetime | None, *, now: datetime | None = None) -> dict[str, Any]:
++    """Reuse FDB_STALE_HOURS window — same vocabulary as O2/O5/O10 (no second vocab)."""
++    now = now or utcnow()
++    if observed_at is None:
++        return {
++            "state": "not_measured",
++            "display": "non misurato",
++            "source": SENSOR_ID,
++            "age_hours": None,
++            "window_hours": FDB_STALE_HOURS,
++        }
++    age_h = max(0.0, (now - observed_at).total_seconds() / 3600.0)
++    if age_h > FDB_STALE_HOURS:
++        return {
++            "state": "stale",
++            "display": "vecchio",
++            "source": SENSOR_ID,
++            "age_hours": round(age_h, 3),
++            "window_hours": FDB_STALE_HOURS,
++            "last_at": observed_at.isoformat() + "Z",
++            "note": f"età {age_h:.1f} h > finestra {FDB_STALE_HOURS} h",
++        }
++    return {
++        "state": "fresh",
++        "display": "fresco",
++        "source": SENSOR_ID,
++        "age_hours": round(age_h, 3),
++        "window_hours": FDB_STALE_HOURS,
++        "last_at": observed_at.isoformat() + "Z",
++    }
++
++
++def ensure_baseline_meta(db: Session, *, started_at: datetime | None = None) -> ZeekBehaviorEvidence:
++    row = db.scalar(
++        select(ZeekBehaviorEvidence).where(ZeekBehaviorEvidence.dedup_key == BASELINE_META_DEDUP)
++    )
++    if row:
++        return row
++    at = started_at or utcnow()
++    row = ZeekBehaviorEvidence(
++        dedup_key=BASELINE_META_DEDUP,
++        kind=BASELINE_META_KIND,
++        value="in_costruzione",
++        association="mac_direct",
++        sensor_id=SENSOR_ID,
++        first_seen=at,
++        last_seen=at,
++        observation_count=1,
++        evidence={
++            "baseline_status": "in_costruzione",
++            "baseline_ready": False,
++            "reason": (
++                "A4: JA4/JA4D non erano consumati prima di O11; "
++                "profondità storica intenzionale insufficiente a distinguere "
++                "«nuovo» da «mai osservato perché non guardavamo»"
++            ),
++            "o11_marker": "obs-o11-baseline",
++        },
++    )
++    db.add(row)
++    db.flush()
++    return row
++
++
++def baseline_status(db: Session) -> dict[str, Any]:
++    row = ensure_baseline_meta(db)
++    ev = dict(row.evidence or {})
++    ready = bool(ev.get("baseline_ready")) and (row.value == "ready")
++    return {
++        "status": "ready" if ready else "in_costruzione",
++        "baseline_ready": ready,
++        "baseline_started_at": (row.first_seen.isoformat() + "Z") if row.first_seen else None,
++        "reason": ev.get("reason") or "",
++        "o11_marker": "obs-o11-baseline",
++    }
++
++
++def mark_baseline_ready(db: Session, *, user_id: int | None = None, reason: str = "") -> dict[str, Any]:
++    """Explicit Michele action — never auto. Writes evidence meta only."""
++    row = ensure_baseline_meta(db)
++    ev = dict(row.evidence or {})
++    ev["baseline_ready"] = True
++    ev["baseline_status"] = "ready"
++    ev["marked_ready_by"] = user_id
++    ev["marked_ready_reason"] = reason or "azione esplicita"
++    ev["marked_ready_at"] = utcnow().isoformat() + "Z"
++    row.value = "ready"
++    row.evidence = ev
++    row.last_seen = utcnow()
++    db.flush()
++    return baseline_status(db)
++
++
++def upsert_evidence_item(db: Session, item: dict[str, Any]) -> str:
++    """Upsert one fingerprint observation. Returns action created|refreshed|skipped_*."""
++    kind = str(item.get("kind") or "").strip()
++    value = str(item.get("value") or "").strip()
++    if kind not in KINDS_FP or not value or value in ("-", "null"):
++        return "skipped_invalid"
++
++    open_, reason = evaluate_evidence_breaker(db)
++    if open_:
++        log.error("zeek_behavior breaker open: %s", reason)
++        return "skipped_breaker"
++
++    observed_at = _parse_ts(item.get("observed_at")) or utcnow()
++    src_ip = str(item.get("src_ip") or "").strip()
++    src_mac = _norm_mac(item.get("src_mac"))
++
++    if src_mac:
++        assoc = associate_mac_direct(db, src_mac)
++        if src_ip:
++            # Keep IP for display; association remains mac_direct.
++            pass
++    elif src_ip:
++        assoc = associate_ip_at(db, src_ip, observed_at)
++        src_mac = assoc.mac or src_mac
++    else:
++        return "skipped_no_identity"
++
++    subject_type, subject_id, asset_id = subject_for_association(assoc)
++    association = assoc.status
++    if association == "unresolved" and not src_mac and not assoc.asset_id:
++        # Still store unresolved IP-only evidence (I2).
++        pass
++
++    key = _dedup_key(kind, value, src_mac, src_ip, association)
++    existing = db.scalar(
++        select(ZeekBehaviorEvidence).where(ZeekBehaviorEvidence.dedup_key == key)
++    )
++    payload = {
++        "assoc_reason": assoc.reason,
++        "fact_id": assoc.fact_id,
++        "fact_state": assoc.fact_state,
++        "ja4s": item.get("ja4s"),
++        "server_name": item.get("server_name"),
++        "uid": item.get("uid"),
++        "o11_marker": "obs-o11-evidence",
++    }
++    if existing:
++        existing.last_seen = max(existing.last_seen or observed_at, observed_at)
++        existing.observation_count = int(existing.observation_count or 0) + 1
++        if subject_type and not existing.subject_type:
++            existing.subject_type = subject_type
++            existing.subject_id = subject_id
++        if asset_id and not existing.asset_id:
++            existing.asset_id = asset_id
++        if src_mac and not existing.src_mac:
++            existing.src_mac = src_mac
++        ev = dict(existing.evidence or {})
++        ev.update({k: v for k, v in payload.items() if v is not None})
++        existing.evidence = ev
++        db.flush()
++        return "refreshed"
++
++    row = ZeekBehaviorEvidence(
++        dedup_key=key,
++        kind=kind,
++        value=value[:255],
++        src_ip=src_ip,
++        src_mac=src_mac,
++        association=association,
++        subject_type=subject_type or "",
++        subject_id=subject_id,
++        asset_id=asset_id,
++        sensor_id=SENSOR_ID,
++        first_seen=observed_at,
++        last_seen=observed_at,
++        observation_count=1,
++        evidence=payload,
++    )
++    db.add(row)
++    db.flush()
++    return "created"
++
++
++def ingest_zeek_behavior_batch(db: Session, items: list[dict[str, Any]]) -> dict[str, Any]:
++    ensure_baseline_meta(db)
++    stats = {
++        "received": len(items),
++        "created": 0,
++        "refreshed": 0,
++        "skipped_invalid": 0,
++        "skipped_breaker": 0,
++        "skipped_no_identity": 0,
++    }
++    for raw in items:
++        if not isinstance(raw, dict):
++            stats["skipped_invalid"] += 1
++            continue
++        action = upsert_evidence_item(db, raw)
++        if action in stats:
++            stats[action] += 1
++        elif action.startswith("skipped_"):
++            stats[action] = stats.get(action, 0) + 1
++    open_, reason = evaluate_evidence_breaker(db)
++    st = evidence_table_stats(db)
++    return {
++        **stats,
++        "breaker_open": open_,
++        "breaker_reason": reason,
++        "table": st,
++        "baseline": baseline_status(db),
++        "o11_marker": "obs-o11-ingest",
++    }
++
++
++def _member_asset_ids(db: Session, asset: Asset) -> list[int]:
++    if asset.chassis_id:
++        members = db.scalars(
++            select(Asset.id).where(Asset.chassis_id == int(asset.chassis_id))
++        ).all()
++        return [int(x) for x in members]
++    return [int(asset.id)]
++
++
++def _evidence_for_asset(db: Session, asset: Asset) -> list[ZeekBehaviorEvidence]:
++    ids = _member_asset_ids(db, asset)
++    chassis_id = int(asset.chassis_id) if asset.chassis_id else None
++    clauses = [ZeekBehaviorEvidence.asset_id.in_(ids)]
++    if chassis_id is not None:
++        clauses.append(
++            (ZeekBehaviorEvidence.subject_type == "chassis")
++            & (ZeekBehaviorEvidence.subject_id == chassis_id)
++        )
++    # Also by MAC of all member interfaces
++    macs = [
++        _norm_mac(i.mac)
++        for i in db.scalars(select(Interface).where(Interface.asset_id.in_(ids))).all()
++        if i.mac
++    ]
++    if macs:
++        clauses.append(ZeekBehaviorEvidence.src_mac.in_(macs))
++
++    from sqlalchemy import or_
++
++    rows = list(
++        db.scalars(
++            select(ZeekBehaviorEvidence)
++            .where(
++                ZeekBehaviorEvidence.kind != BASELINE_META_KIND,
++                or_(*clauses) if clauses else ZeekBehaviorEvidence.id < 0,
++            )
++            .order_by(ZeekBehaviorEvidence.last_seen.desc())
++        ).all()
++    )
++    # Dedupe by id
++    seen: set[int] = set()
++    out: list[ZeekBehaviorEvidence] = []
++    for r in rows:
++        if r.id in seen:
++            continue
++        seen.add(r.id)
++        out.append(r)
++    return out
++
++
++def build_does_block(db: Session, asset: Asset, *, now: datetime | None = None) -> dict[str, Any]:
++    """Dossier «Cosa fa» — facts only (I1)."""
++    now = now or utcnow()
++    rows = _evidence_for_asset(db, asset)
++    fingerprints: list[dict[str, Any]] = []
++    for r in rows:
++        fingerprints.append(
++            {
++                "kind": r.kind,
++                "value": r.value,
++                "src_ip": r.src_ip or None,
++                "src_mac": r.src_mac or None,
++                "association": r.association,
++                "association_uncertain": r.association == "uncertain",
++                "first_seen": r.first_seen.isoformat() + "Z" if r.first_seen else None,
++                "last_seen": r.last_seen.isoformat() + "Z" if r.last_seen else None,
++                "observation_count": int(r.observation_count or 0),
++                "freshness": freshness_for_observed_at(r.last_seen, now=now),
++                "source": r.sensor_id or SENSOR_ID,
++                "o11_marker": "obs-o11-does",
++            }
++        )
++    bl = baseline_status(db)
++    return {
++        "title": "Cosa fa",
++        "habits_href": f"/api/assets/{asset.id}/habits",
++        "note": (
++            "Evidenze Zeek (JA4/JA4D/DHCP) + abitudini SPAN. "
++            "Associazione IP↔MAC non corrente → marcata incerta (I2)."
++        ),
++        "evidence_available": bool(fingerprints),
++        "empty_reason": None
++        if fingerprints
++        else "nessuna evidenza disponibile (I2)",
++        "fingerprints": fingerprints,
++        "baseline": bl,
++        "o11_marker": "obs-o11-does",
++    }
++
++
++def build_identity_inference(
++    db: Session,
++    asset: Asset,
++    *,
++    ai_enabled: bool,
++    ai_configured: bool,
++    now: datetime | None = None,
++) -> dict[str, Any]:
++    """Separate INFERENZA IA block — never writes facts. Degrades if no engine (I2)."""
++    now = now or utcnow()
++    does = build_does_block(db, asset, now=now)
++    fps = does.get("fingerprints") or []
++    evidence_refs = [
++        {"kind": f["kind"], "value": f["value"], "association": f["association"]}
++        for f in fps
++        if f.get("kind") in ("ja4", "ja4d", "dhcp_param_list", "dhcp_vendor", "dhcp_hostname")
++    ]
++
++    base = {
++        "title": "INFERENZA IA",
++        "label": "INFERENZA IA",
++        "disclaimer": (
++            "Output inferito — non certezza; nessuna azione automatica; "
++            "nessuna scrittura di fatti. Accettare una proposta = azione esplicita "
++            "di Michele con provenienza manuale."
++        ),
++        "evidence": evidence_refs,
++        "o11_marker": "obs-o11-inferenza",
++    }
++
++    if not evidence_refs:
++        return {
++            **base,
++            "proposal_available": False,
++            "proposal": None,
++            "status": "nessuna evidenza disponibile",
++            "confidence": None,
++            "limits": ["Nessuna evidenza Zeek da cui derivare una proposta (I2)."],
++            "verification_action": "Verificare presenza traffico SPAN / DHCP per questo MAC.",
++            "llm_slot": {
++                "enabled": False,
++                "reason": "nessuna evidenza; slot /ai Groq non cablato",
++            },
++        }
++
++    if not ai_enabled or not ai_configured:
++        return {
++            **base,
++            "proposal_available": False,
++            "proposal": None,
++            "status": "proposta non disponibile: nessun motore di inferenza configurato",
++            "confidence": None,
++            "limits": [
++                "AI_ENABLED=false oppure chiave/motore assente.",
++                "Percorso /ai (Groq) non cablato in produzione (STOP costi).",
++                "Evidenze mostrate sopra restano fatti osservati.",
++            ],
++            "verification_action": (
++                "Aprire il Dossier, confrontare JA4/JA4D/DHCP con inventario noto, "
++                "assegnare nome manuale se riconosciuto."
++            ),
++            "llm_slot": {
++                "enabled": False,
++                "reason": "nessun motore di inferenza configurato (I2 degradazione sicura)",
++            },
++        }
++
++    # Engine present but still no paid path — refuse to invent live output.
++    return {
++        **base,
++        "proposal_available": False,
++        "proposal": None,
++        "status": "proposta non disponibile: motore presente ma percorso /ai non cablato",
++        "confidence": None,
++        "limits": [
++            "Motore locale dichiarato ma O11 non invoca LLM (vietato simulare output).",
++            "Accettazione futura: solo dopo azione esplicita + provenienza manuale.",
++        ],
++        "verification_action": "Confermare manualmente l'identità dal Dossier (azione reversibile).",
++        "llm_slot": {"enabled": False, "reason": "/ai non cablato — nessuna chiamata"},
++    }
++
++
++def structural_character_changes(
++    db: Session, *, now: datetime | None = None
++) -> list[dict[str, Any]]:
++    """New JA4/JA4D/dhcp FP not in prior set for subject. Gated by baseline_ready."""
++    now = now or utcnow()
++    bl = baseline_status(db)
++    if not bl["baseline_ready"]:
++        return []
++
++    rows = list(
++        db.scalars(
++            select(ZeekBehaviorEvidence).where(
++                ZeekBehaviorEvidence.kind.in_(["ja4", "ja4d", "dhcp_param_list", "dhcp_vendor"])
++            )
++        ).all()
++    )
++    by_subj: dict[tuple[str, int], list[ZeekBehaviorEvidence]] = {}
++    for r in rows:
++        if not r.subject_type or r.subject_id is None:
++            continue
++        by_subj.setdefault((r.subject_type, int(r.subject_id)), []).append(r)
++
++    cards: list[dict[str, Any]] = []
++    for (stype, sid), group in by_subj.items():
++        # Prior set = values whose first_seen is strictly before the newest first_seen of another value
++        by_kind_value: dict[tuple[str, str], ZeekBehaviorEvidence] = {}
++        for r in group:
++            key = (r.kind, r.value)
++            prev = by_kind_value.get(key)
++            if prev is None or (r.first_seen and prev.first_seen and r.first_seen < prev.first_seen):
++                by_kind_value[key] = r
++
++        # Character change: a fingerprint whose first_seen is after at least one other
++        # distinct fingerprint of same kind already existed for the subject.
++        for (kind, value), r in by_kind_value.items():
++            peers = [
++                p
++                for (k, v), p in by_kind_value.items()
++                if k == kind and v != value and p.first_seen and r.first_seen and p.first_seen < r.first_seen
++            ]
++            if not peers:
++                continue
++            # Also require the new FP last_seen to be fresh enough to surface
++            fr = freshness_for_observed_at(r.last_seen, now=now)
++            if fr["state"] == "stale":
++                continue
++            asset_id = r.asset_id
++            label = f"{stype}:{sid}"
++            if stype == "asset" and asset_id:
++                a = db.get(Asset, asset_id)
++                label = (a.name if a and a.name else None) or f"asset {asset_id}"
++            elif stype == "chassis":
++                ch = db.get(Chassis, sid)
++                label = (ch.label if ch and ch.label else None) or f"chassis {sid}"
++            cards.append(
++                {
++                    "uid": f"beh:cc:{stype}:{sid}:{kind}:{hashlib.sha256(value.encode()).hexdigest()[:12]}",
++                    "signal": "B-C",
++                    "kind": "behavior_character_change",
++                    "title": "dispositivo cambiato carattere",
++                    "subject_type": stype,
++                    "subject_id": sid,
++                    "asset_id": asset_id,
++                    "label": label,
++                    "new_fingerprint": {"kind": kind, "value": value},
++                    "prior_fingerprints": [
++                        {"kind": kind, "value": p.value} for p in peers[:8]
++                    ],
++                    "association": r.association,
++                    "freshness": fr,
++                    "defense_priority_id": "conflitto_identita",
++                    "o11_marker": "obs-o11-character",
++                    "actions": [
++                        {
++                            "id": "open_dossier",
++                            "label": "Apri Dossier",
++                            "href": f"/dossier/{asset_id}" if asset_id else "/dossier",
++                            "reversible": True,
++                        },
++                        {
++                            "id": "acknowledge",
++                            "label": "Riconosci / archivia segnale",
++                            "requires_confirm": True,
++                            "reversible": True,
++                        },
++                    ],
++                }
++            )
++    return cards
++
++
++def unknown_with_evidence_cards(db: Session, *, now: datetime | None = None) -> list[dict[str, Any]]:
++    """Unrecognized or solo-L2 with enough Zeek evidence for an identity proposal slot.
++
++    B3: one card per chassis (or singleton asset), never N cards for multi-NIC.
++    """
++    now = now or utcnow()
++    assets = list(db.scalars(select(Asset)).all())
++    cards: list[dict[str, Any]] = []
++    seen_subjects: set[tuple[str, int]] = set()
++    for asset in assets:
++        status = (asset.status or "").lower()
++        name = (asset.name or "").strip()
++        solo_l2 = True
++        for iface in asset.interfaces or []:
++            for addr in iface.addresses or []:
++                if addr.is_current and addr.ip:
++                    solo_l2 = False
++                    break
++        unrecognized = status in {"nuovo", "sconosciuto", "unknown"} or not name
++        if not (unrecognized or solo_l2):
++            continue
++        rows = _evidence_for_asset(db, asset)
++        useful = [
++            r
++            for r in rows
++            if r.kind in ("ja4", "ja4d", "dhcp_param_list", "dhcp_vendor", "dhcp_hostname")
++        ]
++        if len(useful) < 1:
++            continue
++        if asset.chassis_id:
++            subj = ("chassis", int(asset.chassis_id))
++        else:
++            subj = ("asset", int(asset.id))
++        if subj in seen_subjects:
++            continue
++        seen_subjects.add(subj)
++        cards.append(
++            {
++                "uid": f"beh:id:{subj[0]}:{subj[1]}",
++                "signal": "B-I",
++                "kind": "behavior_unknown_with_evidence",
++                "title": "ignoto con evidenze sufficienti per una proposta di identità",
++                "subject_type": subj[0],
++                "subject_id": subj[1],
++                "asset_id": int(asset.id),
++                "mac": next(
++                    (_norm_mac(i.mac) for i in (asset.interfaces or []) if i.mac),
++                    None,
++                ),
++                "solo_l2": solo_l2,
++                "unrecognized": unrecognized,
++                "evidence_kinds": sorted({r.kind for r in useful}),
++                "evidence_count": len(useful),
++                "defense_priority_id": "non_riconosciuto_o_solo_l2",
++                "o11_marker": "obs-o11-unknown-evidence",
++                "actions": [
++                    {
++                        "id": "open_dossier",
++                        "label": "Apri Dossier · Cosa fa / INFERENZA IA",
++                        "href": f"/dossier/{asset.id}",
++                        "reversible": True,
++                    },
++                    {
++                        "id": "assign_name",
++                        "label": "Assegna nome manuale",
++                        "requires_confirm": True,
++                        "reversible": True,
++                    },
++                    {
++                        "id": "acknowledge",
++                        "label": "Archivia segnale",
++                        "requires_confirm": True,
++                        "reversible": True,
++                    },
++                ],
++            }
++        )
++    return cards
++
++
++def build_behavior_signals(db: Session, *, now: datetime | None = None) -> dict[str, Any]:
++    now = now or utcnow()
++    ensure_baseline_meta(db)
++    bl = baseline_status(db)
++    acked = {
++        s.uid
++        for s in db.scalars(
++            select(Suggestion).where(
++                Suggestion.source == "behavior",
++                Suggestion.status.in_(["approved", "rejected"]),
++            )
++        ).all()
++    }
++    cc = [c for c in structural_character_changes(db, now=now) if c["uid"] not in acked]
++    unk = [c for c in unknown_with_evidence_cards(db, now=now) if c["uid"] not in acked]
++    open_, reason = evaluate_evidence_breaker(db)
++    return {
++        "cards": cc + unk,
++        "character_change_cards": cc,
++        "unknown_evidence_cards": unk,
++        "baseline": bl,
++        "breaker_open": open_,
++        "breaker_reason": reason,
++        "table": evidence_table_stats(db),
++        "o11_marker": "obs-o11-signals",
++        "note": (
++            None
++            if bl["baseline_ready"]
++            else (
++                f"Baseline comportamento in costruzione dal {bl['baseline_started_at']}: "
++                "nessun segnale «cambiato carattere» emesso (Z5/A4)."
++            )
++        ),
++    }
++
++
++def acknowledge_behavior_signal(
++    db: Session,
++    *,
++    uid: str,
++    action: str,
++    reason: str = "",
++    user_id: int | None = None,
++) -> Suggestion:
++    status = "approved" if action in {"acknowledge", "riconosci", "archive"} else "rejected"
++    existing = db.scalar(select(Suggestion).where(Suggestion.uid == uid))
++    kind = "behavior_character_change" if uid.startswith("beh:cc:") else "behavior_unknown_with_evidence"
++    if existing:
++        existing.status = status
++        existing.decided_at = utcnow()
++        existing.decided_by = user_id
++        existing.body = reason or existing.body
++        payload = dict(existing.payload or {})
++        payload["action"] = action
++        existing.payload = payload
++        db.flush()
++        return existing
++    s = Suggestion(
++        uid=uid,
++        kind=kind,
++        status=status,
++        title=kind,
++        body=reason or action,
++        payload={"action": action, "reason": reason},
++        source="behavior",
++        confidence=1.0,
++        decided_at=utcnow(),
++        decided_by=user_id,
++    )
++    db.add(s)
++    db.flush()
++    return s
+diff --git a/observatory/api/app/main.py b/observatory/api/app/main.py
+index d79b9d5..725f9ea 100644
+--- a/observatory/api/app/main.py
++++ b/observatory/api/app/main.py
+@@ -15,9 +15,12 @@ from app.routers import (
+     ai_routes,
+     assets,
+     auth_routes,
++    behavior,
+     chassis,
+     dashboard,
+     evolution,
++    fdb_defense,
++    gs308,
+     ingest,
+     monitors,
+     suggestions,
+@@ -130,6 +133,9 @@ def create_app() -> FastAPI:
+     app.include_router(ai_routes.router)
+     app.include_router(ingest.router)
+     app.include_router(evolution.router)
++    app.include_router(fdb_defense.router)
++    app.include_router(behavior.router)
++    app.include_router(gs308.router)
+     app.include_router(system.router)
+     return app
+ 
+diff --git a/observatory/web/src/api.js b/observatory/web/src/api.js
+index 1f0a71d..48d8368 100644
+--- a/observatory/web/src/api.js
++++ b/observatory/web/src/api.js
+@@ -111,6 +111,7 @@ export const api = {
+   asset: (id) => request(`/api/assets/${id}`),
+   assetIdentity: (id, technical = false) =>
+     request(`/api/assets/${id}/identity${technical ? "?technical=1" : ""}`),
++  assetDossier: (id) => request(`/api/assets/${id}/dossier`),
+   assetHabits: (id, days = 7) =>
+     request(`/api/assets/${id}/habits?days=${encodeURIComponent(days)}`),
+   scanAssetOs: (id) => request(`/api/assets/${id}/scan-os`, { method: "POST", body: {} }),
+@@ -130,6 +131,18 @@ export const api = {
+     request(`/api/assets/${id}/adopt-name?source=${encodeURIComponent(source)}`, {
+       method: "POST",
+     }),
++  adoptChassisName: (chassisId, { source = "manual", value, proposalId } = {}) => {
++    const q = new URLSearchParams({ source });
++    if (value) q.set("value", value);
++    if (proposalId != null) q.set("proposal_id", String(proposalId));
++    return request(`/api/chassis/${chassisId}/adopt-name?${q}`, { method: "POST" });
++  },
++  renameChassis: (chassisId, name) =>
++    request(`/api/chassis/${chassisId}/rename`, {
++      method: "POST",
++      body: JSON.stringify({ name }),
++    }),
++  factConflicts: () => request("/api/admin/facts/conflicts"),
+   rejectNameProposal: (id, source, proposalId = null) => {
+     const q = new URLSearchParams({ source: String(source || "") });
+     if (proposalId != null) q.set("proposal_id", String(proposalId));
+@@ -254,4 +267,15 @@ export const api = {
+     request(`/api/snapshots/${snapshotId}/confirm-baseline`, { method: "POST" }),
+   sensors: () => request("/api/sensors"),
+   reliability: () => request("/api/reliability"),
++  fdbDefenseSignals: () => request("/api/fdb-defense/signals"),
++  fdbDefensePlant: () => request("/api/fdb-defense/plant"),
++  fdbDefenseAck: (body) =>
++    request("/api/fdb-defense/ack", { method: "POST", body }),
++  behaviorSignals: () => request("/api/behavior/signals"),
++  behaviorAck: (body) =>
++    request("/api/behavior/ack", { method: "POST", body }),
++  behaviorBaseline: () => request("/api/behavior/baseline"),
++  gs308View: () => request("/api/gs308/view"),
++  gs308Assign: (body) =>
++    request("/api/gs308/assign", { method: "POST", body }),
+ };
+diff --git a/observatory/web/src/views/Oggi.vue b/observatory/web/src/views/Oggi.vue
+index 02c5a44..264809e 100644
+--- a/observatory/web/src/views/Oggi.vue
++++ b/observatory/web/src/views/Oggi.vue
+@@ -1,9 +1,10 @@
+ <script setup>
+-import { computed, onMounted, ref } from "vue";
++import { computed, onMounted, onUnmounted, ref } from "vue";
+ import { useRouter } from "vue-router";
+ import { api } from "../api";
+ import {
+   composeDevices,
++  isLocallyAdministered,
+   isNuovoDaConoscere,
+   sourceLabel,
+ } from "../inventoryDevices";
+@@ -11,7 +12,24 @@ import {
+   buildTriageRows,
+   noiseProposalIds,
+   noiseProposalsMissingIdCount,
++  queueConservationCheck,
+ } from "../triageRules";
++import { buildChassisNameCards } from "../oggiChassis";
++import {
++  DEFENSE_PRIORITY_LEGEND,
++  compareDefensePriority,
++  priorityForChassisCard,
++  priorityForFdbCard,
++  priorityForBehaviorCard,
++  priorityForMove,
++  priorityForNuovo,
++  priorityForTriageRow,
++} from "../oggiPriority";
++import {
++  groupSuppressionsByRule,
++  listStructuralSuppressions,
++  suppressedProposalIdSet,
++} from "../oggiNoise";
+ import {
+   displayCurrentName,
+   displayIp,
+@@ -24,6 +42,8 @@ import {
+   verdictTone,
+ } from "../oggiTriage";
+ import {
++  chassisNameFields,
++  fdbDefenseFields,
+   humanVerificaLabel,
+   moveSuggestionFields,
+   nameProblemFields,
+@@ -35,7 +55,8 @@ import DenseRow from "../components/ui/DenseRow.vue";
+ import StatusBadge from "../components/ui/StatusBadge.vue";
+ import AiInferenceLabel from "../components/AiInferenceLabel.vue";
+ import ViewStateBanner from "../components/ViewStateBanner.vue";
+-import { isAiSource } from "../observatoryUx";
++import { isAiSource, fritzPresenceOutageFromReliability } from "../observatoryUx";
++import FritzOutageBanner from "../components/FritzOutageBanner.vue";
+ 
+ const router = useRouter();
+ const loading = ref(false);
+@@ -44,25 +65,101 @@ const assets = ref([]);
+ const chassisPayload = ref({ chassis: [] });
+ const monitors = ref([]);
+ const moveSuggestions = ref([]);
++const plantSwitches = ref([]);
++const factConflicts = ref([]);
++const fdbDefense = ref({ cards: [], baseline_at_by_port: {}, roles: [] });
++const behaviorSignals = ref({
++  cards: [],
++  baseline: {},
++  note: null,
++  o11_marker: null,
++});
+ const busyKey = ref("");
+ const rumoreExpanded = ref(false);
+ const rumorePreviewOpen = ref(false);
++const suppressedOpen = ref(false);
++const restoredSuppressionIds = ref(new Set());
+ const massBusy = ref(false);
+ /** Esito massa: distinto da error; non azzerato da load(). */
+ const notice = ref("");
++const reliability = ref(null);
++const fritzOutage = computed(() => fritzPresenceOutageFromReliability(reliability.value));
++/** O1: draft rename per chassis_id */
++const renameDraft = ref({});
++const renameOpen = ref({});
++
++const defenseLegend = DEFENSE_PRIORITY_LEGEND;
+ 
+ const devices = computed(() => composeDevices(assets.value, chassisPayload.value));
+ 
+-const triageRows = computed(() =>
++const orphanNameFacts = computed(
++  () => chassisPayload.value?.orphaned_manual_name_facts || [],
++);
++
++const chassisNameCards = computed(() => {
++  const cards = buildChassisNameCards(assets.value || [], chassisPayload.value || {});
++  return cards
++    .map((c) => ({ ...c, defense_priority: priorityForChassisCard(c) }))
++    .sort(compareDefensePriority);
++});
++
++const hiddenProposalIds = computed(() =>
++  suppressedProposalIdSet(assets.value || [], restoredSuppressionIds.value),
++);
++
++const structuralSuppressions = computed(() =>
++  listStructuralSuppressions(assets.value || []).filter(
++    (s) =>
++      s.demote_only ||
++      !restoredSuppressionIds.value.has(Number(s.proposal_id)),
++  ),
++);
++
++const suppressionsByRule = computed(() =>
++  groupSuppressionsByRule(structuralSuppressions.value),
++);
++
++const triageRowsRaw = computed(() =>
+   buildTriageRows(assets.value || [], chassisPayload.value || {}),
+ );
++
++const triageRows = computed(() => {
++  const hidden = hiddenProposalIds.value;
++  const byId = new Map((assets.value || []).map((a) => [Number(a.id), a]));
++  return triageRowsRaw.value
++    .filter((r) => r.proposal_id == null || !hidden.has(Number(r.proposal_id)))
++    .map((r) => {
++      const asset = byId.get(Number(r.asset_id));
++      const macs = r.macs?.length ? r.macs : asset?.macs || [];
++      const ips = r.ips?.length ? r.ips : asset?.ips || [];
++      const solo_l2 = macs.length > 0 && !(ips || []).length;
++      let defense_priority = priorityForTriageRow(r, { solo_l2 });
++      if (solo_l2) {
++        defense_priority = priorityForTriageRow(r, { solo_l2: true });
++      }
++      const laa = (macs || []).some((m) => isLocallyAdministered(m));
++      return {
++        ...r,
++        defense_priority,
++        laa_demoted: laa,
++        laa_reason: laa
++          ? "MAC locally-administered · mai priorità alta (regola mac_randomizzato)"
++          : null,
++      };
++    })
++    .sort(compareDefensePriority);
++});
++
+ const triageGroups = computed(() => groupTriageRows(triageRows.value));
+ const verificaSplit = computed(() => splitVerifica(triageGroups.value.verifica));
+ 
+ /** D10: tutte le pending rumore (anche 2º livello), non solo top di griglia. */
+-const noiseIds = computed(() =>
+-  noiseProposalIds(assets.value || [], chassisPayload.value || {}),
+-);
++const noiseIds = computed(() => {
++  const hidden = hiddenProposalIds.value;
++  return noiseProposalIds(assets.value || [], chassisPayload.value || {}).filter(
++    (id) => !hidden.has(Number(id)),
++  );
++});
+ const rumoreMissingIds = computed(() =>
+   noiseProposalsMissingIdCount(assets.value || [], chassisPayload.value || {}),
+ );
+@@ -75,6 +172,13 @@ const rumoreAssetCount = computed(() => {
+   }
+   return n;
+ });
++
++const conservation = computed(() =>
++  queueConservationCheck(assets.value || [], chassisPayload.value || {}, {
++    hiddenProposalIds: hiddenProposalIds.value,
++  }),
++);
++
+ const newItems = computed(() => {
+   return devices.value
+     .filter((d) => isNuovoDaConoscere(d))
+@@ -87,6 +191,8 @@ const newItems = computed(() => {
+         ? `${d.macs?.[0] || "—"} · visto di recente`
+         : `nessun nome · ${d.vendor || "vendor sconosciuto"}`,
+       age: d.portal_last_seen || d.last_seen || "",
++      defense_priority: priorityForNuovo(),
++      actions: ["dossier"],
+     }));
+ });
+ 
+@@ -111,31 +217,103 @@ const monitorItems = computed(() => {
+     }));
+ });
+ 
+-const moveItems = computed(() =>
+-  (moveSuggestions.value || [])
++const moveItems = computed(() => {
++  const portsById = new Map();
++  for (const sw of plantSwitches.value || []) {
++    for (const p of sw.ports || []) {
++      portsById.set(Number(p.id), { port: p, sw });
++    }
++  }
++  return (moveSuggestions.value || [])
+     .filter((s) => (s.kind || "") === "move" && (s.status || "pending") === "pending")
+-    .map(moveSuggestionFields),
+-);
++    .map((s) => {
++      const payload = s.payload || {};
++      const toId = Number(payload.to_port_id || payload.port_id || 0);
++      const fromId = Number(payload.from_port_id || 0);
++      const hit = portsById.get(toId) || portsById.get(fromId) || null;
++      const fields = moveSuggestionFields(s, {
++        last_fdb_at: hit?.port?.last_fdb_at || payload.last_fdb_at || null,
++        switch_name: hit?.sw?.name || payload.switch_name || null,
++        port_label:
++          hit?.port?.port_path_label ||
++          payload.to_port_label ||
++          payload.from_port_label ||
++          null,
++      });
++      return { ...fields, defense_priority: priorityForMove(fields) };
++    })
++    .sort(compareDefensePriority);
++});
+ 
+ const noisePreview = computed(() =>
+   noiseArchivePreview(assets.value || [], noiseIds.value || []),
+ );
+ 
+ const secondaryQueue = computed(() => {
+-  return [...newItems.value, ...monitorItems.value].sort((a, b) =>
+-    String(b.age).localeCompare(String(a.age)),
+-  );
++  return [...newItems.value, ...monitorItems.value].sort((a, b) => {
++    const dp = compareDefensePriority(a, b);
++    if (dp !== 0) return dp;
++    return String(b.age).localeCompare(String(a.age));
++  });
++});
++
++/** O10 W2: riepilogo collasso — conteggio + priorità max (F-9). */
++const secondaryCollapseMeta = computed(() => {
++  const items = secondaryQueue.value;
++  let best = 99;
++  for (const it of items) {
++    const lv = it?.defense_priority?.level;
++    if (lv != null && lv < best) best = lv;
++  }
++  return {
++    count: items.length,
++    maxPriority: best === 99 ? null : best,
++  };
+ });
+ 
++/** ≤640px: sezioni secondarie chiuse di default (P1 resta aperto). */
++const narrowUi = ref(false);
++let narrowMq = null;
++function syncNarrowUi() {
++  narrowUi.value = Boolean(narrowMq?.matches);
++}
++
++const fdbDefenseCards = computed(() =>
++  (fdbDefense.value?.cards || [])
++    .map((c) => ({ ...c, defense_priority: priorityForFdbCard(c) }))
++    .sort(compareDefensePriority),
++);
++
++const behaviorCards = computed(() =>
++  (behaviorSignals.value?.cards || [])
++    .map((c) => ({ ...c, defense_priority: priorityForBehaviorCard(c) }))
++    .sort(compareDefensePriority),
++);
++
+ const emptyAll = computed(
+   () =>
+     !triageRows.value.length &&
++    !chassisNameCards.value.length &&
+     !newItems.value.length &&
+     !monitorItems.value.length &&
+     !moveItems.value.length &&
+-    !noiseIds.value.length,
++    !noiseIds.value.length &&
++    !factConflicts.value.length &&
++    !fdbDefenseCards.value.length &&
++    !behaviorCards.value.length,
+ );
+ 
++function restoreSuppression(proposalId) {
++  const next = new Set(restoredSuppressionIds.value);
++  next.add(Number(proposalId));
++  restoredSuppressionIds.value = next;
++}
++
++function defensePriorityLabel(p) {
++  if (!p) return "—";
++  return `P${p.level} · ${p.label}`;
++}
++
+ const verificaBlocks = computed(() => [
+   {
+     key: "collide",
+@@ -164,16 +342,26 @@ async function load() {
+   error.value = "";
+   // notice NON azzerato qui (E1): sopravvive al reload post-massa
+   try {
+-    const [a, c, m, s] = await Promise.all([
++    const [a, c, m, s, fc, rel, sw, fdb, beh] = await Promise.all([
+       api.assets({ include_historical: "true", all_proposals: "true" }),
+       api.chassis(),
+       api.monitors(),
+       api.suggestions().catch(() => []),
++      api.factConflicts().catch(() => ({ conflicts: [] })),
++      api.reliability().catch(() => null),
++      api.switches().catch(() => []),
++      api.fdbDefenseSignals().catch(() => ({ cards: [], roles: [] })),
++      api.behaviorSignals().catch(() => ({ cards: [], baseline: {} })),
+     ]);
+     assets.value = a;
+     chassisPayload.value = c;
+     monitors.value = Array.isArray(m) ? m : m?.monitors || [];
+     moveSuggestions.value = Array.isArray(s) ? s : [];
++    factConflicts.value = (fc && fc.conflicts) || [];
++    reliability.value = rel;
++    plantSwitches.value = Array.isArray(sw) ? sw : [];
++    fdbDefense.value = fdb && typeof fdb === "object" ? fdb : { cards: [] };
++    behaviorSignals.value = beh && typeof beh === "object" ? beh : { cards: [] };
+   } catch (e) {
+     error.value = e.message || "Caricamento fallito";
+   } finally {
+@@ -204,10 +392,270 @@ function problemFields(row) {
+   return nameProblemFields(row);
+ }
+ 
++function chassisFields(card) {
++  return chassisNameFields(card);
++}
++
++function fdbFields(card) {
++  return fdbDefenseFields(card);
++}
++
++async function ackFdb(card, action) {
++  const key = `fdb-${card.uid}-${action}`;
++  busyKey.value = key;
++  notice.value = "";
++  try {
++    let reason = "";
++    if (action === "ignore") {
++      reason = window.prompt("Motivo (obbligatorio per Ignora):", "") || "";
++      if (!reason.trim()) {
++        notice.value = "Ignora annullato: motivo assente.";
++        return;
++      }
++    }
++    await api.fdbDefenseAck({
++      uid: card.uid,
++      action,
++      reason,
++      signal_key: card.signal_key || "",
++    });
++    notice.value = `FDB ${card.signal}: ${action}`;
++    await load();
++  } catch (e) {
++    error.value = e.message || "Ack FDB fallito";
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++async function ackBehavior(card, action) {
++  const key = `beh-${card.uid}-${action}`;
++  busyKey.value = key;
++  notice.value = "";
++  try {
++    if (action === "open_dossier" || action === "assign_name") {
++      if (card.asset_id) {
++        router.push({
++          path: `/dossier/${card.asset_id}`,
++          query: { from: "oggi", focus: action === "assign_name" ? "name" : "does" },
++        });
++      } else {
++        router.push({ path: "/dossier", query: { from: "oggi" } });
++      }
++      return;
++    }
++    await api.behaviorAck({ uid: card.uid, action, reason: "" });
++    notice.value = `Comportamento ${card.signal}: ${action}`;
++    await load();
++  } catch (e) {
++    error.value = e.message || "Ack comportamento fallito";
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++function fdbActionClick(card, actionId) {
++  if (actionId === "dossier") {
++    if (card.signal === "P6" && card.device?.asset_id) {
++      router.push({ path: `/dossier/${card.device.asset_id}`, query: { from: "oggi" } });
++      return;
++    }
++    // FDB ≠ identity: open plant for port context; dossier when mac search later.
++    router.push({ path: "/plant", query: { from: "oggi", fdb_mac: card.mac || "" } });
++    return;
++  }
++  if (actionId === "assign") {
++    router.push({
++      path: "/gs308",
++      query: { from: "oggi", mac: card.mac || "", refresh: String(Date.now()) },
++    });
++    return;
++  }
++  if (actionId === "open_plant") {
++    router.push({ path: "/plant", query: { from: "oggi", switch: card.switch_code || "" } });
++    return;
++  }
++  return ackFdb(card, actionId);
++}
++
++function chassisDisplayName(card) {
++  if (card?.display_name == null || String(card.display_name).trim() === "") {
++    return "nome non noto";
++  }
++  return String(card.display_name).trim();
++}
++
++function chassisProvenanceLabel(card) {
++  if (card.name_kind === "absent") return "assenza dichiarata";
++  if (card.name_kind === "inference") {
++    const src = card.name_source || "sconosciuta";
++    const conf =
++      card.name_confidence != null
++        ? ` · ${formatConfidencePct(card.name_confidence)}`
++        : "";
++    return `inferenza ${src}${conf}`;
++  }
++  if (card.name_kind === "legacy_manual") {
++    return "manuale, registrato sull'interfaccia — non ancora fatto d'apparato";
++  }
++  if (card.name_kind === "fact") {
++    if (card.held_name_is_manual || card.name_source === "manual") {
++      return "fatto manuale (apparato)";
++    }
++    return `fatto ${card.name_source || "?"} (apparato)`;
++  }
++  return `provenienza ${card.name_source || "?"}`;
++}
++
++function openRename(card) {
++  renameOpen.value = { ...renameOpen.value, [card.chassis_id]: true };
++  renameDraft.value = {
++    ...renameDraft.value,
++    [card.chassis_id]: card.display_name || "",
++  };
++}
++
++async function submitChassisRename(card) {
++  const cid = card.chassis_id;
++  const name = String(renameDraft.value[cid] || "").trim();
++  if (!name) {
++    error.value = "Serve un nome non vuoto.";
++    return;
++  }
++  if (!confirmChassisNameWrite(name)) return;
++  const key = card.key;
++  busyKey.value = key;
++  error.value = "";
++  notice.value = "";
++  try {
++    // O1.2: always chassis subject — never member adopt.
++    await api.renameChassis(cid, name);
++    renameOpen.value = { ...renameOpen.value, [cid]: false };
++    await load();
++  } catch (e) {
++    error.value = friendlyChassisError(e);
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++async function adoptChassisProposal(card) {
++  if (!card.chassis_id || !card.proposed_name) return;
++  if (!confirmChassisNameWrite(card.proposed_name)) return;
++  const key = card.key;
++  busyKey.value = key;
++  error.value = "";
++  notice.value = "";
++  try {
++    await api.adoptChassisName(card.chassis_id, {
++      source: card.proposed_source || "manual",
++      value: card.proposed_name,
++      proposalId: card.proposal_id,
++    });
++    await load();
++  } catch (e) {
++    error.value = friendlyChassisError(e);
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++async function confirmInferenceAsManual(card) {
++  if (!card.chassis_id || !card.display_name) return;
++  if (!confirmChassisNameWrite(card.display_name)) return;
++  const key = card.key;
++  busyKey.value = key;
++  error.value = "";
++  notice.value = "";
++  try {
++    await api.adoptChassisName(card.chassis_id, {
++      source: "manual",
++      value: card.display_name,
++    });
++    await load();
++  } catch (e) {
++    error.value = friendlyChassisError(e);
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++/**
++ * O9 X3 — avviso pre-scrittura fatto a soggetto chassis.
++ * DEBT-CHASSIS-SUBJECT-ID-CHURN: l'id chassis non è stabile al ri-raggruppamento;
++ * non disabilita l'azione e non tocca FA 251.
++ */
++function confirmChassisNameWrite(value) {
++  const name = String(value || "").trim() || "(nome)";
++  return window.confirm(
++    `Confermi «${name}» come nome d'apparato?\n\n` +
++      "Nota: dopo un ri-raggruppamento automatico delle interfacce potrebbe " +
++      "servire riconfermare il nome (l'id chassis non è ancora stabile — " +
++      "DEBT-CHASSIS-SUBJECT-ID-CHURN).",
++  );
++}
++
++async function keepManualRejectProposal(card) {
++  if (!card.proposal_asset_id || !card.proposed_source) {
++    error.value = "Proposta non archiviabile: manca l'id membro.";
++    return;
++  }
++  const key = card.key;
++  busyKey.value = key;
++  error.value = "";
++  notice.value = "";
++  try {
++    await api.rejectNameProposal(
++      card.proposal_asset_id,
++      card.proposed_source,
++      card.proposal_id,
++    );
++    await load();
++  } catch (e) {
++    error.value = friendlyChassisError(e);
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++/** O1.2: never surface raw 409 chassis_subject_required to the user. */
++function friendlyChassisError(e) {
++  const msg = e?.message || String(e);
++  if (/chassis_subject_required/i.test(msg)) {
++    return "Adozione sul membro non consentita: usa Correggi/Adotta sulla card apparato.";
++  }
++  return msg;
++}
++
+ async function adoptRow(row) {
+-  if (row.chassis_member) {
++  // W4b.2.9 / O1.2: if chassis-scoped, always call chassis API — never member.
++  const chassisId = row.chassis_id;
++  const needsChassis =
++    row.chassis_member ||
++    row.actionable_reason === "chassis_multi_nic_adopt_blocked" ||
++    (chassisId && row.verdict === "chassis");
++  if (needsChassis && chassisId && row.proposed_name) {
++    const key = row.key;
++    busyKey.value = key;
++    error.value = "";
++    notice.value = "";
++    try {
++      await api.adoptChassisName(chassisId, {
++        source: row.source || "manual",
++        value: row.proposed_name,
++        proposalId: row.proposal_id,
++      });
++      await load();
++    } catch (e) {
++      error.value = friendlyChassisError(e);
++    } finally {
++      busyKey.value = "";
++    }
++    return;
++  }
++  if (row.actionable === false || row.verdict === "unresolvable") {
+     error.value =
+-      "Adozione bloccata: membro di chassis multi-NIC. Serve rename a livello chassis.";
++      "Proposta non risolvibile: nessuna azione disponibile su questa card.";
+     return;
+   }
+   const key = row.key;
+@@ -218,12 +666,35 @@ async function adoptRow(row) {
+     await api.adoptName(row.asset_id, row.source);
+     await load();
+   } catch (e) {
+-    error.value = e.message || String(e);
++    error.value = friendlyChassisError(e);
+   } finally {
+     busyKey.value = "";
+   }
+ }
+ 
++function showAdoptButton(row) {
++  if (row.actionable === false || row.verdict === "unresolvable") {
++    return (
++      row.actionable_reason === "chassis_multi_nic_adopt_blocked" &&
++      !!row.chassis_id &&
++      !!row.proposed_name
++    );
++  }
++  // O1: chassis_member rows should not appear; if they do, still allow chassis adopt.
++  if (row.chassis_member) return !!row.chassis_id && !!row.proposed_name;
++  return true;
++}
++
++function adoptButtonLabel(row) {
++  if (
++    row.chassis_member ||
++    row.actionable_reason === "chassis_multi_nic_adopt_blocked"
++  ) {
++    return "adotta (apparato)";
++  }
++  return "adotta";
++}
++
+ async function rejectRow(row) {
+   const key = row.key;
+   busyKey.value = key;
+@@ -329,11 +800,26 @@ function presenceLabel(state) {
+   if (s === "present") return "presente";
+   if (s === "recent") return "recente";
+   if (s === "fritz_only") return "solo Fritz";
+-  if (s === "stale") return "non visto di recente";
++  if (s === "stale_unlocated" || s === "presence_source_outage" || s === "source_outage") {
++    return "copertura sorgente non disponibile";
++  }
++  if (s === "stale") {
++    return fritzOutage.value?.active
++      ? "copertura sorgente non disponibile"
++      : "non visto di recente";
++  }
+   return s;
+ }
+ 
+-onMounted(load);
++onMounted(() => {
++  narrowMq = window.matchMedia("(max-width: 640px)");
++  syncNarrowUi();
++  narrowMq.addEventListener("change", syncNarrowUi);
++  load();
++});
++onUnmounted(() => {
++  narrowMq?.removeEventListener("change", syncNarrowUi);
++});
+ </script>
+ 
+ <template>
+@@ -342,13 +828,302 @@ onMounted(load);
+       title="Oggi"
+       help="Coda unica di interventi: nomi, chassis multi-NIC, porte da confermare, device nuovi e monitor. Priorità e cause in italiano."
+     />
++    <FritzOutageBanner
++      :active="fritzOutage.active"
++      :detail="fritzOutage.detail"
++    />
+     <ViewStateBanner v-if="error" kind="error" :message="error" />
+     <ViewStateBanner v-else-if="notice && (notice.includes('saltate') || notice.includes('non trovate'))" kind="partial" :message="notice" />
+     <p v-else-if="notice" class="oggi-notice" role="status">{{ notice }}</p>
+     <ViewStateBanner v-if="loading" kind="loading" />
+     <template v-if="!loading">
++      <details class="oggi-collapse" :open="!narrowUi" data-testid="oggi-legend-collapse">
++        <summary class="oggi-collapse-sum">
++          Priorità P1–P6 · legenda
++          <span class="oggi-muted-inline">6 livelli · P1 resta in coda aperta</span>
++        </summary>
++        <section class="oggi-legend" aria-label="Legenda priorità difensiva">
++          <h2 class="oggi-h2">Priorità per conseguenza difensiva</h2>
++          <ol class="oggi-legend-list">
++            <li v-for="L in defenseLegend" :key="L.id">
++              <strong>P{{ L.level }}</strong> — {{ L.label }}
++            </li>
++          </ol>
++          <p class="oggi-muted-inline">
++            Ogni riga mostra la regola che ha prodotto la posizione. Nessun ordinamento magico.
++          </p>
++        </section>
++      </details>
++      <nav class="oggi-quick" aria-label="Domande rapide da Oggi">
++        <p class="oggi-quick-title">Domande rapide (≤3 passi)</p>
++        <ul class="oggi-quick-list">
++          <li>
++            <a href="#oggi-fdb">Non riconosciuto / solo-L2 adesso?</a>
++            <span class="oggi-muted-inline">→ FDB P1 / Nuovi</span>
++          </li>
++          <li>
++            <router-link to="/plant">MAC dove è attaccato?</router-link>
++            <span class="oggi-muted-inline">→ Impianto (cerca MAC)</span>
++          </li>
++          <li>
++            <a href="#oggi-secondary">Già visto o nuovo?</a>
++            <span class="oggi-muted-inline">→ coda secondaria Nuovi</span>
++          </li>
++          <li>
++            <a href="#oggi-fdb">Sorgente cieca?</a>
++            <span class="oggi-muted-inline">→ FDB P4 / S-D</span>
++          </li>
++          <li>
++            <router-link to="/gs308">Dietro il GS308EP?</router-link>
++            <span class="oggi-muted-inline">→ vista punto cieco</span>
++          </li>
++        </ul>
++      </nav>
++      <div
++        v-if="orphanNameFacts.length"
++        class="oggi-orphan"
++        data-testid="o8-orphan-name-facts"
++        role="status"
++      >
++        <strong>Fatto nome chassis orfano (non ri-puntato)</strong>
++        <ul>
++          <li v-for="o in orphanNameFacts" :key="'orf-' + o.id">
++            FA {{ o.id }} · {{ o.fact_key }}={{ o.value_norm }} · subject chassis
++            {{ o.subject_id }} (inesistente) · {{ o.source }}/{{ o.authority }} ·
++            {{ o.state }}. Non usato sul chassis corrente.
++            <code>{{ o.debt }}</code>
++          </li>
++        </ul>
++        <p class="oggi-muted-inline">{{ chassisPayload.orphan_policy }}</p>
++      </div>
++      <div
++        v-if="conservation.missing.length || conservation.duplicated.length"
++        class="oggi-discarded"
++        role="alert"
++      >
++        Conservazione coda: missing=[{{ conservation.missing.join(", ") }}]
++        duplicated=[{{ conservation.duplicated.join(", ") }}]
++      </div>
++      <div
++        v-if="fdbDefense.discarded_moves && fdbDefense.discarded_moves.count"
++        class="oggi-discarded"
++        data-testid="o4-discarded-moves"
++      >
++        <strong>{{ fdbDefense.discarded_moves.count }} eventi mac_move scartati</strong>
++        — {{ fdbDefense.discarded_moves.note }}
++        (<code>{{ fdbDefense.discarded_moves.debt }}</code>). Non cancellati.
++      </div>
+       <ViewStateBanner v-if="emptyAll && !error" kind="empty" message="Niente in coda. La rete non richiede interventi adesso." />
+       <template v-if="!emptyAll">
++        <!-- W4b.2.6: R-H conflict review (no auto-rename) -->
++        <section v-if="factConflicts.length" class="oggi-section">
++          <div class="oggi-section-head">
++            <h2 class="oggi-h2">Conflitti da verificare</h2>
++            <span class="oggi-counts">{{ factConflicts.length }} · R-H</span>
++          </div>
++          <div
++            v-for="c in factConflicts"
++            :key="'cf-' + c.id"
++            class="oggi-grid-row oggi-problem"
++          >
++            <DenseRow metric-width="0" value-width="auto">
++              <div class="oggi-grid-main">
++                <div class="oggi-names">
++                  <span class="oggi-prop">{{ c.incumbent_value || "?" }}</span>
++                  <span class="oggi-vs">vs</span>
++                  <span class="oggi-cur">{{ c.value }}</span>
++                  <StatusBadge tone="attn" label="conflitto" />
++                </div>
++                <dl class="oggi-fields">
++                  <div>
++                    <dt>Priorità</dt>
++                    <dd>alta</dd>
++                  </div>
++                  <div>
++                    <dt>Causa ed evidenza</dt>
++                    <dd>
++                      Contraddizione forte tra
++                      «{{ c.incumbent_value }}» ({{ c.incumbent_source || "?" }},
++                      auth {{ c.incumbent_authority ?? "?" }}) e
++                      «{{ c.value }}» ({{ c.source }}, auth {{ c.authority }}).
++                      Occorrenze: {{ c.occurrences || 1 }}.
++                    </dd>
++                  </div>
++                  <div>
++                    <dt>Impatto</dt>
++                    <dd>Il current resta invariato; nessun auto-rename.</dd>
++                  </div>
++                  <div>
++                    <dt>Se ignori</dt>
++                    <dd>Il conflitto resta in coda R-H finché non scegli un lato o lo risolvi altrove.</dd>
++                  </div>
++                  <div>
++                    <dt>Se agisci</dt>
++                    <dd>Confermi quale valore è il current — l’altro resta storico/divergenza.</dd>
++                  </div>
++                  <div>
++                    <dt>Azione raccomandata</dt>
++                    <dd>Apri il Dossier e conferma a mano quale valore tenere.</dd>
++                  </div>
++                </dl>
++              </div>
++              <template #value>
++                <div class="oggi-actions">
++                  <button
++                    v-if="c.subject_type === 'asset' || c.subject_type === 'chassis'"
++                    type="button"
++                    class="oggi-btn primary"
++                    @click="openDossier(c.subject_id)"
++                  >
++                    apri Dossier
++                  </button>
++                </div>
++              </template>
++            </DenseRow>
++          </div>
++        </section>
++        <!-- O4: FDB defensive signals S-A..S-D -->
++        <section v-if="fdbDefenseCards.length" id="oggi-fdb" class="oggi-section">
++          <div class="oggi-section-head">
++            <h2 class="oggi-h2">FDB · sensore difensivo</h2>
++            <span class="oggi-counts">{{ fdbDefenseCards.length }} · S-A…S-D</span>
++          </div>
++          <div
++            v-for="card in fdbDefenseCards"
++            :key="'fdb-' + card.uid"
++            class="oggi-grid-row oggi-problem"
++          >
++            <DenseRow metric-width="0" value-width="auto">
++              <div class="oggi-grid-main">
++                <div class="oggi-names">
++                  <span class="oggi-prop">{{ fdbFields(card).title }}</span>
++                  <StatusBadge
++                    :tone="fdbFields(card).priority === 'alta' ? 'attn' : 'neutral'"
++                    :label="card.signal + ' · ' + fdbFields(card).priority"
++                  />
++                </div>
++                <div class="oggi-meta">
++                  <span v-if="card.mac" class="mono">{{ card.mac }}</span>
++                  <span v-if="card.switch_code">{{ card.switch_code }}:{{ card.port_number }}</span>
++                  <span v-if="card.ruolo_porta">ruolo {{ card.ruolo_porta }}</span>
++                  <span v-if="fdbFields(card).baseline_at">baseline {{ fdbFields(card).baseline_at }}</span>
++                </div>
++                <dl class="oggi-fields">
++                  <div><dt>Priorità</dt><dd>{{ defensePriorityLabel(card.defense_priority) }}</dd></div>
++                  <div><dt>Regola</dt><dd>{{ card.defense_priority?.rule }}</dd></div>
++                  <div v-if="card.defense_priority?.role_uncertain"><dt>Nota</dt><dd>ruolo_porta non_determinato · priorità ridotta</dd></div>
++                  <div><dt>Causa ed evidenza</dt><dd>{{ fdbFields(card).cause }}</dd></div>
++                  <div><dt>Impatto</dt><dd>{{ fdbFields(card).impact }}</dd></div>
++                  <div><dt>Azione raccomandata</dt><dd>{{ fdbFields(card).action }}</dd></div>
++                  <div><dt>Certezza</dt><dd>{{ fdbFields(card).certainty }}</dd></div>
++                </dl>
++                <div
++                  v-if="card.inference"
++                  class="oggi-inference"
++                  data-kind="inference"
++                >
++                  <strong>{{ card.inference.label || "INFERENZA" }}</strong>
++                  <p class="oggi-inference-disc">{{ card.inference.disclaimer }}</p>
++                  <ul>
++                    <li
++                      v-for="(it, idx) in (card.inference.items || [])"
++                      :key="'inf-' + card.uid + '-' + idx"
++                    >
++                      {{ it.label }}
++                      <span class="mono"> · fonte {{ it.source }} · confidenza {{ it.confidence }}</span>
++                    </li>
++                  </ul>
++                  <p
++                    v-if="card.inference.llm_slot && !card.inference.llm_slot.enabled"
++                    class="oggi-inference-disc"
++                  >
++                    Slot LLM disattivato: {{ card.inference.llm_slot.reason }}
++                  </p>
++                </div>
++              </div>
++              <template #value>
++                <div class="oggi-actions">
++                  <button
++                    v-for="act in (card.actions || [])"
++                    :key="act.id"
++                    type="button"
++                    class="oggi-btn"
++                    :class="{ primary: act.id === 'acknowledge' || act.id === 'dossier' }"
++                    :disabled="busyKey.startsWith('fdb-' + card.uid)"
++                    @click="fdbActionClick(card, act.id)"
++                  >
++                    {{ act.label }}
++                  </button>
++                </div>
++              </template>
++            </DenseRow>
++          </div>
++        </section>
++        <!-- O11: behaviour B-C / B-I -->
++        <section
++          v-if="behaviorCards.length || behaviorSignals.note"
++          id="oggi-behavior"
++          class="oggi-section"
++          data-o11="behavior-cards"
++        >
++          <div class="oggi-section-head">
++            <h2 class="oggi-h2">Comportamento · Zeek</h2>
++            <span class="oggi-counts">{{ behaviorCards.length }} · B-C / B-I</span>
++          </div>
++          <p v-if="behaviorSignals.note" class="oggi-meta">{{ behaviorSignals.note }}</p>
++          <div
++            v-for="card in behaviorCards"
++            :key="'beh-' + card.uid"
++            class="oggi-grid-row oggi-problem"
++          >
++            <DenseRow metric-width="0" value-width="auto">
++              <div class="oggi-grid-main">
++                <div class="oggi-names">
++                  <span class="oggi-prop">{{ card.title }}</span>
++                  <StatusBadge
++                    :tone="card.defense_priority?.level <= 2 ? 'attn' : 'neutral'"
++                    :label="card.signal + ' · P' + (card.defense_priority?.level || '?')"
++                  />
++                </div>
++                <div class="oggi-meta">
++                  <span v-if="card.mac" class="mono">{{ card.mac }}</span>
++                  <span v-if="card.label">{{ card.label }}</span>
++                  <span v-if="card.new_fingerprint" class="mono">
++                    nuovo {{ card.new_fingerprint.kind }}={{ card.new_fingerprint.value }}
++                  </span>
++                  <span v-if="card.evidence_kinds">
++                    evidenze {{ (card.evidence_kinds || []).join(", ") }}
++                  </span>
++                </div>
++                <dl class="oggi-fields">
++                  <div>
++                    <dt>Priorità</dt>
++                    <dd>{{ defensePriorityLabel(card.defense_priority) }}</dd>
++                  </div>
++                  <div>
++                    <dt>Regola</dt>
++                    <dd>{{ card.defense_priority?.rule }}</dd>
++                  </div>
++                </dl>
++              </div>
++              <template #value>
++                <div class="oggi-actions">
++                  <button
++                    v-for="act in (card.actions || [])"
++                    :key="act.id"
++                    type="button"
++                    class="oggi-btn"
++                    :class="{ primary: act.id === 'open_dossier' || act.id === 'acknowledge' }"
++                    :disabled="busyKey.startsWith('beh-' + card.uid)"
++                    @click="ackBehavior(card, act.id)"
++                  >
++                    {{ act.label }}
++                  </button>
++                </div>
++              </template>
++            </DenseRow>
++          </div>
++        </section>
+         <!-- Porte / FDB move (ex /suggestions) -->
+         <section v-if="moveItems.length" class="oggi-section">
+           <div class="oggi-section-head">
+@@ -360,10 +1135,14 @@ onMounted(load);
+               <div class="oggi-grid-main">
+                 <div class="oggi-names">
+                   <span class="oggi-prop">{{ item.title }}</span>
+-                  <StatusBadge tone="attn" :label="verdictLabelIt('move')" />
++                  <StatusBadge
++                    :tone="item.priority === 'alta' ? 'attn' : 'neutral'"
++                    :label="verdictLabelIt('move')"
++                  />
+                 </div>
+                 <dl class="oggi-fields">
+-                  <div><dt>Priorità</dt><dd>{{ item.priority }}</dd></div>
++                  <div><dt>Priorità</dt><dd>{{ defensePriorityLabel(item.defense_priority) }}</dd></div>
++                  <div><dt>Regola</dt><dd>{{ item.defense_priority?.rule }}</dd></div>
+                   <div><dt>Causa ed evidenza</dt><dd>{{ item.cause }}</dd></div>
+                   <div><dt>Impatto</dt><dd>{{ item.impact }}</dd></div>
+                   <div><dt>Azione raccomandata</dt><dd>{{ item.action }}</dd></div>
+@@ -404,6 +1183,154 @@ onMounted(load);
+           </div>
+         </section>
+ 
++        <!-- O1: una card per apparato multi-interfaccia (soggetto chassis) -->
++        <section v-if="chassisNameCards.length" class="oggi-section">
++          <div class="oggi-section-head">
++            <h2 class="oggi-h2">Apparati multi-interfaccia</h2>
++            <span class="oggi-counts">{{ chassisNameCards.length }} · nome a livello apparato</span>
++          </div>
++          <div
++            v-for="card in chassisNameCards"
++            :key="card.key"
++            class="oggi-grid-row oggi-problem"
++          >
++            <DenseRow metric-width="0" value-width="auto">
++              <div class="oggi-grid-main">
++                <div class="oggi-names">
++                  <span
++                    class="oggi-cur"
++                    :class="{ 'oggi-name-absent': card.name_kind === 'absent' }"
++                  >{{ chassisDisplayName(card) }}</span>
++                  <template v-if="card.proposed_name && card.conflict">
++                    <span class="oggi-vs">vs</span>
++                    <span class="oggi-prop">{{ card.proposed_name }}</span>
++                  </template>
++                  <template v-else-if="card.proposed_name">
++                    <span class="oggi-arrow" aria-hidden="true">→</span>
++                    <span class="oggi-prop">{{ card.proposed_name }}</span>
++                  </template>
++                  <StatusBadge
++                    :tone="card.priority === 'alta' ? 'attn' : 'neutral'"
++                    :label="verdictLabelIt(card.verdict)"
++                  />
++                </div>
++                <div class="oggi-meta">
++                  <span>{{ chassisProvenanceLabel(card) }}</span>
++                  <span>{{ card.members.length }} interfacce</span>
++                  <span
++                    v-for="m in card.members"
++                    :key="'m-' + m.asset_id"
++                    class="mono"
++                  >#{{ m.asset_id }} {{ m.role || "" }} {{ (m.ips && m.ips[0]) || "—" }}</span>
++                </div>
++                <AiInferenceLabel
++                  v-if="card.name_kind === 'inference' || isAiSource(card.name_source) || isAiSource(card.proposed_source)"
++                  :source="card.name_kind === 'inference' ? (card.name_source || 'inferenza') : (card.proposed_source || card.name_source)"
++                  :confidence="card.name_confidence ?? card.proposed_confidence"
++                  :evidence="card.proposal_evidence || ''"
++                />
++                <dl class="oggi-fields">
++                  <div><dt>Priorità</dt><dd>{{ defensePriorityLabel(card.defense_priority) }}</dd></div>
++                  <div><dt>Regola</dt><dd>{{ card.defense_priority?.rule }}</dd></div>
++                  <div><dt>Causa ed evidenza</dt><dd>{{ chassisFields(card).cause }}</dd></div>
++                  <div><dt>Impatto</dt><dd>{{ chassisFields(card).impact }}</dd></div>
++                  <div><dt>Azione raccomandata</dt><dd>{{ chassisFields(card).action }}</dd></div>
++                  <div><dt>Certezza</dt><dd>{{ chassisFields(card).certainty }}</dd></div>
++                  <div><dt>Esito</dt><dd>{{ chassisFields(card).outcome }}</dd></div>
++                </dl>
++                <div v-if="renameOpen[card.chassis_id]" class="oggi-rename">
++                  <label class="oggi-rename-label">
++                    Nuovo nome
++                    <input
++                      v-model="renameDraft[card.chassis_id]"
++                      type="text"
++                      class="oggi-rename-input"
++                      :disabled="busyKey === card.key"
++                      @keyup.enter="submitChassisRename(card)"
++                    />
++                  </label>
++                  <button
++                    type="button"
++                    class="oggi-btn primary"
++                    :disabled="busyKey === card.key"
++                    @click="submitChassisRename(card)"
++                  >
++                    salva
++                  </button>
++                  <button
++                    type="button"
++                    class="oggi-btn"
++                    :disabled="busyKey === card.key"
++                    @click="renameOpen[card.chassis_id] = false"
++                  >
++                    annulla
++                  </button>
++                </div>
++              </div>
++              <template #value>
++                <div class="oggi-actions">
++                  <button
++                    v-if="card.actions.includes('correggi')"
++                    type="button"
++                    class="oggi-btn primary"
++                    :disabled="busyKey === card.key"
++                    @click="openRename(card)"
++                  >
++                    {{ card.name_kind === 'absent' ? 'assegna nome' : 'correggi nome' }}
++                  </button>
++                  <button
++                    v-if="card.actions.includes('conferma_manuale')"
++                    type="button"
++                    class="oggi-btn primary"
++                    :disabled="busyKey === card.key"
++                    @click="confirmInferenceAsManual(card)"
++                  >
++                    {{
++                      card.name_kind === "legacy_manual"
++                        ? "conferma come fatto d'apparato"
++                        : "conferma come manuale"
++                    }}
++                  </button>
++                  <button
++                    v-if="card.actions.includes('adotta_proposta')"
++                    type="button"
++                    class="oggi-btn primary"
++                    :disabled="busyKey === card.key"
++                    @click="adoptChassisProposal(card)"
++                  >
++                    adotta proposta
++                  </button>
++                  <button
++                    v-if="card.actions.includes('tieni_manuale')"
++                    type="button"
++                    class="oggi-btn"
++                    :disabled="busyKey === card.key"
++                    @click="keepManualRejectProposal(card)"
++                  >
++                    tieni manuale
++                  </button>
++                  <button
++                    v-if="card.actions.includes('sostituisci_proposta')"
++                    type="button"
++                    class="oggi-btn"
++                    :disabled="busyKey === card.key"
++                    @click="adoptChassisProposal(card)"
++                  >
++                    sostituisci con proposta
++                  </button>
++                  <button
++                    type="button"
++                    class="oggi-btn ghost"
++                    @click="openDossier(card.primary_asset_id)"
++                  >
++                    Dossier
++                  </button>
++                </div>
++              </template>
++            </DenseRow>
++          </div>
++        </section>
++
+         <!-- Proposte nome: ADOTTA → VERIFICA → rumore -->
+         <section v-if="triageRows.length || noiseIds.length" class="oggi-section">
+           <div class="oggi-section-head">
+@@ -446,7 +1373,9 @@ onMounted(load);
+                     :evidence="row.proposal_evidence || ''"
+                   />
+                   <dl class="oggi-fields">
+-                    <div><dt>Priorità</dt><dd>{{ problemFields(row).priority }}</dd></div>
++                    <div><dt>Priorità</dt><dd>{{ defensePriorityLabel(row.defense_priority) }}</dd></div>
++                    <div><dt>Regola</dt><dd>{{ row.defense_priority?.rule }}</dd></div>
++                    <div v-if="row.laa_demoted"><dt>Nota</dt><dd>{{ row.laa_reason }}</dd></div>
+                     <div><dt>Causa ed evidenza</dt><dd>{{ problemFields(row).cause }}</dd></div>
+                     <div><dt>Impatto</dt><dd>{{ problemFields(row).impact }}</dd></div>
+                     <div><dt>Azione raccomandata</dt><dd>{{ problemFields(row).action }}</dd></div>
+@@ -527,7 +1456,9 @@ onMounted(load);
+                         :evidence="row.proposal_evidence || ''"
+                       />
+                       <dl class="oggi-fields">
+-                        <div><dt>Priorità</dt><dd>{{ problemFields(row).priority }}</dd></div>
++                        <div><dt>Priorità</dt><dd>{{ defensePriorityLabel(row.defense_priority) }}</dd></div>
++                        <div><dt>Regola</dt><dd>{{ row.defense_priority?.rule }}</dd></div>
++                        <div v-if="row.laa_demoted"><dt>Nota</dt><dd>{{ row.laa_reason }}</dd></div>
+                         <div><dt>Causa ed evidenza</dt><dd>{{ problemFields(row).cause }}</dd></div>
+                         <div><dt>Impatto</dt><dd>{{ problemFields(row).impact }}</dd></div>
+                         <div><dt>Azione raccomandata</dt><dd>{{ problemFields(row).action }}</dd></div>
+@@ -546,13 +1477,18 @@ onMounted(load);
+                           apri Dossier
+                         </button>
+                         <button
++                          v-if="showAdoptButton(row)"
+                           type="button"
+                           class="oggi-btn"
+-                          :disabled="busyKey === row.key || row.chassis_member"
+-                          :title="row.chassis_member ? 'Bloccato: chassis multi-NIC' : ''"
++                          :disabled="busyKey === row.key"
++                          :title="
++                            row.actionable_reason === 'chassis_multi_nic_adopt_blocked'
++                              ? `Adotta a livello chassis ${row.chassis_id}`
++                              : ''
++                          "
+                           @click="adoptRow(row)"
+                         >
+-                          adotta
++                          {{ adoptButtonLabel(row) }}
+                         </button>
+                         <button
+                           type="button"
+@@ -576,6 +1512,40 @@ onMounted(load);
+             </template>
+           </div>
+ 
++          <div v-if="structuralSuppressions.length" class="oggi-rumore-mass oggi-suppressed">
++            <div class="oggi-rumore-actions">
++              <button
++                type="button"
++                class="oggi-btn"
++                :aria-expanded="suppressedOpen"
++                @click="suppressedOpen = !suppressedOpen"
++              >
++                {{ structuralSuppressions.length }} proposte soppresse (ispeziona / ripesca)
++              </button>
++              <span class="oggi-muted-inline">
++                no-op {{ (suppressionsByRule.noop_identico || []).length }} ·
++                duplicato {{ (suppressionsByRule.duplicato || []).length }} ·
++                vendor {{ (suppressionsByRule.vendor_generico || []).length }} ·
++                LAA demote {{ (suppressionsByRule.mac_randomizzato || []).length }}
++              </span>
++            </div>
++            <div v-if="suppressedOpen" class="oggi-noise-preview" role="region">
++              <ul>
++                <li v-for="s in structuralSuppressions" :key="'sup-' + s.rule + '-' + s.proposal_id">
++                  #{{ s.proposal_id }} asset {{ s.asset_id }} · {{ s.rule }} —
++                  {{ s.reason }}
++                  <button
++                    v-if="!s.demote_only"
++                    type="button"
++                    class="oggi-btn ghost"
++                    @click="restoreSuppression(s.proposal_id)"
++                  >
++                    ripesca
++                  </button>
++                </li>
++              </ul>
++            </div>
++          </div>
+           <div v-if="noiseIds.length" class="oggi-rumore-mass">
+             <div class="oggi-rumore-actions">
+               <button
+@@ -694,7 +1664,19 @@ onMounted(load);
+         </section>
+ 
+         <!-- Device nuovi + monitor: solo sotto le proposte -->
+-        <section v-if="secondaryQueue.length" class="oggi-section">
++        <details
++          v-if="secondaryQueue.length"
++          id="oggi-secondary"
++          class="oggi-collapse oggi-section"
++          :open="!narrowUi"
++          data-testid="oggi-secondary-collapse"
++        >
++          <summary class="oggi-collapse-sum">
++            Altro in coda · {{ secondaryCollapseMeta.count }}
++            <span v-if="secondaryCollapseMeta.maxPriority != null" class="oggi-muted-inline">
++              · priorità max P{{ secondaryCollapseMeta.maxPriority }}
++            </span>
++          </summary>
+           <h2 class="oggi-h2">Altro in coda</h2>
+           <div v-for="item in secondaryQueue" :key="item.key" class="oggi-item">
+             <DenseRow metric-width="0" value-width="auto">
+@@ -739,7 +1721,7 @@ onMounted(load);
+               </template>
+             </DenseRow>
+           </div>
+-        </section>
++        </details>
+       </template>
+     </template>
+   </div>
+@@ -775,6 +1757,42 @@ onMounted(load);
+ .oggi-fields dd {
+   margin: 0;
+   color: var(--text-1);
++  min-width: 0;
++  overflow-wrap: anywhere;
++}
++.oggi-names {
++  overflow-wrap: anywhere;
++}
++/* Le card di Oggi hanno contenuto MULTILINEA nello slot primario; lo stile generico
++   di DenseRow (nowrap + overflow hidden) lo troncava a ogni breakpoint (tablet incluso).
++   Qui il testo va a capo e resta visibile — sempre, non solo su mobile. */
++.oggi :deep(.dense-row__primary) {
++  white-space: normal;
++  overflow: visible;
++  text-overflow: clip;
++}
++/* UX2.1/UX2.5 — su mobile la card impila: azioni sotto, label sopra il valore,
++   nomi/MAC vanno a capo invece di troncare (fix responsive Oggi, il cardine). */
++@media (max-width: 640px) {
++  .oggi :deep(.dense-row) {
++    flex-direction: column;
++    align-items: stretch;
++    gap: 8px;
++  }
++  .oggi :deep(.dense-row__value) {
++    width: auto !important;
++    flex-basis: auto !important;
++    text-align: left;
++    white-space: normal;
++  }
++  .oggi-fields > div {
++    grid-template-columns: 1fr;
++    gap: 0;
++  }
++  .oggi-problem .oggi-actions {
++    max-width: none;
++    justify-content: flex-start;
++  }
+ }
+ .oggi-noise-preview {
+   margin-top: 10px;
+@@ -893,6 +1911,81 @@ onMounted(load);
+   gap: 8px;
+   margin: 6px 0 4px;
+ }
++.oggi-collapse {
++  margin: 0 0 14px;
++  border: 0.5px solid var(--border);
++  border-radius: var(--radius);
++  background: var(--bg-1);
++  padding: 0 12px 10px;
++}
++.oggi-collapse > .oggi-legend {
++  margin: 0;
++  padding: 0;
++  border: 0;
++  background: transparent;
++}
++.oggi-collapse-sum {
++  cursor: pointer;
++  list-style: none;
++  padding: 10px 0;
++  font-size: 13px;
++  font-weight: 500;
++  color: var(--text-1);
++  display: flex;
++  flex-wrap: wrap;
++  align-items: baseline;
++  gap: 0.35rem 0.75rem;
++}
++.oggi-collapse-sum::-webkit-details-marker { display: none; }
++.oggi-legend {
++  margin: 0 0 14px;
++  padding: 10px 12px;
++  border: 0.5px solid var(--border);
++  border-radius: var(--radius);
++  background: var(--bg-1);
++}
++.oggi-quick {
++  margin: 0 0 14px;
++  padding: 8px 12px;
++  border: 0.5px solid var(--border);
++  border-radius: var(--radius);
++  font-size: 12px;
++}
++.oggi-quick-title {
++  margin: 0 0 6px;
++  font-weight: 500;
++  color: var(--text-1);
++}
++.oggi-quick-list {
++  margin: 0;
++  padding: 0;
++  list-style: none;
++  display: grid;
++  gap: 4px;
++}
++.oggi-quick-list li {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 6px 10px;
++  align-items: baseline;
++}
++.oggi-legend-list {
++  margin: 6px 0 8px 1.2em;
++  padding: 0;
++  font-size: 12px;
++  color: var(--text-2);
++  line-height: 1.45;
++}
++.oggi-orphan {
++  margin: 0 0 12px;
++  padding: 10px 12px;
++  border: 0.5px solid color-mix(in srgb, var(--attn, #c45) 40%, var(--border));
++  border-radius: var(--radius);
++  font-size: 12px;
++  color: var(--text-2);
++}
++.oggi-orphan ul { margin: 6px 0 0 1.1em; padding: 0; }
++.oggi-suppressed { border-color: color-mix(in srgb, var(--text-3) 35%, var(--border)); }
+ .oggi-item { margin-top: 4px; }
+ .oggi-main { min-width: 0; }
+ .oggi-kind {
+@@ -937,4 +2030,59 @@ onMounted(load);
+   background: transparent;
+ }
+ .oggi-btn:disabled { opacity: 0.5; cursor: not-allowed; }
++.oggi-name-absent {
++  font-style: italic;
++  color: var(--text-3);
++}
++.oggi-vs { color: var(--text-3); font-size: 12px; }
++.oggi-rename {
++  display: flex;
++  flex-wrap: wrap;
++  align-items: flex-end;
++  gap: 8px;
++  margin-top: 8px;
++}
++.oggi-rename-label {
++  display: flex;
++  flex-direction: column;
++  gap: 4px;
++  font-size: 11px;
++  color: var(--text-3);
++  min-width: 180px;
++  flex: 1;
++}
++.oggi-rename-input {
++  padding: 6px 8px;
++  font-size: 13px;
++  border: 0.5px solid var(--border);
++  border-radius: var(--radius);
++  background: var(--bg-0);
++  color: var(--text-1);
++}
++.oggi-inference {
++  margin-top: 10px;
++  padding: 8px 10px;
++  border-left: 3px solid color-mix(in srgb, var(--accent) 55%, var(--border));
++  background: color-mix(in srgb, var(--accent) 6%, var(--bg-0));
++  font-size: 12px;
++  color: var(--text-2);
++}
++.oggi-inference-disc {
++  margin: 4px 0 6px;
++  font-size: 11px;
++  color: var(--text-3);
++  font-style: italic;
++}
++.oggi-inference ul {
++  margin: 0;
++  padding-left: 1.1em;
++}
++.oggi-discarded {
++  margin: 0 0 1rem;
++  padding: 0.6rem 0.75rem;
++  border-left: 3px solid #e4b866;
++  background: color-mix(in srgb, #e4b866 10%, transparent);
++  font-size: 12px;
++  color: var(--text-2);
++}
+ </style>
