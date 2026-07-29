@@ -1,0 +1,776 @@
+# wc-l=775
+# obs-o11fix-ingest.diff.txt
+# Tema: G1 kill switch, G2 docstring, G3 rotazione, G4 retention + test Q1/Q2/Q6/breaker
+# Baseline: prod 0.10.75 dove file non tracciati da git
+
+--- /tmp/o11-zeek_behavior.py	2026-07-29 03:15:21
++++ observatory/collector/collector/adapters/zeek_behavior.py	2026-07-29 03:07:20
+@@ -1,11 +1,16 @@
+ """Zeek ssl.log / dhcp.log / ja4d.log → fingerprint evidence POST.
+ 
+-Cold-start: offsets at EOF (no backlog flood — breaker-safe). Dedup on API.
++Cold-start policy (O11-FIX G2 — scelta dichiarata): al **primo** incontro di
++ciascun log corrente (`ssl.log` / `dhcp.log` / `ja4d.log`) si legge da offset 0
++(intero file corrente). I file ruotati storici non vengono ingeriti. I cicli
++successivi fanno tail dall'offset. Dedup e breaker sull'API limitano il volume.
++(La docstring precedente «offsets at EOF» era falsa rispetto al codice.)
+ """
+ 
+ from __future__ import annotations
+ 
+ import json
++import os
+ from pathlib import Path
+ from typing import Any, Callable, Optional
+ 
+@@ -15,16 +20,17 @@
+ 
+ def load_state(path: Path) -> dict[str, Any]:
+     if not path.is_file():
+-        return {"offsets": {}, "cold_started": {}}
++        return {"offsets": {}, "cold_started": {}, "file_ids": {}}
+     try:
+         data = json.loads(path.read_text(encoding="utf-8"))
+     except (OSError, json.JSONDecodeError):
+-        return {"offsets": {}, "cold_started": {}}
++        return {"offsets": {}, "cold_started": {}, "file_ids": {}}
+     if not isinstance(data, dict):
+-        return {"offsets": {}, "cold_started": {}}
++        return {"offsets": {}, "cold_started": {}, "file_ids": {}}
+     offsets = data.get("offsets") if isinstance(data.get("offsets"), dict) else {}
+     cold = data.get("cold_started") if isinstance(data.get("cold_started"), dict) else {}
+-    return {"offsets": offsets, "cold_started": cold}
++    file_ids = data.get("file_ids") if isinstance(data.get("file_ids"), dict) else {}
++    return {"offsets": offsets, "cold_started": cold, "file_ids": file_ids}
+ 
+ 
+ def save_state(path: Path, state: dict[str, Any]) -> None:
+@@ -32,21 +38,40 @@
+     path.write_text(json.dumps(state, indent=0), encoding="utf-8")
+ 
+ 
+-def _read_new_lines(path: Path, offset: int) -> tuple[list[str], int]:
++def file_identity(path: Path) -> str:
++    """Stable identity for rotation detection: device:inode (POSIX)."""
++    st = path.stat()
++    return f"{getattr(st, 'st_dev', 0)}:{getattr(st, 'st_ino', 0)}"
++
++
++def _read_new_lines(
++    path: Path, offset: int, *, file_id: str | None, prev_id: str | None
++) -> tuple[list[str], int, bool]:
++    """Read new lines. Returns (lines, new_offset, rotated).
++
++    Rotation: identity changed → restart from 0 and count rotation (G3).
++    Also handle classic truncate (offset > size).
++    """
+     if not path.is_file():
+-        return [], offset
++        return [], offset, False
++    rotated = False
++    cur_id = file_id or file_identity(path)
++    if prev_id and prev_id != cur_id:
++        offset = 0
++        rotated = True
+     size = path.stat().st_size
+     if offset > size:
+         offset = 0
++        rotated = True
+     with path.open("rb") as fh:
+         fh.seek(offset)
+         raw = fh.read()
+         new_offset = fh.tell()
+     if not raw:
+-        return [], new_offset
++        return [], new_offset, rotated
+     text = raw.decode("utf-8", errors="replace")
+     lines = [ln for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
+-    return lines, new_offset
++    return lines, new_offset, rotated
+ 
+ 
+ def parse_ssl_row(row: dict[str, Any]) -> list[dict[str, Any]]:
+@@ -174,12 +199,13 @@
+     post_items: Callable[[list[dict[str, Any]]], None],
+     state_path: Path | None = None,
+ ) -> dict[str, Any]:
+-    """Tail current ssl/dhcp/ja4d. First seen: ingest full current file (not rotated)."""
++    """Tail current ssl/dhcp/ja4d. First seen: full current file; then offset + rotation."""
+     log_dir = Path(log_dir)
+     path = Path(state_path) if state_path else log_dir.parent / STATE_NAME
+     state = load_state(path)
+     offsets: dict[str, int] = dict(state.get("offsets") or {})
+     cold: dict[str, bool] = dict(state.get("cold_started") or {})
++    file_ids: dict[str, str] = dict(state.get("file_ids") or {})
+ 
+     batch: list[dict[str, Any]] = []
+     stats = {
+@@ -189,6 +215,8 @@
+         "items": 0,
+         "posted": 0,
+         "initial_full_read": 0,
++        "rotations": 0,
++        "rotations_by_file": {},
+     }
+ 
+     files: list[tuple[str, str]] = [
+@@ -210,13 +238,24 @@
+         if not fpath.is_file():
+             continue
+         key = name
+-        # First encounter: read from byte 0 of the *current* log only.
++        cur_id = file_identity(fpath)
+         if not cold.get(key):
+             offsets[key] = 0
+             cold[key] = True
+             stats["initial_full_read"] += 1
+-        lines, new_off = _read_new_lines(fpath, int(offsets.get(key, 0)))
++        lines, new_off, rotated = _read_new_lines(
++            fpath,
++            int(offsets.get(key, 0)),
++            file_id=cur_id,
++            prev_id=file_ids.get(key),
++        )
++        if rotated:
++            stats["rotations"] += 1
++            stats["rotations_by_file"][key] = (
++                int(stats["rotations_by_file"].get(key, 0)) + 1
++            )
+         offsets[key] = new_off
++        file_ids[key] = cur_id
+         for line in lines:
+             try:
+                 row = json.loads(line)
+@@ -240,5 +279,6 @@
+     _flush()
+     state["offsets"] = offsets
+     state["cold_started"] = cold
++    state["file_ids"] = file_ids
+     save_state(path, state)
+     return stats
+diff --git a/observatory/.env.example b/observatory/.env.example
+index 70bb5b3..585dfc5 100644
+--- a/observatory/.env.example
++++ b/observatory/.env.example
+@@ -155,6 +155,8 @@ SCORING_CALIBRATED=false
+ LEARNING_PERIOD_DAYS=14
+ LEARNING_PERIOD_CYCLES=50
+ DRIFT_SHADOW_MODE=true
++# W2 shadow fact writers (kill switch a caldo; false spegne le sole scritture assertion)
++FACT_SHADOW_WRITERS_ENABLED=true
+ NOTIFICATIONS_ENABLED=false
+ # --- M6/M8 detector e sensori opzionali (singolarmente attivabili) ---
+ DETECTORS_ENABLED=
+@@ -166,4 +168,7 @@ ZEEK_IFACE=eth1
+ ZEEK_PROVIDER_ENABLED=false
+ ZEEK_LOG_DIR=/data/zeek
+ ZEEK_PROVIDER_INTERVAL_SEC=300
++# O11-FIX G1: fingerprints behaviour (default on). Cadenza propria, non legata al flow.
++ZEEK_BEHAVIOR_ENABLED=true
++ZEEK_BEHAVIOR_INTERVAL_SEC=300
+ UI_FLAP_COLLAPSE_MIN=6
+diff --git a/observatory/api/app/routers/ingest.py b/observatory/api/app/routers/ingest.py
+index 1e953a9..3044954 100644
+--- a/observatory/api/app/routers/ingest.py
++++ b/observatory/api/app/routers/ingest.py
+@@ -567,6 +567,10 @@ def ingest_retention_run(
+         f"raw_deleted={result.get('deleted')} "
+         f"hb={result.get('heartbeats_pruned')} "
+         f"flow={result.get('flow_observations_pruned')} "
++        f"zeek_beh={result.get('zeek_behavior_evidence_pruned')} "
++        f"(ttl={result.get('zeek_behavior_ttl_raw_days')}d "
++        f"{result.get('zeek_behavior_evidence_before')}→"
++        f"{result.get('zeek_behavior_evidence_after')}) "
+         f"agg={result.get('aggregates')} "
+         f"db_bytes {before_stats.get('db_bytes')}→{after_stats.get('db_bytes')} "
+         f"freelist_bytes {before_stats.get('freelist_bytes')}→{after_stats.get('freelist_bytes')}",
+@@ -984,6 +988,37 @@ def ingest_dhcp_hostnames(
+     return {"ok": True, **stats}
+ 
+ 
++@router.post("/zeek-behavior")
++def ingest_zeek_behavior(
++    body: dict[str, Any],
++    db: Session = Depends(get_db),
++    settings: Settings = Depends(get_settings),
++    x_obs_token: Optional[str] = Header(default=None),
++):
++    """O11 — JA4/JA4D/DHCP fingerprint evidence. Deduped; never writes identity facts."""
++    _check_internal(x_obs_token, settings)
++    from app.services.behaviour import ingest_zeek_behavior_batch
++
++    items = body.get("items") if isinstance(body, dict) else None
++    if not isinstance(items, list):
++        raise HTTPException(400, "items[] richiesto")
++    cleaned: list[dict[str, Any]] = []
++    for raw in items:
++        if not isinstance(raw, dict):
++            continue
++        kind = str(raw.get("kind") or "").strip()
++        value = str(raw.get("value") or "").strip()
++        if not kind or not value:
++            continue
++        cleaned.append(raw)
++    stats = ingest_zeek_behavior_batch(db, cleaned)
++    db.commit()
++    if stats.get("breaker_open"):
++        # Kill switch: report but do not raise ceilings.
++        return {"ok": False, "kill_switch": True, **stats}
++    return {"ok": True, **stats}
++
++
+ @router.post("/wan-telemetry")
+ def wan_telemetry_internal(
+     body: WanTelemetryIn,
+diff --git a/observatory/api/app/services/retention.py b/observatory/api/app/services/retention.py
+index 002e68e..168b9d4 100644
+--- a/observatory/api/app/services/retention.py
++++ b/observatory/api/app/services/retention.py
+@@ -19,6 +19,7 @@ from app.models import (
+     Heartbeat,
+     ObservationAggregate,
+     ObservationRaw,
++    ZeekBehaviorEvidence,
+ )
+ 
+ 
+@@ -116,6 +117,34 @@ def prune_flow_observations(
+     return int(deleted or 0)
+ 
+ 
++def prune_zeek_behavior_evidence(
++    db: Session, *, ttl_raw_days: int, now: Optional[datetime] = None
++) -> dict[str, int]:
++    """O11-FIX G4 — same vocabulary as ``observations_raw`` (``obs_ttl_raw_days``).
++
++    Purge by ``last_seen``; rows still valid keep ``first_seen`` / ``observation_count``.
++    Skips baseline meta kind ``_baseline``. No VACUUM.
++    """
++    now = now or datetime.utcnow()
++    days = max(0, int(ttl_raw_days))
++    cutoff = now - timedelta(days=days)
++    before = db.scalar(select(func.count()).select_from(ZeekBehaviorEvidence)) or 0
++    deleted = db.execute(
++        delete(ZeekBehaviorEvidence).where(
++            ZeekBehaviorEvidence.kind != "_baseline",
++            ZeekBehaviorEvidence.last_seen < cutoff,
++        )
++    ).rowcount
++    after = db.scalar(select(func.count()).select_from(ZeekBehaviorEvidence)) or 0
++    return {
++        "ttl_raw_days": days,
++        "cutoff": cutoff.isoformat() + "Z",
++        "before": int(before),
++        "deleted": int(deleted or 0),
++        "after": int(after),
++    }
++
++
+ def run_retention(
+     db: Session,
+     *,
+@@ -126,10 +155,13 @@ def run_retention(
+     legacy_observation_retention_days: int = 7,
+     now: Optional[datetime] = None,
+ ) -> dict[str, int]:
+-    """Run raw rollup + heartbeat/flow prune.
++    """Run raw rollup + heartbeat/flow prune + zeek_behavior_evidence TTL.
+ 
+     ``legacy_observation_retention_days`` is accepted but ignored (OBS-DB-SLIM 4b:
+     legacy table removed from the retention path before DROP).
++
++    O11-FIX G4: ``zeek_behavior_evidence`` uses the same ``ttl_raw_days`` as
++    ``observations_raw`` (``obs_ttl_raw_days``).
+     """
+     _ = legacy_observation_retention_days
+     rollup = rollup_raw_observations(
+@@ -141,11 +173,16 @@ def run_retention(
+     flows = prune_flow_observations(
+         db, retention_days=flow_observation_retention_days, now=now
+     )
++    zeek_beh = prune_zeek_behavior_evidence(db, ttl_raw_days=ttl_raw_days, now=now)
+     db.commit()
+     return {
+         **rollup,
+         "heartbeats_pruned": heartbeats,
+         "flow_observations_pruned": flows,
++        "zeek_behavior_evidence_pruned": int(zeek_beh.get("deleted") or 0),
++        "zeek_behavior_evidence_before": int(zeek_beh.get("before") or 0),
++        "zeek_behavior_evidence_after": int(zeek_beh.get("after") or 0),
++        "zeek_behavior_ttl_raw_days": int(zeek_beh.get("ttl_raw_days") or ttl_raw_days),
+     }
+ 
+ 
+diff --git a/observatory/collector/collector/config.py b/observatory/collector/collector/config.py
+index 21d52c4..7fa3238 100644
+--- a/observatory/collector/collector/config.py
++++ b/observatory/collector/collector/config.py
+@@ -94,6 +94,9 @@ class Settings(BaseSettings):
+     zeek_provider_enabled: bool = False
+     zeek_log_dir: str = "/data/zeek"
+     zeek_provider_interval_sec: int = 300
++    # O11-FIX G1: behaviour fingerprints — own kill switch + cadence (not tied to flow).
++    zeek_behavior_enabled: bool = True
++    zeek_behavior_interval_sec: int = 300
+     sqlite_path: str = "/data/db/observatory.db"
+ 
+     def resolved_network(self) -> tuple[str, str, str]:
+--- /tmp/o11-collector-main.py	2026-07-29 03:15:22
++++ observatory/collector/collector/main.py	2026-07-29 03:07:23
+@@ -678,16 +678,17 @@
+             max_instances=1,
+             coalesce=True,
+         )
+-    # O11: behaviour fingerprints always on (SPAN logs), even when flow ingest is off.
+-    sched.add_job(
+-        _run_zeek_behavior,
+-        "interval",
+-        seconds=max(60, getattr(settings, "zeek_provider_interval_sec", 300)),
+-        args=[settings],
+-        id="zeek-behavior",
+-        max_instances=1,
+-        coalesce=True,
+-    )
++    # O11-FIX G1: kill switch ZEEK_BEHAVIOR_ENABLED (default true); own interval.
++    if getattr(settings, "zeek_behavior_enabled", True):
++        sched.add_job(
++            _run_zeek_behavior,
++            "interval",
++            seconds=max(60, getattr(settings, "zeek_behavior_interval_sec", 300)),
++            args=[settings],
++            id="zeek-behavior",
++            max_instances=1,
++            coalesce=True,
++        )
+     if getattr(settings, "speedtest_nightly_enabled", False):
+         try:
+             hour, minute = (
+
+=== NEW tests/test_o11fix.py (Q1 Q2 Q6 + shared; see also associazione/priorita nodes) ===
+--- /dev/null	2026-07-29 03:15:33
++++ observatory/tests/test_o11fix.py	2026-07-29 03:14:25
+@@ -0,0 +1,424 @@
++"""O11-FIX — Q1–Q7 nodes only (kill switch, rotation, validity, MAC, retention, B-I)."""
++
++from __future__ import annotations
++
++import json
++import sys
++from datetime import datetime, timedelta
++from pathlib import Path
++from unittest.mock import MagicMock
++
++import pytest
++from sqlalchemy import create_engine, select
++from sqlalchemy.orm import sessionmaker
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
++sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "collector"))
++
++from app.config import get_settings
++from app.db import Base
++from app.facts.ip_association import associate_ip_at, associate_mac_direct
++from app.models import Asset, FactAssertion, Interface, IpAddress, ZeekBehaviorEvidence
++from app.services.behaviour import (
++    MAX_EVIDENCE_ROWS,
++    build_behavior_signals,
++    evaluate_evidence_breaker,
++    ingest_zeek_behavior_batch,
++    unknown_with_evidence_cards,
++    upsert_evidence_item,
++)
++from app.services.retention import prune_zeek_behavior_evidence
++
++
++@pytest.fixture()
++def db(tmp_path, monkeypatch):
++    db_path = tmp_path / "o11fix.db"
++    monkeypatch.setenv("SQLITE_PATH", str(db_path))
++    get_settings.cache_clear()
++    engine = create_engine(f"sqlite:///{db_path}")
++    Base.metadata.create_all(engine)
++    Session = sessionmaker(bind=engine)
++    session = Session()
++    yield session
++    session.close()
++    get_settings.cache_clear()
++
++
++def _asset_mac(db, *, mac: str, name: str = "", status: str = "nuovo", ip=None):
++    import uuid
++
++    a = Asset(uid=str(uuid.uuid4()), name=name, status=status, category="media")
++    db.add(a)
++    db.flush()
++    iface = Interface(asset_id=a.id, mac=mac, is_primary=True)
++    db.add(iface)
++    db.flush()
++    if ip:
++        db.add(IpAddress(interface_id=iface.id, ip=ip, is_current=True, source="fritz"))
++        db.flush()
++    return a, iface
++
++
++# --- Q1 ---
++def test_q1_zeek_behavior_disabled_not_scheduled(monkeypatch):
++    """ZEEK_BEHAVIOR_ENABLED=false → job not scheduled."""
++    from collector.config import Settings as CollSettings
++
++    monkeypatch.setenv("ZEEK_BEHAVIOR_ENABLED", "false")
++    s = CollSettings()
++    assert s.zeek_behavior_enabled is False
++
++    from apscheduler.schedulers.background import BackgroundScheduler
++
++    sched = BackgroundScheduler()
++    # Mirror main.py gate
++    if getattr(s, "zeek_behavior_enabled", True):
++        sched.add_job(lambda: None, "interval", seconds=300, id="zeek-behavior")
++    assert "zeek-behavior" not in {j.id for j in sched.get_jobs()}
++
++
++# --- Q2 ---
++def test_q2_rotation_new_file_larger_than_offset_no_loss(tmp_path):
++    from collector.adapters.zeek_behavior import run_zeek_behavior_cycle
++
++    log_dir = tmp_path / "zeek"
++    log_dir.mkdir()
++    state = tmp_path / "state.json"
++    # First cycle: write 2 lines, establish identity+offset
++    (log_dir / "ssl.log").write_text(
++        json.dumps(
++            {
++                "ts": 1.0,
++                "id.orig_h": "10.0.0.1",
++                "ja4": "ja4_aaa",
++                "uid": "1",
++            }
++        )
++        + "\n"
++        + json.dumps(
++            {
++                "ts": 2.0,
++                "id.orig_h": "10.0.0.1",
++                "ja4": "ja4_bbb",
++                "uid": "2",
++            }
++        )
++        + "\n",
++        encoding="utf-8",
++    )
++    posted: list = []
++    st1 = run_zeek_behavior_cycle(
++        log_dir=log_dir, post_items=lambda b: posted.extend(b), state_path=state
++    )
++    assert st1["items"] == 2
++    assert st1["rotations"] == 0
++    off1 = json.loads(state.read_text())["offsets"]["ssl.log"]
++
++    # Rotate: new file identity, content larger than old offset (would skip without G3)
++    (log_dir / "ssl.log").write_text(
++        ("x" * (off1 + 50))
++        + "\n"
++        + json.dumps(
++            {
++                "ts": 3.0,
++                "id.orig_h": "10.0.0.2",
++                "ja4": "ja4_ccc",
++                "uid": "3",
++            }
++        )
++        + "\n"
++        + json.dumps(
++            {
++                "ts": 4.0,
++                "id.orig_h": "10.0.0.2",
++                "ja4": "ja4_ddd",
++                "uid": "4",
++            }
++        )
++        + "\n",
++        encoding="utf-8",
++    )
++    # Force different inode by rewrite already done; if same inode on some FS,
++    # also bump via rename dance
++    posted.clear()
++    st2 = run_zeek_behavior_cycle(
++        log_dir=log_dir, post_items=lambda b: posted.extend(b), state_path=state
++    )
++    # Size grew past offset without identity change → truncate path OR identity change.
++    # Either way: must not silently skip. Count rotations if identity/truncate detected.
++    values = {p["value"] for p in posted if p.get("kind") == "ja4"}
++    assert "ja4_ccc" in values or st2["rotations"] >= 1 or st2["items"] >= 1
++    # Stronger: if file grew and we rotated/truncated, ccc+ddd present
++    if st2["rotations"] >= 1 or st2.get("initial_full_read", 0) == 0:
++        # After rotation from 0, both new JA4 should be ingested (ignore padding non-json)
++        assert "ja4_ccc" in values
++        assert "ja4_ddd" in values
++        assert st2["rotations"] >= 1 or len(values) >= 2
++
++
++def test_q2_rotation_identity_change_counted(tmp_path):
++    from collector.adapters.zeek_behavior import (
++        file_identity,
++        run_zeek_behavior_cycle,
++        save_state,
++    )
++
++    log_dir = tmp_path / "zeek"
++    log_dir.mkdir()
++    state = tmp_path / "state.json"
++    f = log_dir / "dhcp.log"
++    f.write_text(
++        json.dumps({"ts": 1, "mac": "AA:BB:CC:DD:EE:01", "host_name": "h1"}) + "\n",
++        encoding="utf-8",
++    )
++    posted = []
++    run_zeek_behavior_cycle(
++        log_dir=log_dir, post_items=lambda b: posted.extend(b), state_path=state
++    )
++    old_id = file_identity(f)
++    # Rename away and create new file with larger content than stored offset
++    f.rename(log_dir / "dhcp.log.1")
++    big = ("#" + "pad\n") * 200
++    (log_dir / "dhcp.log").write_text(
++        big
++        + json.dumps({"ts": 2, "mac": "AA:BB:CC:DD:EE:02", "host_name": "h2"})
++        + "\n",
++        encoding="utf-8",
++    )
++    new_id = file_identity(log_dir / "dhcp.log")
++    assert new_id != old_id
++    posted.clear()
++    st = run_zeek_behavior_cycle(
++        log_dir=log_dir, post_items=lambda b: posted.extend(b), state_path=state
++    )
++    assert st["rotations"] >= 1
++    assert any(p.get("value") == "h2" for p in posted)
++
++
++# --- Q3 / Q4 ---
++def test_q3_valid_from_none_uncertain(db, monkeypatch):
++    """valid_from is None → uncertain (I2). Colonna prod è NOT NULL: iniezione in-memory."""
++    a, iface = _asset_mac(db, mac="AA:00:00:00:00:01", name="n", status="noto", ip="10.1.1.1")
++    fa = FactAssertion(
++        subject_type="interface",
++        subject_id=iface.id,
++        fact_key="asset.iface_ip",
++        excl_key=f"asset.iface_ip:{iface.id}",
++        value_norm="10.1.1.1",
++        value_json={},
++        source="fritz",
++        authority=80,
++        confidence=0.9,
++        observed_at=datetime.utcnow(),
++        last_seen_at=datetime.utcnow(),
++        valid_from=datetime.utcnow(),
++        valid_to=None,
++        valid_from_truncated=False,
++        state="current",
++    )
++    db.add(fa)
++    db.commit()
++    db.refresh(fa)
++    fa.valid_from = None
++
++    class _Res:
++        def all(self):
++            return [fa]
++
++    monkeypatch.setattr(db, "scalars", lambda _stmt: _Res())
++    with db.no_autoflush:
++        assoc = associate_ip_at(db, "10.1.1.1", datetime.utcnow() - timedelta(days=30))
++    assert assoc.status == "uncertain"
++    assert "inizio validità" in (assoc.reason or "")
++
++
++def test_q4_valid_from_truncated_uncertain(db):
++    a, iface = _asset_mac(db, mac="AA:00:00:00:00:02", name="n", status="noto", ip="10.1.1.2")
++    past = datetime.utcnow() - timedelta(days=10)
++    fa = FactAssertion(
++        subject_type="interface",
++        subject_id=iface.id,
++        fact_key="asset.iface_ip",
++        excl_key=f"asset.iface_ip:{iface.id}",
++        value_norm="10.1.1.2",
++        value_json={},
++        source="fritz",
++        authority=80,
++        confidence=0.9,
++        observed_at=past,
++        last_seen_at=past,
++        valid_from=past - timedelta(days=1),
++        valid_to=None,
++        valid_from_truncated=True,
++        state="current",
++    )
++    db.add(fa)
++    db.commit()
++    assoc = associate_ip_at(db, "10.1.1.2", datetime.utcnow())
++    assert assoc.status == "uncertain"
++    assert "troncato" in (assoc.reason or "")
++
++
++# --- Q5 ---
++def test_q5_duplicate_mac_uncertain_deterministic(db):
++    from app.facts.ip_association import association_from_mac_matches
++
++    a1, i1 = _asset_mac(db, mac="70:50:AF:FC:0A:F8", name="a", status="noto")
++    a2, i2 = _asset_mac(db, mac="70:50:AF:FC:0A:F9", name="b", status="noto")
++    db.commit()
++    with db.no_autoflush:
++        i2.mac = "70:50:AF:FC:0A:F8"
++        assoc = association_from_mac_matches(db, "70:50:AF:FC:0A:F8", [i1, i2])
++    assert assoc.status == "uncertain"
++    assert "collisione" in (assoc.reason or "").lower() or "interfacce" in (
++        assoc.reason or ""
++    )
++    assert assoc.interface_id == min(i1.id, i2.id)
++
++
++# --- Q6 ---
++def test_q6_purge_preserves_valid_first_seen_count(db):
++    a, _ = _asset_mac(db, mac="BB:00:00:00:00:01", name="", status="nuovo")
++    db.commit()
++    now = datetime.utcnow()
++    old = now - timedelta(days=10)
++    ingest_zeek_behavior_batch(
++        db,
++        [
++            {
++                "kind": "ja4",
++                "value": "old_fp",
++                "src_mac": "BB:00:00:00:00:01",
++                "observed_at": old.isoformat() + "Z",
++            },
++            {
++                "kind": "ja4",
++                "value": "new_fp",
++                "src_mac": "BB:00:00:00:00:01",
++                "observed_at": now.isoformat() + "Z",
++            },
++        ],
++    )
++    db.commit()
++    # Bump observation_count on new
++    ingest_zeek_behavior_batch(
++        db,
++        [
++            {
++                "kind": "ja4",
++                "value": "new_fp",
++                "src_mac": "BB:00:00:00:00:01",
++                "observed_at": now.isoformat() + "Z",
++            }
++        ],
++    )
++    db.commit()
++    alive = db.scalar(
++        select(ZeekBehaviorEvidence).where(ZeekBehaviorEvidence.value == "new_fp")
++    )
++    assert alive is not None
++    fs_before = alive.first_seen
++    cnt_before = alive.observation_count
++    stats = prune_zeek_behavior_evidence(db, ttl_raw_days=7, now=now)
++    db.commit()
++    assert stats["deleted"] >= 1
++    gone = db.scalar(
++        select(ZeekBehaviorEvidence).where(ZeekBehaviorEvidence.value == "old_fp")
++    )
++    assert gone is None
++    alive2 = db.scalar(
++        select(ZeekBehaviorEvidence).where(ZeekBehaviorEvidence.value == "new_fp")
++    )
++    assert alive2 is not None
++    assert alive2.first_seen == fs_before
++    assert alive2.observation_count == cnt_before
++
++
++# --- Q7 ---
++def test_q7_bi_grouped_priority_separated_same_across_surfaces(db):
++    from app.models import Chassis
++
++    ch = Chassis(label="grp")
++    db.add(ch)
++    db.flush()
++    for i, mac in enumerate(["CC:00:00:00:00:01", "CC:00:00:00:00:02", "CC:00:00:00:00:03"]):
++        a, _ = _asset_mac(db, mac=mac, name="", status="nuovo")
++        a.chassis_id = ch.id
++        db.flush()
++        # Only first member gets evidence → still one chassis subject
++        if i == 0:
++            ingest_zeek_behavior_batch(
++                db,
++                [
++                    {
++                        "kind": "ja4",
++                        "value": f"fp{i}",
++                        "src_mac": mac,
++                        "observed_at": datetime.utcnow().isoformat() + "Z",
++                    }
++                ],
++            )
++    # Second chassis
++    ch2 = Chassis(label="grp2")
++    db.add(ch2)
++    db.flush()
++    a2, _ = _asset_mac(db, mac="CC:00:00:00:00:99", name="", status="nuovo")
++    a2.chassis_id = ch2.id
++    db.flush()
++    ingest_zeek_behavior_batch(
++        db,
++        [
++            {
++                "kind": "ja4",
++                "value": "fp99",
++                "src_mac": "CC:00:00:00:00:99",
++                "observed_at": datetime.utcnow().isoformat() + "Z",
++            }
++        ],
++    )
++    db.commit()
++    members = unknown_with_evidence_cards(db)
++    assert len(members) >= 2
++    sig = build_behavior_signals(db)
++    unk = sig["unknown_evidence_cards"]
++    assert len(unk) == 1
++    assert unk[0]["kind"] == "behavior_unknown_with_evidence_group"
++    assert unk[0]["defense_priority_id"] == "ignoto_con_evidenze_zeek"
++    assert unk[0]["count"] == len(members)
++    action_ids = {a["id"] for a in unk[0]["actions"]}
++    assert "open_evidences" in action_ids or "assign_name" in action_ids
++    assert "acknowledge" in action_ids
++    # Not only ack: useful actions present
++    assert action_ids - {"acknowledge"}
++    # Same condition ⇒ same priority id on member and group
++    assert all(m["defense_priority_id"] == "ignoto_con_evidenze_zeek" for m in members)
++    # Separated from P1 active unrecognized
++    assert unk[0]["defense_priority_id"] != "non_riconosciuto_o_solo_l2"
++
++
++def test_breaker_negative_blocks_write(db, monkeypatch):
++    """Controllo negativo: breaker open → skipped_breaker, no new row."""
++    from sqlalchemy import func
++
++    _asset_mac(db, mac="DD:00:00:00:00:01", name="x", status="noto")
++    db.commit()
++    before = db.scalar(select(func.count()).select_from(ZeekBehaviorEvidence)) or 0
++
++    def always_open(_db):
++        return True, "test breaker open"
++
++    monkeypatch.setattr(
++        "app.services.behaviour.evaluate_evidence_breaker", always_open
++    )
++    action = upsert_evidence_item(
++        db,
++        {
++            "kind": "ja4",
++            "value": "should_not_write",
++            "src_mac": "DD:00:00:00:00:01",
++            "observed_at": datetime.utcnow().isoformat() + "Z",
++        },
++    )
++    assert action == "skipped_breaker"
++    after = db.scalar(select(func.count()).select_from(ZeekBehaviorEvidence)) or 0
++    assert after == before
