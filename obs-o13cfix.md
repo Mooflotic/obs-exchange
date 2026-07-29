@@ -206,9 +206,18 @@ Harness O9 (`Page.captureScreenshot` + `dsf=1`) **non eseguito in questa session
 - `obs-o13cfix-baseline.diff.txt` — criteri B2, invalidate, refuse mark, test, VERSION/CHANGELOG/debt/errata
 - `obs-o13cfix-rollback.diff.txt` — Oggi readiness/UI marker, api.js endpoint, observatoryUx, package.json
 
----
+| deliverable | sha256 | wc -l | URL |
+|-------------|--------|------:|-----|
+| [obs-o13cfix.md](https://raw.githubusercontent.com/Mooflotic/obs-exchange/main/obs-o13cfix.md) | *(vedi tabella finale agente)* | — | raw main |
+| [obs-o13cfix-baseline.diff.txt](https://raw.githubusercontent.com/Mooflotic/obs-exchange/main/obs-o13cfix-baseline.diff.txt) | `6c4ef6db7c7c7e302927d52b2dc76ac19a44fd8b50ec92768fd36e850d933811` | 2411 | raw |
+| [obs-o13cfix-rollback.diff.txt](https://raw.githubusercontent.com/Mooflotic/obs-exchange/main/obs-o13cfix-rollback.diff.txt) | `9fbb6a2e68382faea93add069f055bd976128fbc0028a2607ec71547e2c5b994` | 2171 | raw |
+| [obs-o13c.md](https://raw.githubusercontent.com/Mooflotic/obs-exchange/main/obs-o13c.md) (errata) | — | — | raw |
+| [obs-o13cfix-CHANGELOG.md](https://raw.githubusercontent.com/Mooflotic/obs-exchange/main/obs-o13cfix-CHANGELOG.md) | — | — | raw |
+| [obs-o13cfix-KNOWN_DEBT.md](https://raw.githubusercontent.com/Mooflotic/obs-exchange/main/obs-o13cfix-KNOWN_DEBT.md) | — | — | raw |
 
-## Cosa NON è stato fatto
+### Screenshot O13C-FIX
+
+Harness O9 / Playwright **non disponibile** in questa sessione (`playwright not installed`). Login UI non automatizzato. Preferire catture privacy-safe post-login manuale su `/oggi` con sezione egress `data-o13cfix=baseline`.
 
 - Nessun raise di tetti
 - Nessun ripristino `FLOW_INGEST` / `ZEEK_PROVIDER`
