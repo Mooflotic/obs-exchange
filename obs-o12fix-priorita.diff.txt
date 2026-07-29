@@ -1,0 +1,333 @@
+# OBS-O12-FIX priorità K3 — P7 legenda
+# Focused reviewable patch: oggiPriority.js + test + Oggi.vue legend excerpt only
+# Nota: Oggi.vue ha anche altri diff O10/O11 non correlati a K3; sotto solo linee legenda/import P1–P7.
+
+## web/src/oggiPriority.js (new)
+diff --git a/observatory/web/src/oggiPriority.js b/observatory/web/src/oggiPriority.js
+new file mode 100644
+index 0000000..087d4be
+--- /dev/null
++++ b/observatory/web/src/oggiPriority.js
+@@ -0,0 +1,229 @@
++/**
++ * O8 FASE 3 — priorità per conseguenza difensiva (un solo posto).
++ * Nessuna soglia numerica nuova: solo ordinamento dichiarato e ispezionabile.
++ */
++
++/** @typedef {{ level: number, id: string, label: string }} DefensePriorityLevel */
++
++/** Legenda UI — ordine dichiarato P1–P7 (P7 = igiene inventario / proposte nome). */
++export const DEFENSE_PRIORITY_LEGEND = Object.freeze([
++  {
++    level: 1,
++    id: "non_riconosciuto_o_solo_l2",
++    label: "Dispositivo non riconosciuto / attivo, o solo-L2",
++  },
++  {
++    level: 2,
++    id: "mac_nuovo_accesso",
++    label: "MAC nuovo su porta di accesso",
++  },
++  {
++    level: 3,
++    id: "mac_move_accesso",
++    label: "MAC-move fra porte di accesso",
++  },
++  {
++    level: 4,
++    id: "sorgente_non_disponibile",
++    label: "Sorgente di osservazione non disponibile (cecità)",
++  },
++  {
++    level: 5,
++    id: "conflitto_identita",
++    label: "Conflitti di identità (I3)",
++  },
++  {
++    level: 6,
++    id: "ignoto_con_evidenze_zeek",
++    label:
++      "Ignoto con evidenze Zeek raccolte (non urgente come non-riconosciuto attivo; nome manuale)",
++  },
++  {
++    level: 7,
++    id: "igiene_nome",
++    label: "Proposte di nome e igiene inventario (incl. sorgente disabilitata deliberatamente)",
++  },
++]);
++
++const BY_ID = Object.fromEntries(DEFENSE_PRIORITY_LEGEND.map((x) => [x.id, x]));
++
++/**
++ * @param {string} id
++ * @param {string} [ruleDetail]
++ * @returns {{ level: number, id: string, label: string, rule: string }}
++ */
++export function defensePriority(id, ruleDetail = "") {
++  const base = BY_ID[id] || BY_ID.igiene_nome;
++  return {
++    level: base.level,
++    id: base.id,
++    label: base.label,
++    rule: ruleDetail || base.label,
++  };
++}
++
++/**
++ * FDB S-A…S-D → livello difensivo (mai soppressi come rumore).
++ * Mapping allineato a `fdb_defense.py` kind (O9 X2):
++ *   S-A / fdb_mac_new  → P2 MAC nuovo
++ *   S-B / fdb_mac_move → P3 MAC-move
++ *   S-C / fdb_l2_only  → P1 solo-L2
++ *   S-D               → P4 sorgente non disponibile
++ * @param {object} card
++ */
++export function priorityForFdbCard(card) {
++  const signal = String(card?.signal || "");
++  const kind = String(card?.kind || "");
++  const role = String(card?.ruolo_porta || "");
++  const uncertainRole = role === "non_determinato";
++  let p;
++  const isSoloL2 = kind === "fdb_l2_only" || signal === "S-C";
++  const isMacNew = kind === "fdb_mac_new" || signal === "S-A";
++  const isMacMove = kind === "fdb_mac_move" || signal === "S-B";
++  const isBlind = signal === "S-D" || kind === "fdb_source_stale";
++
++  if (isSoloL2) {
++    p = defensePriority(
++      "non_riconosciuto_o_solo_l2",
++      uncertainRole
++        ? "S-C solo-L2 · ruolo_porta non_determinato · priorità dichiarata ma ridotta in UI"
++        : "S-C solo-L2 (presente in FDB senza IP corrente)",
++    );
++  } else if (isMacNew) {
++    p = defensePriority(
++      "mac_nuovo_accesso",
++      uncertainRole
++        ? "S-A MAC nuovo · ruolo_porta non_determinato · priorità dichiarata ma ridotta in UI"
++        : "S-A MAC nuovo su porta di accesso",
++    );
++  } else if (isMacMove) {
++    p = defensePriority(
++      "mac_move_accesso",
++      uncertainRole
++        ? "S-B MAC-move · ruolo_porta non_determinato · priorità dichiarata ma ridotta in UI"
++        : "S-B MAC-move fra porte di accesso",
++    );
++  } else if (isBlind) {
++    p = defensePriority(
++      "sorgente_non_disponibile",
++      `S-D · ${card?.state || "sorgente_non_disponibile"}`,
++    );
++  } else {
++    p = defensePriority("igiene_nome", `segnale FDB ${signal || kind || "sconosciuto"}`);
++  }
++  return { ...p, role_uncertain: uncertainRole };
++}
++
++/**
++ * @param {object} card chassis name card
++ */
++export function priorityForChassisCard(card) {
++  if (card?.conflict) {
++    return defensePriority(
++      "conflitto_identita",
++      "I3 · nome manuale tenuto vs proposta più debole/divergente",
++    );
++  }
++  return defensePriority(
++    "igiene_nome",
++    `chassis_nome · verdict=${card?.verdict || "chassis_nome"}`,
++  );
++}
++
++/**
++ * @param {object} row triage row
++ * @param {{ solo_l2?: boolean, unrecognized_active?: boolean }} [ctx]
++ */
++export function priorityForTriageRow(row, ctx = {}) {
++  if (ctx.solo_l2 || ctx.unrecognized_active) {
++    return defensePriority(
++      "non_riconosciuto_o_solo_l2",
++      ctx.solo_l2
++        ? "asset solo-L2 (nessun IP corrente) · attivo in coda"
++        : "dispositivo non riconosciuto e attivo",
++    );
++  }
++  if (row?.verdict === "collide" || row?.conflict) {
++    return defensePriority("conflitto_identita", "I3 / collide su proposta nome");
++  }
++  return defensePriority(
++    "igiene_nome",
++    `proposta_nome · verdict=${row?.verdict || "?"} · action=${row?.recommended_action || "?"}`,
++  );
++}
++
++/**
++ * Nuovi da conoscere → livello 1.
++ */
++export function priorityForNuovo() {
++  return defensePriority(
++    "non_riconosciuto_o_solo_l2",
++    "isNuovoDaConoscere · dispositivo non riconosciuto / da conoscere",
++  );
++}
++
++/**
++ * Move suggestion (porte) → livello 3 se access-like, altrimenti igiene.
++ */
++export function priorityForMove(item) {
++  return defensePriority(
++    "mac_move_accesso",
++    "suggestion kind=move · conferma porta (ex /suggestions)",
++  );
++}
++
++/**
++ * O11 behaviour / O12 coverage → same P-scale.
++ * B-C → P5; B-I → P6; coverage cieca → P4 sorgente_non_disponibile; disabled → P7 igiene_nome
++ */
++export function priorityForBehaviorCard(card) {
++  const kind = String(card?.kind || "");
++  const id = card?.defense_priority_id;
++  if (id === "conflitto_identita" || kind === "behavior_character_change") {
++    return defensePriority(
++      "conflitto_identita",
++      "B-C · cambio di carattere (JA4/DHCP strutturalmente nuovo)",
++    );
++  }
++  if (
++    id === "ignoto_con_evidenze_zeek" ||
++    kind === "behavior_unknown_with_evidence" ||
++    kind === "behavior_unknown_with_evidence_group"
++  ) {
++    return defensePriority(
++      "ignoto_con_evidenze_zeek",
++      "B-I · ignoto con evidenze Zeek · priorità igiene (non P1 attivo)",
++    );
++  }
++  return defensePriority(
++    "ignoto_con_evidenze_zeek",
++    "B-I · ignoto con evidenze Zeek",
++  );
++}
++
++/** O12 coverage cards — riuso P4 (cieca) e P7 igiene_nome (disabilitata), livelli in DEFENSE_PRIORITY_LEGEND. */
++export function priorityForCoverageCard(card) {
++  const kind = String(card?.kind || "");
++  const id = card?.defense_priority_id;
++  if (id === "sorgente_non_disponibile" || kind === "coverage_source_blind") {
++    return defensePriority(
++      "sorgente_non_disponibile",
++      "C-S · sorgente di osservazione cieca (≠ disabilitata)",
++    );
++  }
++  return defensePriority(
++    "igiene_nome",
++    "C-D · sorgente disabilitata deliberatamente (informativa)",
++  );
++}
++
++/**
++ * Sort key: lower level first; within level keep stable secondary.
++ * @param {{ defense_priority?: { level: number } }} a
++ * @param {{ defense_priority?: { level: number } }} b
++ */
++export function compareDefensePriority(a, b) {
++  const la = a?.defense_priority?.level ?? 99;
++  const lb = b?.defense_priority?.level ?? 99;
++  return la - lb;
++}
+
+## web/src/oggiPriority.test.js (new)
+diff --git a/observatory/web/src/oggiPriority.test.js b/observatory/web/src/oggiPriority.test.js
+new file mode 100644
+index 0000000..e459d26
+--- /dev/null
++++ b/observatory/web/src/oggiPriority.test.js
+@@ -0,0 +1,42 @@
++/**
++ * O12-FIX K3 — legenda e livelli usati devono coincidere (P1–P7, nessun livello fantasma).
++ */
++import test from "node:test";
++import assert from "node:assert/strict";
++import {
++  DEFENSE_PRIORITY_LEGEND,
++  defensePriority,
++  priorityForCoverageCard,
++} from "./oggiPriority.js";
++
++test("legenda dichiara P1–P7 senza buchi", () => {
++  const levels = DEFENSE_PRIORITY_LEGEND.map((x) => x.level);
++  assert.deepEqual(levels, [1, 2, 3, 4, 5, 6, 7]);
++  assert.equal(DEFENSE_PRIORITY_LEGEND.length, 7);
++  assert.ok(DEFENSE_PRIORITY_LEGEND.some((x) => x.id === "igiene_nome" && x.level === 7));
++});
++
++test("coverage cieca → P4; disabilitata → P7 igiene_nome", () => {
++  const blind = priorityForCoverageCard({
++    kind: "coverage_source_blind",
++    defense_priority_id: "sorgente_non_disponibile",
++  });
++  assert.equal(blind.level, 4);
++  assert.ok(DEFENSE_PRIORITY_LEGEND.some((L) => L.level === blind.level));
++
++  const disabled = priorityForCoverageCard({
++    kind: "coverage_source_disabled",
++    defense_priority_id: "igiene_nome",
++  });
++  assert.equal(disabled.level, 7);
++  assert.equal(disabled.id, "igiene_nome");
++  assert.ok(DEFENSE_PRIORITY_LEGEND.some((L) => L.id === disabled.id && L.level === 7));
++});
++
++test("defensePriority non inventa livelli fuori legenda", () => {
++  const p = defensePriority("igiene_nome");
++  assert.equal(p.level, 7);
++  const unknown = defensePriority("id_inesistente_xyz");
++  assert.equal(unknown.id, "igiene_nome");
++  assert.equal(unknown.level, 7);
++});
+
+## web/src/views/Oggi.vue — excerpt legenda P1–P7 (non full file diff)
+```vue
+19:  DEFENSE_PRIORITY_LEGEND,
+28:} from "../oggiPriority";
+95:const defenseLegend = DEFENSE_PRIORITY_LEGEND;
+
+--- template legend ---
+930:    <ViewStateBanner v-if="loading" kind="loading" />
+931:    <template v-if="!loading">
+932:      <details class="oggi-collapse" :open="!narrowUi" data-testid="oggi-legend-collapse">
+933:        <summary class="oggi-collapse-sum">
+934:          Priorità P1–P7 · legenda
+935:          <span class="oggi-muted-inline">7 livelli · P1 resta in coda aperta · P7 = igiene</span>
+936:        </summary>
+937:        <section class="oggi-legend" aria-label="Legenda priorità difensiva">
+938:          <h2 class="oggi-h2">Priorità per conseguenza difensiva</h2>
+939:          <ol class="oggi-legend-list">
+940:            <li v-for="L in defenseLegend" :key="L.id">
+941:              <strong>P{{ L.level }}</strong> — {{ L.label }}
+942:            </li>
+943:          </ol>
+944:          <p class="oggi-muted-inline">
+945:            Ogni riga mostra la regola che ha prodotto la posizione. Nessun ordinamento magico.
+946:          </p>
+947:        </section>
+948:      </details>
+949:      <nav class="oggi-quick" aria-label="Domande rapide da Oggi">
+950:        <p class="oggi-quick-title">Domande rapide (≤3 passi)</p>
+951:        <ul class="oggi-quick-list">
+952:          <li>
+953:            <a href="#oggi-fdb">Non riconosciuto / solo-L2 adesso?</a>
+954:            <span class="oggi-muted-inline">→ FDB P1 / Nuovi</span>
+955:          </li>
+```
+
+### Diff-style snippet (legend header only vs typical O11 text)
+```diff
+-          Priorità P1–P6 · legenda
+-          <span class="oggi-muted-inline">6 livelli · P1 resta in coda aperta</span>
++          Priorità P1–P7 · legenda
++          <span class="oggi-muted-inline">7 livelli · P1 resta in coda aperta · P7 = igiene</span>
+```
