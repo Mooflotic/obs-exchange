@@ -1,0 +1,90 @@
+diff --git a/observatory/web/src/views/Incidents.vue b/observatory/web/src/views/Incidents.vue
+index 5aba98b..2681f18 100644
+--- a/observatory/web/src/views/Incidents.vue
++++ b/observatory/web/src/views/Incidents.vue
+@@ -188,9 +188,9 @@ onMounted(load);
+ }
+ .filter-chip.active {
+   color: var(--accent);
+-  border-color: rgba(61, 255, 138, 0.32);
+-  background: rgba(61, 255, 138, 0.1);
+-  box-shadow: inset 0 0 12px rgba(61, 255, 138, 0.06);
++  border-color: color-mix(in srgb, var(--ok) 32%, transparent);
++  background: color-mix(in srgb, var(--ok) 10%, transparent);
++  box-shadow: inset 0 0 12px color-mix(in srgb, var(--ok) 6%, transparent);
+ }
+ .filter-chip.active::before {
+   content: "";
+diff --git a/observatory/web/src/views/Plant.vue b/observatory/web/src/views/Plant.vue
+index 442ead8..962ac85 100644
+--- a/observatory/web/src/views/Plant.vue
++++ b/observatory/web/src/views/Plant.vue
+@@ -1062,7 +1062,7 @@ onMounted(load);
+   color: #c99ee8;
+ }
+ .role-badge.access {
+-  color: #83c99c;
++  color: var(--ok);
+ }
+ .role-badge.trunk {
+   color: #d6a37b;
+@@ -1194,7 +1194,7 @@ onMounted(load);
+   border-left: 3px solid #c99ee8;
+ }
+ .port.role-access {
+-  border-left: 3px solid #83c99c;
++  border-left: 3px solid var(--ok);
+ }
+ .port.role-trunk {
+   border-left: 3px solid #d6a37b;
+@@ -1280,7 +1280,7 @@ onMounted(load);
+   font-family: var(--font-mono);
+ }
+ .dot.up {
+-  background: #47b36b;
++  background: var(--ok);
+ }
+ .dot.down, .dot.lowerLayerDown, .dot.notPresent {
+   background: #c55454;
+@@ -1416,7 +1416,7 @@ onMounted(load);
+ }
+ .fdb-cov-tag.warn { color: #e4b866; }
+ .fdb-cov-tag.limit { color: #9aa8b8; }
+-.fdb-cov-tag.ok { color: #83c99c; }
++.fdb-cov-tag.ok { color: var(--ok); }
+ .fdb-cov-ports {
+   display: flex;
+   flex-wrap: wrap;
+@@ -1432,7 +1432,7 @@ onMounted(load);
+   overflow: visible;
+   text-overflow: unset;
+ }
+-.fdb-cov-port.misurata_fresca { border-color: #83c99c; }
++.fdb-cov-port.misurata_fresca { border-color: var(--ok); }
+ .fdb-cov-port.misurata_vecchia { border-color: #e4b866; }
+ .fdb-cov-port.non_coperta { border-color: #9aa8b8; color: var(--muted); }
+ .fdb-port-badge {
+@@ -1443,7 +1443,7 @@ onMounted(load);
+   overflow: visible;
+ }
+ .fdb-port-badge.warn { color: #e4b866; }
+-.fdb-port-badge.ok { color: #83c99c; }
++.fdb-port-badge.ok { color: var(--ok); }
+ .plant-ops { margin-bottom: 1rem; }
+ .plant-search { display: flex; flex-direction: column; gap: 0.25rem; margin: 0.5rem 0; }
+ .plant-search input {
+@@ -1482,12 +1482,12 @@ onMounted(load);
+ .tag.l2 { border-color: #e4b866; color: #e4b866; }
+ .tag.laa { border-color: #9aa8b8; color: #9aa8b8; }
+ .tag.bl-recon { border-color: #c9a227; color: #c9a227; }
+-.tag.bl-ok { border-color: #83c99c; color: #83c99c; }
++.tag.bl-ok { border-color: var(--ok); color: var(--ok); }
+ .tag.empty { border-color: #b88; color: #dbb; }
+ .port-hit { outline: 2px solid var(--accent, #6ea8fe); outline-offset: 1px; }
+ .port-filtered-out { opacity: 0.28; }
+ .port.fdb-empty-non_coperta { border-style: dashed; }
+-.port.fdb-empty-misurata_senza_dispositivi { border-color: #83c99c; }
++.port.fdb-empty-misurata_senza_dispositivi { border-color: var(--ok); }
+ .port.fdb-empty-sorgente_non_fresca { border-color: #e4b866; }
+ .plant-drawer-fdb { margin-top: 1rem; font-size: 0.85rem; }
+ .plant-mac-list { list-style: none; padding: 0; margin: 0.5rem 0 0; }
