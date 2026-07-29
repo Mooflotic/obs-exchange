@@ -1,0 +1,254 @@
+{
+  "wave": "O21-M",
+  "sha256": "0076029e44a45f00a9c52e5dc21984b86bf509ede553f3bd11d68b054f43ec33",
+  "bytes": 1257821,
+  "wc_l": 34860,
+  "auth_provenance": "catture autenticate via session mint, scadenza 180s (fonte run harness 36s×5), token non pubblicato",
+  "routes_n": 13,
+  "i2_violations_deduped_n": 5,
+  "i2_ok_deduped_n": 2,
+  "by_route_1280": {
+    "oggi": {
+      "h_pagina": 15430,
+      "census": {
+        "network_nodes": 0,
+        "topology_paths": 0,
+        "list_parents": 0,
+        "inference_marks": 0,
+        "h_pagina": 15430
+      },
+      "placeholder_i2_n": 50,
+      "i2_distinguishes_n": 0,
+      "i2_not_distinguishes_n": 50,
+      "len_asserted_ph": 50,
+      "conditions": {
+        "non_dichiarata": 50
+      }
+    },
+    "topology": {
+      "h_pagina": 5559,
+      "census": {
+        "network_nodes": 29,
+        "topology_paths": 27,
+        "list_parents": 27,
+        "inference_marks": 1,
+        "h_pagina": 5559
+      },
+      "placeholder_i2_n": 0,
+      "i2_distinguishes_n": 0,
+      "i2_not_distinguishes_n": 0,
+      "len_asserted_ph": 0,
+      "conditions": {}
+    },
+    "inventory": {
+      "h_pagina": 6305,
+      "census": {
+        "network_nodes": 0,
+        "topology_paths": 0,
+        "list_parents": 0,
+        "inference_marks": 0,
+        "h_pagina": 6305
+      },
+      "placeholder_i2_n": 0,
+      "i2_distinguishes_n": 0,
+      "i2_not_distinguishes_n": 0,
+      "len_asserted_ph": 0,
+      "conditions": {}
+    },
+    "gs308": {
+      "h_pagina": 1916,
+      "census": {
+        "network_nodes": 0,
+        "topology_paths": 0,
+        "list_parents": 0,
+        "inference_marks": 1,
+        "h_pagina": 1916
+      },
+      "placeholder_i2_n": 0,
+      "i2_distinguishes_n": 0,
+      "i2_not_distinguishes_n": 0,
+      "len_asserted_ph": 0,
+      "conditions": {}
+    },
+    "monitoring": {
+      "h_pagina": 1228,
+      "census": {
+        "network_nodes": 0,
+        "topology_paths": 0,
+        "list_parents": 0,
+        "inference_marks": 0,
+        "h_pagina": 1228
+      },
+      "placeholder_i2_n": 7,
+      "i2_distinguishes_n": 2,
+      "i2_not_distinguishes_n": 5,
+      "len_asserted_ph": 7,
+      "conditions": {
+        "ambiguo": 3,
+        "sorgente_non_disponibile": 2,
+        "non_dichiarata": 2
+      }
+    },
+    "timeline": {
+      "h_pagina": 11384,
+      "census": {
+        "network_nodes": 0,
+        "topology_paths": 0,
+        "list_parents": 0,
+        "inference_marks": 0,
+        "h_pagina": 11384
+      },
+      "placeholder_i2_n": 0,
+      "i2_distinguishes_n": 0,
+      "i2_not_distinguishes_n": 0,
+      "len_asserted_ph": 0,
+      "conditions": {}
+    },
+    "findings": {
+      "h_pagina": 900,
+      "census": {
+        "network_nodes": 0,
+        "topology_paths": 0,
+        "list_parents": 0,
+        "inference_marks": 0,
+        "h_pagina": 900
+      },
+      "placeholder_i2_n": 0,
+      "i2_distinguishes_n": 0,
+      "i2_not_distinguishes_n": 0,
+      "len_asserted_ph": 0,
+      "conditions": {}
+    },
+    "incidents": {
+      "h_pagina": 900,
+      "census": {
+        "network_nodes": 0,
+        "topology_paths": 0,
+        "list_parents": 0,
+        "inference_marks": 0,
+        "h_pagina": 900
+      },
+      "placeholder_i2_n": 0,
+      "i2_distinguishes_n": 0,
+      "i2_not_distinguishes_n": 0,
+      "len_asserted_ph": 0,
+      "conditions": {}
+    },
+    "plant": {
+      "h_pagina": 2228,
+      "census": {
+        "network_nodes": 0,
+        "topology_paths": 0,
+        "list_parents": 0,
+        "inference_marks": 1,
+        "h_pagina": 2228
+      },
+      "placeholder_i2_n": 8,
+      "i2_distinguishes_n": 0,
+      "i2_not_distinguishes_n": 8,
+      "len_asserted_ph": 8,
+      "conditions": {
+        "non_dichiarata": 8
+      }
+    },
+    "actions": {
+      "h_pagina": 36515,
+      "census": {
+        "network_nodes": 0,
+        "topology_paths": 0,
+        "list_parents": 0,
+        "inference_marks": 0,
+        "h_pagina": 36515
+      },
+      "placeholder_i2_n": 0,
+      "i2_distinguishes_n": 0,
+      "i2_not_distinguishes_n": 0,
+      "len_asserted_ph": 0,
+      "conditions": {}
+    },
+    "dashboard": {
+      "h_pagina": 2140,
+      "census": {
+        "network_nodes": 0,
+        "topology_paths": 0,
+        "list_parents": 0,
+        "inference_marks": 0,
+        "h_pagina": 2140
+      },
+      "placeholder_i2_n": 0,
+      "i2_distinguishes_n": 0,
+      "i2_not_distinguishes_n": 0,
+      "len_asserted_ph": 0,
+      "conditions": {}
+    },
+    "osservatorio": {
+      "h_pagina": 900,
+      "census": {
+        "network_nodes": 0,
+        "topology_paths": 0,
+        "list_parents": 0,
+        "inference_marks": 0,
+        "h_pagina": 900
+      },
+      "placeholder_i2_n": 0,
+      "i2_distinguishes_n": 0,
+      "i2_not_distinguishes_n": 0,
+      "len_asserted_ph": 0,
+      "conditions": {}
+    },
+    "dossier": {
+      "h_pagina": 2192,
+      "census": {
+        "network_nodes": 0,
+        "topology_paths": 0,
+        "list_parents": 0,
+        "inference_marks": 3,
+        "h_pagina": 2192
+      },
+      "placeholder_i2_n": 0,
+      "i2_distinguishes_n": 0,
+      "i2_not_distinguishes_n": 0,
+      "len_asserted_ph": 0,
+      "conditions": {}
+    }
+  },
+  "M2_severity": {
+    "monitoring": {
+      "severity": "operativa (salute rete)",
+      "placeholder_i2_n": 7,
+      "ok_titled_snmp": 2,
+      "violations_n": 5,
+      "note": "5× «—» senza condizione I2 unica: poll.at / speedtest / latency / up_ratio; 2 SNMP già con title→sorgente_non_disponibile",
+      "come_potrebbe_fallire": "confondere latenza assente con host down o con 0 ms"
+    },
+    "plant": {
+      "severity": "operativa ALTA (impianto porte)",
+      "placeholder_i2_n": 8,
+      "violations_n": 8,
+      "note": "dot-na «—» title «Link SNMP non misurabile» senza data-i2-condition; condizione reale=limite_strutturale (capability)",
+      "come_potrebbe_fallire": "confondere link non misurabile con porta down o device assente"
+    },
+    "oggi": {
+      "severity": "non-violazione I2 (falso positivo audit)",
+      "placeholder_i2_n": 50,
+      "note": "simboli matrice ODM «—» non pertinente e «–» contraddice + legenda; vocabolario diverso dalle cinque condizioni I2, già distinto dalla legenda. Non in scope D come I2.",
+      "action": "escludere .odm-mark / legenda dall'audit e dal gate"
+    },
+    "other_routes": {
+      "severity": "nessuna violazione placeholder I2 a 1280",
+      "routes_clean": [
+        "topology",
+        "inventory",
+        "gs308",
+        "timeline",
+        "findings",
+        "incidents",
+        "actions",
+        "dashboard",
+        "osservatorio",
+        "dossier"
+      ]
+    }
+  },
+  "GATE_M": "violazioni reali oltre monitoring: plant (8). D = monitoring + plant + gate permanente + esclusione matrice."
+}
