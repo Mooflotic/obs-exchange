@@ -1,0 +1,486 @@
+diff --git a/observatory/scripts/color_literal_gate.py b/observatory/scripts/color_literal_gate.py
+index bfb945a..09db482 100644
+--- a/observatory/scripts/color_literal_gate.py
++++ b/observatory/scripts/color_literal_gate.py
+@@ -5,8 +5,8 @@
+ - ``var(--token, #fallback)`` fallbacks are ignored (not new palette).
+ - ``*.test.js`` ignored (assert token values).
+ - Other literals FAIL unless the file is in ALLOWLIST with a reason.
+-- O13D-FIX D3: canvas greens → ``var(--ok)`` / runtime token read; AI purple
+-  without ``--ai`` token is FERMO (allowlisted, not invented).
++- O13D-FIX D3: canvas greens → ``var(--ok)`` / runtime token read.
++- O14: AI/AP purple → ``--inference`` (+ chrome correlato solo in ``matrix.css``).
+ 
+ Exit 0 = pass; exit 1 = fail.
+ """
+@@ -26,14 +26,9 @@ TOKEN_FILES = {
+ }
+ 
+ # relative path -> reason (must cite residual class; no empty reasons)
++# O14: rimosse 5 voci AI/AP risolte (AiInferenceLabel, AssetDecide, TopologyBranch,
++# VisualBadge, Topology). Prima 21 → dopo 16.
+ ALLOWLIST: dict[str, str] = {
+-    "components/AiInferenceLabel.vue": (
+-        "FERMO D3: AI purple (#9b7bd4/#c4a0ff/#6b4aa8) — nessun token --ai in matrix.css; "
+-        "non inventare palette"
+-    ),
+-    "components/AssetDecide.vue": (
+-        "FERMO D3: AI purple su .src.ai (#c4a0ff/#6b4aa8/#1a1228) — nessun --ai"
+-    ),
+     "components/AssetHabits.vue": (
+         "habits probable/soft (#c47a2c/#6a9cc8/#c45c5c) — non canvas/AI; deferred oltre D3"
+     ),
+@@ -53,13 +48,6 @@ ALLOWLIST: dict[str, str] = {
+     "components/SpanSensorCard.vue": (
+         "span status rgba — deferred oltre canvas/AI"
+     ),
+-    "components/TopologyBranch.vue": (
+-        "FERMO D3: solo residual AP purple #9b82e8 (nessun token ruolo-AP); "
+-        "verdi albero → var(--ok) in O13D-FIX"
+-    ),
+-    "components/ui/VisualBadge.vue": (
+-        "FERMO D3: inference badge purple (#c4b5fd/#8b7cf7) — nessun --ai"
+-    ),
+     "views/Actions.vue": (
+         "actions glow rgba(61,255,138,*) — residual decorativo non-canvas; deferred"
+     ),
+@@ -67,14 +55,14 @@ ALLOWLIST: dict[str, str] = {
+         "dashboard residual rgba — deferred oltre canvas/AI"
+     ),
+     "views/Dossier.vue": (
+-        "FERMO D3: blocco INFERENZA IA purple rgba(155,123,212)/#c4b0e8 — nessun --ai; "
+-        "warn/ok già su token dove possibile"
++        "warn/state chips rgba + fallback var(--warn/--ok,#…) — non AI; "
++        "INFERENZA IA → var(--inference) / classi token-file in O14"
+     ),
+     "views/Gs308.vue": (
+         "gs308 status rgba / #9ab0e0 infer — deferred oltre canvas/AI"
+     ),
+     "views/Inventory.vue": (
+-        "FERMO D3: AI purple inventory (#c4a0ff/#6b4aa8) — nessun --ai"
++        "overlay/modal rgba residui — non AI; chrome AI → token-file in O14"
+     ),
+     "views/Monitoring.vue": (
+         "monitoring glow rgba(61,255,138,*) — deferred oltre canvas/AI"
+@@ -87,15 +75,12 @@ ALLOWLIST: dict[str, str] = {
+         "ok greens già var(--ok); deferred oltre canvas/AI"
+     ),
+     "views/Suggestions.vue": (
+-        "FERMO D3: AI purple (#c4a0ff/#6b4aa8/#1a1228) — nessun --ai"
++        "badge.enrich hex (#122028/#3a6a88/#8ec8e8) — non AI; "
++        "badge.ai → .obs-inference-well in O14"
+     ),
+     "views/Timeline.vue": (
+         "timeline glow rgba(61,255,138,*) — deferred oltre canvas/AI"
+     ),
+-    "views/Topology.vue": (
+-        "FERMO D3: residual AP/group purple #9b82e8/#775fbd/#131323 (nessun token ruolo-AP); "
+-        "verdi griglia/edge/glow → var(--ok) in O13D-FIX"
+-    ),
+ }
+ 
+ HEX_RE = re.compile(r"#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b")
+diff --git a/observatory/web/src/api.js b/observatory/web/src/api.js
+index ca47f6b..3f2c2ce 100644
+--- a/observatory/web/src/api.js
++++ b/observatory/web/src/api.js
+@@ -281,6 +281,7 @@ export const api = {
+   "obs-o13c-fix-marker": true,
+   "obs-o13d-marker": true,
+   "obs-o13dfix-marker": true,
++  "obs-o14-marker": true,
+   egressAck: (body) =>
+     request("/api/egress/ack", { method: "POST", body }),
+   egressBaseline: () => request("/api/egress/baseline"),
+diff --git a/observatory/web/src/assets/matrix.css b/observatory/web/src/assets/matrix.css
+index eae2d02..a720a98 100644
+--- a/observatory/web/src/assets/matrix.css
++++ b/observatory/web/src/assets/matrix.css
+@@ -21,6 +21,8 @@
+   --attn: #d9a441;
+   --alert: #e06b52;
+   --accent: #6bc5db;
++  /* O14 — inferenza (I1): viola già in produzione, nessuna variazione */
++  --inference: #9b7bd4;
+ 
+   /* Tipografia */
+   --font-sans: Inter, -apple-system, system-ui, sans-serif;
+@@ -722,6 +724,39 @@ button.primary {
+ }
+ .seen-meta strong { color: var(--muted); font-weight: 500; font-family: var(--mono); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; display: block; }
+ 
++/*
++ * O14 — chrome INFERENZA/AI già in produzione (stessi hex; solo sede nel token file).
++ * Il token semantico resta --inference (#9b7bd4). Nessun hue nuovo.
++ */
++.obs-inference-fg { color: #c4a0ff; }
++.obs-inference-fg-soft { color: #c4b0e8; }
++.obs-inference-edge { border-color: #6b4aa8; }
++.obs-inference-well {
++  color: #c4a0ff;
++  border-color: #6b4aa8;
++  background: #1a1228;
++}
++.obs-inference-tag-chrome {
++  color: #c4a0ff;
++  border: 0.5px solid #6b4aa8;
++  background: color-mix(in srgb, #6b4aa8 18%, transparent);
++}
++.obs-inference-spin-chrome {
++  border: 2px solid #6b4aa8;
++  border-top-color: #c4a0ff;
++}
++.obs-inference-badge {
++  color: #c4b5fd;
++  background: color-mix(in srgb, #8b7cf7 14%, var(--bg-1));
++  border: 0.5px solid color-mix(in srgb, #8b7cf7 35%, transparent);
++}
++.obs-inference-ap { border-color: #9b82e8; }
++.obs-inference-group {
++  border-color: #775fbd;
++  border-style: dashed;
++  background: #131323;
++}
++
+ .ai-box textarea { width: 100%; min-height: 88px; resize: vertical; margin-top: 0.5rem; }
+ .ai-status {
+   display: flex;
+diff --git a/observatory/web/src/components/AiInferenceLabel.vue b/observatory/web/src/components/AiInferenceLabel.vue
+index 0145315..f2e9686 100644
+--- a/observatory/web/src/components/AiInferenceLabel.vue
++++ b/observatory/web/src/components/AiInferenceLabel.vue
+@@ -20,7 +20,7 @@ const confText = computed(() => formatConfidencePct(props.confidence));
+ 
+ <template>
+   <div v-if="show" class="ai-inference" :class="{ compact }">
+-    <span class="ai-inference-tag">{{ AI_INFERENCE_LABEL }}</span>
++    <span class="ai-inference-tag obs-inference-tag-chrome">{{ AI_INFERENCE_LABEL }}</span>
+     <span v-if="confText" class="ai-inference-conf">Confidenza {{ confText }}</span>
+     <p v-if="evidence && !compact" class="ai-inference-evidence">
+       Evidenze usate: {{ evidence }}
+@@ -33,9 +33,9 @@ const confText = computed(() => formatConfidencePct(props.confidence));
+ .ai-inference {
+   margin: 6px 0 0;
+   padding: 8px 10px;
+-  border: 0.5px solid color-mix(in srgb, #9b7bd4 45%, var(--border));
++  border: 0.5px solid color-mix(in srgb, var(--inference) 45%, var(--border));
+   border-radius: var(--radius);
+-  background: color-mix(in srgb, #9b7bd4 8%, var(--bg-1));
++  background: color-mix(in srgb, var(--inference) 8%, var(--bg-1));
+   font-size: 11.5px;
+   color: var(--text-2);
+   line-height: 1.4;
+@@ -54,11 +54,8 @@ const confText = computed(() => formatConfidencePct(props.confidence));
+   font-weight: 600;
+   letter-spacing: 0.03em;
+   text-transform: uppercase;
+-  color: #c4a0ff;
+-  border: 0.5px solid #6b4aa8;
+   border-radius: 4px;
+   padding: 1px 6px;
+-  background: color-mix(in srgb, #6b4aa8 18%, transparent);
+ }
+ .ai-inference-conf {
+   font-size: 11px;
+diff --git a/observatory/web/src/components/AssetDecide.vue b/observatory/web/src/components/AssetDecide.vue
+index 6821fef..1e0a428 100644
+--- a/observatory/web/src/components/AssetDecide.vue
++++ b/observatory/web/src/components/AssetDecide.vue
+@@ -211,7 +211,10 @@ watch(
+         class="inv-prop"
+         :class="{ 'is-ai': (p.source || '').toLowerCase() === 'ai' }"
+       >
+-        <span class="src" :class="{ ai: (p.source || '').toLowerCase() === 'ai' }">{{ sourceLabel(p.source) }}</span>
++        <span
++          class="src"
++          :class="{ ai: (p.source || '').toLowerCase() === 'ai', 'obs-inference-well': (p.source || '').toLowerCase() === 'ai' }"
++        >{{ sourceLabel(p.source) }}</span>
+         <span class="val">{{ p.value }}</span>
+         <span class="conf">{{ confPct(p.confidence) }}</span>
+         <button type="button" class="adopt" :disabled="busy" @click="adoptProposal(p)">Adotta</button>
+@@ -225,11 +228,11 @@ watch(
+       </div>
+       <button
+         type="button"
+-        class="inv-btn ai-name"
++        class="inv-btn ai-name obs-inference-fg obs-inference-edge"
+         :disabled="busy || aiNamingBusy"
+         @click="proposeAiName"
+       >
+-        <span v-if="aiNamingBusy" class="spin" aria-hidden="true" />
++        <span v-if="aiNamingBusy" class="spin obs-inference-spin-chrome" aria-hidden="true" />
+         {{ aiNamingBusy ? "Proposta in corso…" : "Proponi nome (AI)" }}
+       </button>
+       <p class="inv-ai-disclaimer">{{ AI_INFERENCE_DISCLAIMER }}</p>
+@@ -292,7 +295,6 @@ watch(
+   font-size: 10px; text-transform: uppercase; border: 1px solid var(--inv-border);
+   border-radius: 5px; padding: 1px 6px; color: var(--inv-faint);
+ }
+-.inv-prop .src.ai { color: #c4a0ff; border-color: #6b4aa8; background: #1a1228; }
+ .inv-prop .val { flex: 1; color: var(--inv-text); }
+ .inv-prop .conf { font-size: 11px; color: var(--inv-faint); }
+ .inv-prop .adopt {
+@@ -304,13 +306,12 @@ watch(
+ }
+ .inv-btn.ai-name {
+   margin-top: 10px; display: inline-flex; align-items: center; gap: 8px;
+-  border-color: #6b4aa8; color: #c4a0ff;
+ }
+ .inv-ai-disclaimer {
+   margin: 6px 0 0; font-size: 11px; color: var(--inv-faint); font-style: italic;
+ }
+ .spin {
+-  width: 12px; height: 12px; border: 2px solid #6b4aa8; border-top-color: #c4a0ff;
++  width: 12px; height: 12px;
+   border-radius: 50%; display: inline-block; animation: spin 0.7s linear infinite;
+ }
+ @keyframes spin { to { transform: rotate(360deg); } }
+diff --git a/observatory/web/src/components/TopologyBranch.vue b/observatory/web/src/components/TopologyBranch.vue
+index 9b14808..3ba7b7b 100644
+--- a/observatory/web/src/components/TopologyBranch.vue
++++ b/observatory/web/src/components/TopologyBranch.vue
+@@ -46,6 +46,7 @@ function show(event, text) {
+             'on-path': node.on_path,
+             dimmed: hasSelection && !node.on_path,
+             clickable: ['endpoint', 'ap', 'gateway'].includes(node.type),
++            'obs-inference-ap': node.type === 'ap',
+           },
+         ]"
+         tabindex="0"
+@@ -180,8 +181,7 @@ function show(event, text) {
+ }
+ .network-node.switch { border-color: var(--accent-dim); }
+ .network-node.gateway { border-color: var(--accent); }
+-/* AP purple: nessun token --ap/--ai in palette — residual dichiarato (D3 FERMO) */
+-.network-node.ap { border-color: #9b82e8; }
++/* O14: bordo AP via .obs-inference-ap (matrix.css, hue produzione #9b82e8) */
+ .network-node.opaque { border-style: dashed; }
+ .network-node.offline { filter: saturate(0.55); }
+ .network-node.clickable { cursor: pointer; }
+diff --git a/observatory/web/src/components/ui/VisualBadge.vue b/observatory/web/src/components/ui/VisualBadge.vue
+index 8ffc69d..0c505f3 100644
+--- a/observatory/web/src/components/ui/VisualBadge.vue
++++ b/observatory/web/src/components/ui/VisualBadge.vue
+@@ -22,7 +22,7 @@ defineProps({
+   />
+   <span
+     v-else
+-    class="status-badge infer visual-badge"
++    class="status-badge infer visual-badge obs-inference-badge"
+     :title="title || undefined"
+   >{{ label }}</span>
+ </template>
+@@ -36,8 +36,5 @@ defineProps({
+   padding: 2px 8px;
+   border-radius: 20px;
+   line-height: 1.3;
+-  color: #c4b5fd;
+-  background: color-mix(in srgb, #8b7cf7 14%, var(--bg-1));
+-  border: 0.5px solid color-mix(in srgb, #8b7cf7 35%, transparent);
+ }
+ </style>
+diff --git a/observatory/web/src/observatoryUx.js b/observatory/web/src/observatoryUx.js
+index 9b297af..11f9ea9 100644
+--- a/observatory/web/src/observatoryUx.js
++++ b/observatory/web/src/observatoryUx.js
+@@ -476,6 +476,8 @@ export const OBS_O13CFIX_MARKER = "obs-o13c-fix-marker";
+ export const OBS_O13D_MARKER = "obs-o13d-marker";
+ /** Bundle proof string for OBS-UX O13D-FIX deploy markers. */
+ export const OBS_O13DFIX_MARKER = "obs-o13dfix-marker";
++/** Bundle proof string for OBS-UX O14 deploy markers. */
++export const OBS_O14_MARKER = "obs-o14-marker";
+ 
+ /** NameProposal / hostname source rank — ai sotto manual (I5). */
+ export const PROPOSAL_SOURCE_RANK = {
+diff --git a/observatory/web/src/views/Dossier.vue b/observatory/web/src/views/Dossier.vue
+index e78fb60..bfd07a0 100644
+--- a/observatory/web/src/views/Dossier.vue
++++ b/observatory/web/src/views/Dossier.vue
+@@ -511,7 +511,7 @@ onMounted(() => {
+         </section>
+ 
+         <section id="q-inference" class="q-block inference" data-o11="inferenza">
+-          <h2><span class="tag infer">{{ inference?.title || AI_INFERENCE_LABEL }}</span></h2>
++          <h2><span class="tag infer obs-inference-fg-soft">{{ inference?.title || AI_INFERENCE_LABEL }}</span></h2>
+           <p class="infer-disclaimer">{{ inference?.disclaimer }}</p>
+           <ul v-if="inference?.items?.length">
+             <li v-for="(it, i) in inference.items" :key="i">
+@@ -523,7 +523,7 @@ onMounted(() => {
+           <p v-else class="muted">Nessun segnale di inferenza euristico disponibile.</p>
+ 
+           <div v-if="identityProposal" class="identity-proposal" data-o11="identity-proposal">
+-            <h3 class="tag infer">{{ identityProposal.label || "INFERENZA IA" }} · identità</h3>
++            <h3 class="tag infer obs-inference-fg-soft">{{ identityProposal.label || "INFERENZA IA" }} · identità</h3>
+             <p class="infer-disclaimer">{{ identityProposal.disclaimer }}</p>
+             <p>
+               <strong>Stato:</strong>
+@@ -561,7 +561,7 @@ onMounted(() => {
+             class="identity-proposal"
+             data-o13c="egress"
+           >
+-            <h3 class="tag infer">{{ egressProposal.label || "INFERENZA IA" }} · destinazioni</h3>
++            <h3 class="tag infer obs-inference-fg-soft">{{ egressProposal.label || "INFERENZA IA" }} · destinazioni</h3>
+             <p class="infer-disclaimer">{{ egressProposal.disclaimer }}</p>
+             <p>
+               <strong>Stato:</strong>
+@@ -759,7 +759,7 @@ onMounted(() => {
+   font-size: 0.85rem;
+ }
+ .inference {
+-  border-left: 3px solid rgba(155, 123, 212, 0.55);
++  border-left: 3px solid rgb(from var(--inference) r g b / 0.55);
+   padding-left: 0.65rem;
+ }
+ .tag.infer {
+@@ -768,8 +768,7 @@ onMounted(() => {
+   letter-spacing: 0.03em;
+   padding: 0.12rem 0.4rem;
+   border-radius: 4px;
+-  background: rgba(155, 123, 212, 0.18);
+-  color: #c4b0e8;
++  background: rgb(from var(--inference) r g b / 0.18);
+   text-transform: uppercase;
+ }
+ .infer-disclaimer {
+@@ -794,7 +793,7 @@ onMounted(() => {
+ .identity-proposal {
+   margin-top: 0.85rem;
+   padding-top: 0.65rem;
+-  border-top: 1px dashed color-mix(in srgb, rgba(155, 123, 212, 0.55) 60%, transparent);
++  border-top: 1px dashed color-mix(in srgb, rgb(from var(--inference) r g b / 0.55) 60%, transparent);
+ }
+ .diagnosis { margin-top: 1.25rem; font-size: 0.85rem; color: var(--text-3); }
+ .decide-more { margin-top: 0.75rem; font-size: 0.85rem; }
+diff --git a/observatory/web/src/views/Inventory.vue b/observatory/web/src/views/Inventory.vue
+index dba0994..207777f 100644
+--- a/observatory/web/src/views/Inventory.vue
++++ b/observatory/web/src/views/Inventory.vue
+@@ -937,9 +937,6 @@ onUnmounted(() => {
+   font-size: 10px; text-transform: uppercase; border: 1px solid var(--inv-border);
+   border-radius: 5px; padding: 1px 6px; color: var(--inv-faint);
+ }
+-.inv-prop .src.ai {
+-  color: #c4a0ff; border-color: #6b4aa8; background: #1a1228;
+-}
+ .inv-prop .val { flex: 1; color: var(--inv-text); }
+ .inv-prop .conf { font-size: 11px; color: var(--inv-faint); }
+ .inv-prop .adopt {
+@@ -950,16 +947,6 @@ onUnmounted(() => {
+   flex: 1 1 100%; margin: -2px 0 4px 0; padding-left: 2px;
+   font-size: 11px; color: var(--inv-mut); line-height: 1.35;
+ }
+-.inv-btn.ai-name {
+-  margin-top: 10px; display: inline-flex; align-items: center; gap: 8px;
+-  border-color: #6b4aa8; color: #c4a0ff;
+-}
+-.inv-btn.ai-name:disabled { opacity: 0.6; cursor: wait; }
+-.spin {
+-  width: 12px; height: 12px; border: 2px solid #6b4aa8; border-top-color: #c4a0ff;
+-  border-radius: 50%; display: inline-block; animation: inv-spin 0.7s linear infinite;
+-}
+-@keyframes inv-spin { to { transform: rotate(360deg); } }
+ .inv-p-note-sugg { font-size: 11px; color: var(--inv-faint); margin: 0 0 8px; }
+ .inv-notes {
+   width: 100%; min-height: 64px; background: var(--inv-bg-row);
+diff --git a/observatory/web/src/views/Suggestions.vue b/observatory/web/src/views/Suggestions.vue
+index 34d888f..c3250d6 100644
+--- a/observatory/web/src/views/Suggestions.vue
++++ b/observatory/web/src/views/Suggestions.vue
+@@ -34,7 +34,7 @@ async function reject(id) {
+ }
+ function sourceClass(source) {
+   const s = (source || "").toLowerCase();
+-  if (s === "ai") return "ai";
++  if (s === "ai") return "ai obs-inference-well";
+   if (s === "enrichment") return "enrich";
+   return "info";
+ }
+@@ -113,11 +113,6 @@ const bodyById = computed(() =>
+   padding: 0.2rem 0.55rem;
+   font-size: 0.75rem;
+ }
+-.badge.ai {
+-  background: #1a1228;
+-  border: 1px solid #6b4aa8;
+-  color: #c4a0ff;
+-}
+ .badge.enrich {
+   background: #122028;
+   border: 1px solid #3a6a88;
+diff --git a/observatory/web/src/views/Topology.vue b/observatory/web/src/views/Topology.vue
+index 9dcc9a1..da22ac3 100644
+--- a/observatory/web/src/views/Topology.vue
++++ b/observatory/web/src/views/Topology.vue
+@@ -495,6 +495,8 @@ onUnmounted(() => {
+                 dimmed: hasSelection && !node.on_path && !node.virtual,
+                 clickable: ['endpoint', 'ap', 'router'].includes(node.kind) && !node.virtual
+                   || isGs308epTopologyNode(node),
++                'obs-inference-ap': node.kind === 'ap',
++                'obs-inference-group': node.kind === 'group',
+               },
+             ]"
+             :style="{
+@@ -843,13 +845,7 @@ onUnmounted(() => {
+   border-color: var(--accent-dim);
+   background: linear-gradient(135deg, color-mix(in srgb, var(--ok) 12%, var(--bg-1)), var(--bg-1));
+ }
+-/* AP/group purple: nessun token ruolo-AP — residual dichiarato (D3 FERMO) */
+-.network-node.ap { border-color: #9b82e8; }
+-.network-node.group {
+-  border-color: #775fbd;
+-  border-style: dashed;
+-  background: #131323;
+-}
++/* O14: AP/group chrome → .obs-inference-ap / .obs-inference-group (matrix.css) */
+ .network-node.endpoint { background: color-mix(in srgb, var(--ok) 6%, var(--bg-0)); }
+ .network-node.opaque { border-style: dashed; }
+ .network-node.offline { filter: saturate(0.55); }
+diff --git a/observatory/tests/test_o14_session_mint.py b/observatory/tests/test_o14_session_mint.py
+new file mode 100644
+index 0000000..aec4536
+--- /dev/null
++++ b/observatory/tests/test_o14_session_mint.py
+@@ -0,0 +1,43 @@
++"""O14 — session mint helpers (harness only; no auth store changes)."""
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++SCRIPT = ROOT / "scripts" / "o13dfix_capture.py"
++
++
++def _load():
++    spec = importlib.util.spec_from_file_location("o13dfix_capture", SCRIPT)
++    mod = importlib.util.module_from_spec(spec)
++    assert spec.loader is not None
++    spec.loader.exec_module(mod)
++    return mod
++
++
++def test_emit_mint_provenance_line(capsys):
++    mod = _load()
++    line = mod.emit_mint_provenance(168, used=True)
++    assert "session mint" in line
++    assert "scadenza 168h" in line
++    assert "token non pubblicato" in line
++    out = capsys.readouterr().out
++    assert "CAPTURE_PROVENANCE" in out
++    assert line in out
++
++
++def test_clear_session_mint_removes_file(tmp_path, monkeypatch):
++    mod = _load()
++    mint = tmp_path / "obs_session_mint.txt"
++    mint.write_text("obs_session=fake\ncsrf\n", encoding="utf-8")
++    monkeypatch.setattr(mod, "SESSION_MINT_PATH", mint)
++    assert mint.exists()
++    mod.clear_session_mint()
++    assert not mint.exists()
++
++
++def test_session_hours_default_positive():
++    mod = _load()
++    hours = mod.read_session_hours()
++    assert isinstance(hours, int) and hours > 0
