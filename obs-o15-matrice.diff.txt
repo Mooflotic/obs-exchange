@@ -1,0 +1,1304 @@
+=== UNTRACKED oggiDecisionMatrix.js ===
+diff --git a/web/src/oggiDecisionMatrix.js b/web/src/oggiDecisionMatrix.js
+new file mode 100644
+index 0000000..d6ea7a0
+--- /dev/null
++++ b/web/src/oggiDecisionMatrix.js
+@@ -0,0 +1,707 @@
++/**
++ * O15 — matrice decisionale Oggi: legenda simboli + derivazione oggettiva.
++ * Nessun verdetto implicito; simboli NON da inferenza AI.
++ */
++import { FRESHNESS } from "./visualVocab.js";
++import { proposalSourceRank } from "./observatoryUx.js";
++
++/** Colonne stabili (ordine fisso). */
++export const MATRIX_COLUMNS = Object.freeze([
++  "approfondisci",
++  "applica",
++  "non_applicare",
++]);
++
++export const MATRIX_COLUMN_LABELS = Object.freeze({
++  approfondisci: "APPROFONDISCI",
++  applica: "APPLICA",
++  non_applicare: "NON APPLICARE",
++});
++
++/**
++ * Legenda unica: significato di +, –, ?, — per ciascuna colonna.
++ * Fonte normativa O15 G2.
++ */
++export const SYMBOL_LEGEND = Object.freeze({
++  approfondisci: Object.freeze({
++    "+": "sostiene l'approfondimento: c'è qualcosa di concretamente verificabile (fonte debole, dato non corrente, divergenza aperta)",
++    "–": "contraddice l'approfondimento: il fatto è già saldo e non richiede verifica sul campo",
++    "?": "insufficiente per decidere se approfondire",
++    "—": "non pertinente all'approfondimento",
++  }),
++  applica: Object.freeze({
++    "+": "sostiene l'applicazione (adotta/conferma/correggi): evidenza a favore della modifica proposta",
++    "–": "contraddice l'applicazione: conflitto, collisione o fatto manuale già autoritativo",
++    "?": "insufficiente per decidere se applicare",
++    "—": "non pertinente all'applicazione",
++  }),
++  non_applicare: Object.freeze({
++    "+": "sostiene il non applicare (ignora/rifiuta/archivia): rumore, sotto-soglia, o proposta non necessaria",
++    "–": "contraddice il non applicare: evidenza a favore di tenere la proposta in gioco",
++    "?": "insufficiente per decidere se non applicare",
++    "—": "non pertinente al non applicare",
++  }),
++});
++
++export const SYMBOL_MARKS = Object.freeze(["+", "–", "?", "—"]);
++
++/** Bande I1 — ordine fisso. */
++export const MATRIX_BANDS = Object.freeze([
++  "observed",
++  "missing_stale",
++  "deterministic",
++  "inference",
++]);
++
++export const MATRIX_BAND_LABELS = Object.freeze({
++  observed: "Fatti osservati",
++  missing_stale: "Dati mancanti o non correnti",
++  deterministic: "Interpretazione deterministica",
++  inference: "INFERENZA IA",
++});
++
++/**
++ * @typedef {'+'|'–'|'?'|'—'} MatrixSymbol
++ * @typedef {'approfondisci'|'applica'|'non_applicare'} MatrixColumn
++ * @typedef {'observed'|'missing_stale'|'deterministic'|'inference'} MatrixBand
++ * @typedef {'fresh'|'stale'|'not_measured'|'not_covered'} FreshnessId
++ *
++ * @typedef {object} MatrixEvidence
++ * @property {string} id
++ * @property {string} label
++ * @property {string|null} source
++ * @property {FreshnessId} freshness
++ * @property {MatrixBand} band
++ * @property {string} [kind] — tipo oggettivo (proposal, current_name, collision, …)
++ * @property {boolean} [present]
++ * @property {boolean} [divergence]
++ * @property {boolean} [weak_source]
++ * @property {boolean} [supports_apply]
++ * @property {boolean} [opposes_apply]
++ * @property {boolean} [supports_dismiss]
++ * @property {boolean} [needs_verify]
++ * @property {boolean} [already_settled]
++ * @property {'dossier'|'plant'|'topology'|null} [deepen_dest]
++ * @property {string} [confidence_label]
++ * @property {string} [limits]
++ * @property {string} [verify_action]
++ */
++
++/**
++ * Deriva i tre simboli da proprietà oggettive. Mai da output AI.
++ * @param {MatrixEvidence} ev
++ * @returns {Record<MatrixColumn, MatrixSymbol>}
++ */
++export function symbolsForEvidence(ev) {
++  const rank = proposalSourceRank(ev.source || "");
++  const weak =
++    ev.weak_source === true ||
++    (ev.source != null && rank > 0 && rank < 80);
++  const stale =
++    ev.freshness === "stale" ||
++    ev.freshness === "not_measured" ||
++    ev.freshness === "not_covered";
++  const missing = ev.present === false || ev.freshness === "not_covered";
++  const divergence = ev.divergence === true;
++  const needsVerify =
++    ev.needs_verify === true || weak || stale || missing || divergence;
++  const settled = ev.already_settled === true;
++
++  /** @type {MatrixSymbol} */
++  let approfondisci = "—";
++  if (ev.band === "inference") {
++    // Inferenza: può motivare verifica, mai «saldare» da sola
++    approfondisci = needsVerify || ev.needs_verify !== false ? "+" : "?";
++  } else if (settled && !divergence && !stale) {
++    approfondisci = "–";
++  } else if (needsVerify) {
++    approfondisci = "+";
++  } else if (ev.kind && ev.present === true && !weak && !stale) {
++    approfondisci = "–";
++  } else {
++    approfondisci = "?";
++  }
++
++  /** @type {MatrixSymbol} */
++  let applica = "—";
++  if (ev.band === "inference") {
++    applica = "?"; // I1: inferenza non sostiene da sola l'applicazione
++  } else if (ev.opposes_apply === true || divergence) {
++    applica = "–";
++  } else if (ev.supports_apply === true) {
++    applica = "+";
++  } else if (ev.kind === "proposal" && !divergence) {
++    applica = weak || stale ? "?" : "+";
++  } else if (ev.kind === "current_name" && settled) {
++    applica = "–"; // nome già fatto: contraddice nuova applicazione
++  } else if (missing && ev.kind !== "proposal") {
++    applica = "?";
++  } else {
++    applica = "—";
++  }
++
++  /** @type {MatrixSymbol} */
++  let non_applicare = "—";
++  if (ev.band === "inference") {
++    non_applicare = "?";
++  } else if (ev.supports_dismiss === true) {
++    non_applicare = "+";
++  } else if (ev.supports_apply === true && !divergence) {
++    non_applicare = "–";
++  } else if (ev.kind === "proposal" && (weak || ev.supports_dismiss)) {
++    non_applicare = weak && !ev.supports_apply ? "+" : "?";
++  } else if (divergence || ev.opposes_apply) {
++    non_applicare = "+";
++  } else if (ev.kind === "proposal") {
++    non_applicare = "?";
++  } else {
++    non_applicare = "—";
++  }
++
++  return { approfondisci, applica, non_applicare };
++}
++
++/**
++ * Destinazione APPROFONDISCI dal tipo di evidenza (non nuove colonne).
++ * @param {MatrixEvidence[]} rows
++ * @returns {'dossier'|'plant'|'topology'}
++ */
++export function deepenDestinationForRows(rows) {
++  for (const r of rows) {
++    if (r.deepen_dest === "plant" || r.deepen_dest === "topology" || r.deepen_dest === "dossier") {
++      return r.deepen_dest;
++    }
++  }
++  const kinds = new Set(rows.map((r) => r.kind || ""));
++  if ([...kinds].some((k) => /fdb|port|switch|mac_move|placement/i.test(k))) {
++    return "plant";
++  }
++  if ([...kinds].some((k) => /topo|path|wifi/i.test(k))) {
++    return "topology";
++  }
++  return "dossier";
++}
++
++/**
++ * @param {MatrixEvidence[]} rows
++ * @returns {{ id: string, label: string }[]} ids duplicati (stesso id)
++ */
++export function findDuplicateEvidenceIds(rows) {
++  const seen = new Map();
++  const dup = [];
++  for (const r of rows) {
++    const n = (seen.get(r.id) || 0) + 1;
++    seen.set(r.id, n);
++    if (n === 2) dup.push({ id: r.id, label: r.label });
++  }
++  return dup;
++}
++
++/**
++ * Raggruppa per banda nell'ordine I1; bande vuote restano dichiarate.
++ * @param {MatrixEvidence[]} rows
++ */
++export function groupEvidenceByBand(rows) {
++  /** @type {Record<MatrixBand, MatrixEvidence[]>} */
++  const groups = {
++    observed: [],
++    missing_stale: [],
++    deterministic: [],
++    inference: [],
++  };
++  for (const r of rows) {
++    const b = MATRIX_BANDS.includes(r.band) ? r.band : "observed";
++    groups[b].push(r);
++  }
++  return MATRIX_BANDS.map((band) => ({
++    band,
++    label: MATRIX_BAND_LABELS[band],
++    rows: groups[band],
++    empty: groups[band].length === 0,
++  }));
++}
++
++/**
++ * Freschezza da stringa già in vocabolario progetto → id FRESHNESS.
++ * @param {string|null|undefined} raw
++ * @returns {FreshnessId}
++ */
++export function normalizeFreshness(raw) {
++  const s = String(raw || "")
++    .trim()
++    .toLowerCase();
++  if (!s) return "not_measured";
++  if (s.includes("non coperto") || s.includes("not_covered") || s === "cieca")
++    return "not_covered";
++  if (
++    s.includes("non misur") ||
++    s.includes("not_measured") ||
++    s.includes("assente") ||
++    s === "disabilitata"
++  )
++    return "not_measured";
++  if (
++    s.includes("vecchio") ||
++    s.includes("stale") ||
++    s.includes("coperta_vecchia") ||
++    s.includes("non_fresca")
++  )
++    return "stale";
++  if (s.includes("fresco") || s.includes("fresh") || s.includes("coperta_fresca"))
++    return "fresh";
++  return "not_measured";
++}
++
++export function freshnessLabel(id) {
++  return FRESHNESS[id]?.label || FRESHNESS.not_measured.label;
++}
++
++/**
++ * Card proposta nome (triage row) → evidenze matrice.
++ * @param {object} row — triage row
++ */
++export function evidenceFromNameProposal(row) {
++  /** @type {MatrixEvidence[]} */
++  const out = [];
++  const src = row.source || null;
++  const rank = proposalSourceRank(src || "");
++  const conf = row.confidence;
++  const collide = /collid|conflitt/i.test(String(row.verdict || "")) ||
++    Boolean(row.collision);
++  const laa = Boolean(row.laa_demoted);
++  const under =
++    /sotto.?soglia|under/i.test(String(row.verdict || "")) ||
++    (typeof conf === "number" && conf < 0.7 && rank < 90);
++
++  out.push({
++    id: `name-current-${row.asset_id}`,
++    label: `Nome corrente: ${row.current_name || row.display_name || "—"}`,
++    source: row.name_source || row.held_name_source || "unknown",
++    freshness: "not_measured",
++    band: "observed",
++    kind: "current_name",
++    present: Boolean(row.current_name || row.display_name),
++    already_settled: /manual/i.test(String(row.name_kind || row.name_source || "")),
++    deepen_dest: "dossier",
++  });
++
++  out.push({
++    id: `name-proposal-${row.asset_id}-${row.proposal_id || row.source || "p"}`,
++    label: `Proposta: ${row.proposed_name || "—"}`,
++    source: src,
++    freshness: "not_measured",
++    band: isAiSourceLocal(src) ? "inference" : "observed",
++    kind: "proposal",
++    present: Boolean(row.proposed_name),
++    weak_source: rank > 0 && rank < 80,
++    supports_apply: !collide && !laa && !under,
++    opposes_apply: collide,
++    supports_dismiss: laa || under || collide,
++    needs_verify: collide || under || (rank > 0 && rank < 85),
++    divergence: collide,
++    confidence_label:
++      conf != null ? `${Math.round(Number(conf) * (Number(conf) <= 1 ? 100 : 1))}%` : "non dichiarata",
++    limits: isAiSourceLocal(src)
++      ? "Proposta AI — non certezza (I1); nessuna scrittura automatica"
++      : undefined,
++    verify_action: "Apri Dossier e confronta fonti",
++    deepen_dest: "dossier",
++  });
++
++  if (row.presence_state != null || row.port || row.link) {
++    out.push({
++      id: `name-placement-${row.asset_id}`,
++      label: `Collocazione: ${row.port || row.link || row.presence_state || "—"}`,
++      source: "fdb",
++      freshness: normalizeFreshness(row.placement_freshness || row.freshness),
++      band: "observed",
++      kind: "placement",
++      present: Boolean(row.port || row.link),
++      needs_verify: !row.port,
++      deepen_dest: row.port ? "plant" : "topology",
++    });
++  }
++
++  if (collide) {
++    out.push({
++      id: `name-collision-${row.asset_id}`,
++      label: "Divergenza / collisione nome",
++      source: "resolver",
++      freshness: "fresh",
++      band: "deterministic",
++      kind: "collision",
++      present: true,
++      divergence: true,
++      opposes_apply: true,
++      supports_dismiss: true,
++      needs_verify: true,
++      deepen_dest: "dossier",
++    });
++  }
++
++  if (laa || under) {
++    out.push({
++      id: `name-threshold-${row.asset_id}`,
++      label: laa
++        ? `Sotto-soglia / demotion: ${row.laa_reason || "LAA"}`
++        : "Proposta sotto soglia di adozione",
++      source: "triage",
++      freshness: "fresh",
++      band: "deterministic",
++      kind: "threshold",
++      present: true,
++      supports_dismiss: true,
++      supports_apply: false,
++      deepen_dest: "dossier",
++    });
++  }
++
++  // Bande vuote: groupEvidenceByBand le dichiara
++  return dedupeEvidence(out);
++}
++
++/**
++ * @param {object} card — chassis card
++ */
++export function evidenceFromChassis(card) {
++  /** @type {MatrixEvidence[]} */
++  const out = [];
++  out.push({
++    id: `ch-name-${card.chassis_id}`,
++    label: `Nome apparato: ${card.display_name || card.name || "non noto"}`,
++    source: card.name_source || card.name_kind || "unknown",
++    freshness: "not_measured",
++    band:
++      card.name_kind === "inference" || isAiSourceLocal(card.name_source)
++        ? "inference"
++        : "observed",
++    kind: "current_name",
++    present: card.name_kind !== "absent",
++    already_settled: card.name_kind === "manual" || card.name_kind === "legacy_manual",
++    confidence_label:
++      card.name_confidence != null ? String(card.name_confidence) : undefined,
++    limits:
++      card.name_kind === "inference"
++        ? "Inferenza di nome — non fatto (I1)"
++        : undefined,
++    verify_action: "Apri Dossier dell'interfaccia primaria",
++    deepen_dest: "dossier",
++  });
++
++  if (card.proposed_name) {
++    out.push({
++      id: `ch-prop-${card.chassis_id}`,
++      label: `Proposta: ${card.proposed_name}`,
++      source: card.proposed_source || null,
++      freshness: "not_measured",
++      band: isAiSourceLocal(card.proposed_source) ? "inference" : "observed",
++      kind: "proposal",
++      present: true,
++      supports_apply: !card.conflict,
++      opposes_apply: Boolean(card.conflict),
++      supports_dismiss: Boolean(card.conflict),
++      divergence: Boolean(card.conflict),
++      needs_verify: Boolean(card.conflict) || isAiSourceLocal(card.proposed_source),
++      confidence_label:
++        card.proposed_confidence != null
++          ? String(card.proposed_confidence)
++          : undefined,
++      limits: isAiSourceLocal(card.proposed_source)
++        ? "Proposta AI — non certezza"
++        : undefined,
++      verify_action: "Confronta membri chassis nel Dossier",
++      deepen_dest: "dossier",
++    });
++  } else if (card.name_kind === "absent") {
++    out.push({
++      id: `ch-absent-${card.chassis_id}`,
++      label: "Nome apparato assente",
++      source: null,
++      freshness: "not_covered",
++      band: "missing_stale",
++      kind: "absent_name",
++      present: false,
++      needs_verify: true,
++      supports_apply: true, // correggi/assegna
++      deepen_dest: "dossier",
++    });
++  }
++
++  out.push({
++    id: `ch-members-${card.chassis_id}`,
++    label: `Interfacce membri: ${card.members?.length ?? 0}`,
++    source: "chassis",
++    freshness: "fresh",
++    band: "observed",
++    kind: "members",
++    present: (card.members?.length ?? 0) > 0,
++    deepen_dest: "dossier",
++  });
++
++  if (card.conflict) {
++    out.push({
++      id: `ch-conflict-${card.chassis_id}`,
++      label: "Conflitto nome su apparato",
++      source: "resolver",
++      freshness: "fresh",
++      band: "deterministic",
++      kind: "collision",
++      present: true,
++      divergence: true,
++      opposes_apply: false,
++      needs_verify: true,
++      deepen_dest: "dossier",
++    });
++  }
++
++  return dedupeEvidence(out);
++}
++
++/**
++ * @param {object} item — move suggestion
++ */
++export function evidenceFromMove(item) {
++  /** @type {MatrixEvidence[]} */
++  const out = [
++    {
++      id: `move-from-${item.id}`,
++      label: `Porta suggerita: ${item.suggested_port ?? item.body ?? "—"}`,
++      source: item.source || "suggestion",
++      freshness: normalizeFreshness(item.freshness),
++      band: "observed",
++      kind: "mac_move",
++      present: true,
++      supports_apply: true,
++      needs_verify: true,
++      deepen_dest: "plant",
++    },
++    {
++      id: `move-asset-${item.id}`,
++      label: `Asset collegato: #${item.asset_id ?? "—"}`,
++      source: "inventory",
++      freshness: "not_measured",
++      band: item.asset_id ? "observed" : "missing_stale",
++      kind: "asset_ref",
++      present: Boolean(item.asset_id),
++      needs_verify: !item.asset_id,
++      deepen_dest: "dossier",
++    },
++  ];
++  return dedupeEvidence(out);
++}
++
++/**
++ * @param {object} card — fdb defense card
++ * @param {{ freshness?: string, limits?: string }} fields
++ */
++export function evidenceFromFdb(card, fields = {}) {
++  const fr = normalizeFreshness(fields.freshness || card.freshness);
++  /** @type {MatrixEvidence[]} */
++  const out = [
++    {
++      id: `fdb-sig-${card.uid}`,
++      label: `Segnale ${card.signal}: ${fields.title || card.title || card.signal}`,
++      source: "fdb",
++      freshness: fr,
++      band: fr === "fresh" || fr === "stale" ? "observed" : "missing_stale",
++      kind: "fdb",
++      present: true,
++      needs_verify: true,
++      supports_apply: true, // riconosci
++      supports_dismiss: (card.actions || []).some((a) => a.id === "ignore"),
++      deepen_dest: "plant",
++    },
++  ];
++  if (card.switch_code != null) {
++    out.push({
++      id: `fdb-port-${card.uid}`,
++      label: `Porta ${card.switch_code}:${card.port_number ?? "—"}`,
++      source: "fdb",
++      freshness: fr,
++      band: "observed",
++      kind: "port",
++      present: card.port_number != null,
++      needs_verify: card.port_number == null,
++      deepen_dest: "plant",
++    });
++  }
++  if (card.inference) {
++    const items = card.inference.items || [];
++    out.push({
++      id: `fdb-inf-${card.uid}`,
++      label: card.inference.label || "INFERENZA IA",
++      source: "inference",
++      freshness: "not_measured",
++      band: "inference",
++      kind: "inference",
++      present: items.length > 0,
++      needs_verify: true,
++      confidence_label: items[0]?.confidence != null ? String(items[0].confidence) : "n/d",
++      limits:
++        card.inference.disclaimer ||
++        (card.inference.llm_slot && !card.inference.llm_slot.enabled
++          ? `Slot LLM disattivato: ${card.inference.llm_slot.reason || "off"}`
++          : "Nessun motore di inferenza configurato"),
++      verify_action: "Verifica su Impianto / Dossier",
++      deepen_dest: "plant",
++    });
++  } else {
++    out.push({
++      id: `fdb-inf-empty-${card.uid}`,
++      label: "INFERENZA IA",
++      source: null,
++      freshness: "not_measured",
++      band: "inference",
++      kind: "inference",
++      present: false,
++      limits: "proposta non disponibile: nessun motore di inferenza configurato",
++      verify_action: "Nessuna inferenza da verificare",
++      deepen_dest: "plant",
++    });
++  }
++  if (fields.limits) {
++    out.push({
++      id: `fdb-lim-${card.uid}`,
++      label: `Limite: ${fields.limits}`,
++      source: "fdb",
++      freshness: fr,
++      band: "missing_stale",
++      kind: "limits",
++      present: false,
++      needs_verify: true,
++      deepen_dest: "plant",
++    });
++  }
++  return dedupeEvidence(out);
++}
++
++/**
++ * True solo se le tre vie esistono e nessun pulsante è inerte (F-9).
++ * @param {ReturnType<typeof matrixActionsFor>|null|undefined} actions
++ */
++export function isDecisionMatrixEligible(actions) {
++  if (!actions?.deepen || !actions?.apply || !actions?.dismiss) return false;
++  if (actions.deepen.disabled || actions.apply.disabled || actions.dismiss.disabled)
++    return false;
++  return true;
++}
++
++/**
++ * Azioni matrice da famiglia — mappa endpoint esistenti (solo binding UI).
++ * @param {'name'|'chassis'|'move'|'fdb'} family
++ * @param {object} ctx
++ */
++export function matrixActionsFor(family, ctx) {
++  const deepen = deepenDestinationForRows(ctx.evidence || []);
++  if (family === "name") {
++    return {
++      deepen: { id: "deepen", label: deepenLabel(deepen), dest: deepen },
++      apply: { id: "adopt", label: "Adotta", handler: "adopt" },
++      dismiss: { id: "ignore", label: "Ignora", handler: "reject" },
++    };
++  }
++  if (family === "chassis") {
++    const card = ctx.card || {};
++    let applyLabel = "Conferma";
++    let applyHandler = "confirm";
++    if (card.actions?.includes("adotta_proposta") || card.actions?.includes("sostituisci_proposta")) {
++      applyLabel = "Adotta";
++      applyHandler = "adopt";
++    } else if (card.actions?.includes("conferma_manuale")) {
++      applyLabel = "Conferma";
++      applyHandler = "confirm";
++    } else if (card.actions?.includes("correggi")) {
++      applyLabel = card.name_kind === "absent" ? "Assegna" : "Correggi";
++      applyHandler = "rename";
++    }
++    // Dismiss reale solo con tieni_manuale (reject proposta in conflitto).
++    // Senza questa via la card NON è ammissibile alla matrice (F-9).
++    const hasDismiss = card.actions?.includes("tieni_manuale");
++    return {
++      deepen: { id: "deepen", label: "Dossier", dest: "dossier" },
++      apply: { id: "apply", label: applyLabel, handler: applyHandler },
++      dismiss: {
++        id: "dismiss",
++        label: "Tieni manuale",
++        handler: "keep",
++        disabled: !hasDismiss,
++      },
++    };
++  }
++  if (family === "move") {
++    return {
++      deepen: { id: "deepen", label: deepenLabel(deepen), dest: deepen },
++      apply: { id: "approve", label: "Conferma", handler: "approve" },
++      dismiss: { id: "reject", label: "Rifiuta", handler: "reject" },
++    };
++  }
++  // fdb — matrice solo se acknowledge + ignore + destinazione verifica
++  const acts = ctx.card?.actions || [];
++  const hasIgnore = acts.some((a) => a.id === "ignore");
++  const ack = acts.find((a) => a.id === "acknowledge");
++  return {
++    deepen: {
++      id: "deepen",
++      label: deepen === "dossier" ? "Dossier" : deepen === "topology" ? "Topologia" : "Impianto",
++      dest: deepen,
++      handler: "dossier_or_plant",
++    },
++    apply: {
++      id: "acknowledge",
++      label: ack?.label || "Riconosci",
++      handler: "acknowledge",
++      disabled: !ack,
++    },
++    dismiss: {
++      id: "ignore",
++      label: "Ignora",
++      handler: "ignore",
++      disabled: !hasIgnore,
++    },
++  };
++}
++
++function deepenLabel(dest) {
++  if (dest === "plant") return "Impianto";
++  if (dest === "topology") return "Topologia";
++  return "Dossier";
++}
++
++function isAiSourceLocal(src) {
++  return /^(ai|inferenza|inference)/i.test(String(src || "").trim());
++}
++
++/** @param {MatrixEvidence[]} rows */
++function dedupeEvidence(rows) {
++  const seen = new Set();
++  const out = [];
++  for (const r of rows) {
++    if (seen.has(r.id)) continue;
++    seen.add(r.id);
++    out.push(r);
++  }
++  return out;
++}
++
++/**
++ * Prepara payload UI per una card matrice.
++ * @param {MatrixEvidence[]} evidence
++ * @param {ReturnType<typeof matrixActionsFor>} actions
++ */
++export function buildMatrixViewModel(evidence, actions) {
++  const rows = evidence.map((ev) => ({
++    ...ev,
++    symbols: symbolsForEvidence(ev),
++    source_label: ev.source || "non dichiarata",
++    freshness_label: freshnessLabel(ev.freshness),
++  }));
++  return {
++    columns: MATRIX_COLUMNS,
++    column_labels: MATRIX_COLUMN_LABELS,
++    legend: SYMBOL_LEGEND,
++    bands: groupEvidenceByBand(rows),
++    duplicates: findDuplicateEvidenceIds(rows),
++    actions,
++    deepen_dest: deepenDestinationForRows(evidence),
++  };
++}
+=== UNTRACKED OggiDecisionMatrix.vue ===
+diff --git a/web/src/components/OggiDecisionMatrix.vue b/web/src/components/OggiDecisionMatrix.vue
+new file mode 100644
+index 0000000..9fb939f
+--- /dev/null
++++ b/web/src/components/OggiDecisionMatrix.vue
+@@ -0,0 +1,358 @@
++<script setup>
++/**
++ * O15 — matrice a tre percorsi (pari dignità, nessun verdetto implicito).
++ */
++import { computed } from "vue";
++import {
++  MATRIX_COLUMNS,
++  MATRIX_COLUMN_LABELS,
++  SYMBOL_LEGEND,
++  buildMatrixViewModel,
++} from "../oggiDecisionMatrix.js";
++
++const props = defineProps({
++  evidence: { type: Array, required: true },
++  actions: { type: Object, required: true },
++  busy: { type: Boolean, default: false },
++});
++
++const emit = defineEmits(["deepen", "apply", "dismiss"]);
++
++const vm = computed(() => buildMatrixViewModel(props.evidence, props.actions));
++
++const legendFlat = computed(() =>
++  MATRIX_COLUMNS.map((col) => ({
++    col,
++    title: MATRIX_COLUMN_LABELS[col],
++    marks: Object.entries(SYMBOL_LEGEND[col]).map(([mark, text]) => ({
++      mark,
++      text,
++    })),
++  })),
++);
++</script>
++
++<template>
++  <div class="odm" data-o15="decision-matrix">
++    <p class="odm-legend-sum" aria-label="Legenda simboli">
++      Legenda neutra: <span>+</span> sostiene · <span>–</span> contraddice ·
++      <span>?</span> insufficiente · <span>—</span> non pertinente
++    </p>
++
++    <details class="odm-legend-details">
++      <summary>Significato per colonna</summary>
++      <div v-for="block in legendFlat" :key="block.col" class="odm-legend-block">
++        <strong>{{ block.title }}</strong>
++        <ul>
++          <li v-for="m in block.marks" :key="block.col + m.mark">
++            <code>{{ m.mark }}</code> — {{ m.text }}
++          </li>
++        </ul>
++      </div>
++    </details>
++
++    <div
++      v-for="band in vm.bands"
++      :key="band.band"
++      class="odm-band"
++      :class="'odm-band-' + band.band"
++      :data-band="band.band"
++    >
++      <h4 class="odm-band-title">
++        <span
++          v-if="band.band === 'inference'"
++          class="odm-inference-tag obs-inference-tag-chrome"
++          >{{ band.label }}</span
++        >
++        <template v-else>{{ band.label }}</template>
++      </h4>
++
++      <p v-if="band.empty" class="odm-empty">Nessun elemento in questa banda (I2).</p>
++
++      <template v-else>
++        <div class="odm-head" aria-hidden="true">
++          <span class="odm-ev-h">Evidenza</span>
++          <span v-for="col in vm.columns" :key="'h-' + col" class="odm-col-h">{{
++            vm.column_labels[col]
++          }}</span>
++        </div>
++
++        <div
++          v-for="row in band.rows"
++          :key="row.id"
++          class="odm-row"
++          :data-evidence-id="row.id"
++        >
++          <div class="odm-ev">
++            <div class="odm-ev-label">{{ row.label }}</div>
++            <div class="odm-ev-meta">
++              <span>Fonte: {{ row.source_label }}</span>
++              <span>·</span>
++              <span>Correntezza: {{ row.freshness_label }}</span>
++              <template v-if="row.confidence_label">
++                <span>·</span>
++                <span>Confidenza: {{ row.confidence_label }}</span>
++              </template>
++            </div>
++            <p v-if="row.limits" class="odm-limits">Limite: {{ row.limits }}</p>
++            <p
++              v-if="row.verify_action && band.band === 'inference'"
++              class="odm-verify"
++            >
++              Azione di verifica: {{ row.verify_action }}
++            </p>
++          </div>
++          <div
++            v-for="(col, idx) in vm.columns"
++            :key="row.id + col"
++            class="odm-cell"
++            :class="[
++              'odm-cell-' + (idx + 1),
++              { 'odm-cell-infer': band.band === 'inference' },
++            ]"
++            :title="vm.legend[col][row.symbols[col]]"
++          >
++            <span class="odm-mark">{{ row.symbols[col] }}</span>
++            <span class="odm-cell-col">{{ vm.column_labels[col] }}</span>
++          </div>
++        </div>
++      </template>
++    </div>
++
++    <div class="odm-actions" data-o15="matrix-actions">
++      <button
++        type="button"
++        class="odm-btn"
++        data-o15-col="approfondisci"
++        :disabled="busy || actions.deepen?.disabled"
++        @click="emit('deepen', actions.deepen)"
++      >
++        {{ actions.deepen?.label || "Approfondisci" }}
++      </button>
++      <button
++        type="button"
++        class="odm-btn"
++        data-o15-col="applica"
++        :disabled="busy || actions.apply?.disabled"
++        @click="emit('apply', actions.apply)"
++      >
++        {{ actions.apply?.label || "Applica" }}
++      </button>
++      <button
++        type="button"
++        class="odm-btn"
++        data-o15-col="non_applicare"
++        :disabled="busy || actions.dismiss?.disabled"
++        @click="emit('dismiss', actions.dismiss)"
++      >
++        {{ actions.dismiss?.label || "Non applicare" }}
++      </button>
++    </div>
++  </div>
++</template>
++
++<style scoped>
++.odm {
++  margin-top: 0.65rem;
++  width: 100%;
++}
++.odm-legend-sum {
++  font-size: 0.78rem;
++  color: var(--text-3);
++  margin: 0 0 0.4rem;
++}
++.odm-legend-sum span {
++  font-family: var(--font-mono);
++  color: var(--text-2);
++}
++.odm-legend-details {
++  font-size: 0.75rem;
++  color: var(--text-3);
++  margin-bottom: 0.6rem;
++}
++.odm-legend-details summary {
++  cursor: pointer;
++  color: var(--text-2);
++}
++.odm-legend-block {
++  margin: 0.35rem 0 0.5rem;
++}
++.odm-legend-block ul {
++  margin: 0.2rem 0 0;
++  padding-left: 1.1rem;
++}
++.odm-band {
++  border-top: 1px solid color-mix(in srgb, var(--text-3) 28%, transparent);
++  padding: 0.45rem 0 0.55rem;
++  margin-top: 0.25rem;
++}
++.odm-band-inference {
++  border-left: 3px solid color-mix(in srgb, var(--inference) 55%, transparent);
++  padding-left: 0.55rem;
++}
++.odm-band-title {
++  margin: 0 0 0.35rem;
++  font-size: 0.8rem;
++  font-weight: 650;
++  letter-spacing: 0.02em;
++  color: var(--text-2);
++}
++.odm-inference-tag {
++  display: inline-block;
++  font-size: 0.72rem;
++  padding: 0.1rem 0.4rem;
++  border-radius: 4px;
++  text-transform: uppercase;
++}
++.odm-empty {
++  margin: 0;
++  font-size: 0.78rem;
++  color: var(--text-3);
++  font-style: italic;
++}
++.odm-head {
++  display: none;
++}
++.odm-ev-label {
++  font-size: 0.88rem;
++  color: var(--text-1);
++}
++.odm-ev-meta {
++  font-size: 0.75rem;
++  color: var(--text-3);
++  display: flex;
++  flex-wrap: wrap;
++  gap: 0.25rem 0.4rem;
++  margin-top: 0.15rem;
++}
++.odm-limits,
++.odm-verify {
++  margin: 0.25rem 0 0;
++  font-size: 0.75rem;
++  color: var(--text-3);
++  font-style: italic;
++}
++.odm-cell {
++  display: flex;
++  align-items: baseline;
++  gap: 0.45rem;
++  padding: 0.2rem 0.35rem;
++  border: 0.5px solid color-mix(in srgb, var(--text-3) 30%, transparent);
++  border-radius: 4px;
++  background: color-mix(in srgb, var(--bg-2) 80%, transparent);
++  min-width: 0;
++}
++.odm-cell-infer {
++  border-color: color-mix(in srgb, var(--inference) 40%, var(--border));
++}
++.odm-mark {
++  font-family: var(--font-mono);
++  font-size: 1rem;
++  font-weight: 650;
++  color: var(--text-1);
++  min-width: 1.1rem;
++  text-align: center;
++}
++.odm-cell-infer .odm-mark {
++  color: var(--inference-fg-soft);
++}
++.odm-cell-col {
++  font-size: 0.68rem;
++  letter-spacing: 0.03em;
++  text-transform: uppercase;
++  color: var(--text-3);
++  overflow-wrap: anywhere;
++}
++.odm-actions {
++  display: grid;
++  grid-template-columns: 1fr 1fr 1fr;
++  gap: 0.45rem;
++  margin-top: 0.75rem;
++}
++.odm-btn {
++  appearance: none;
++  font-family: inherit;
++  font-size: 0.82rem;
++  padding: 0.45rem 0.5rem;
++  border-radius: var(--radius);
++  border: 1px solid var(--border-2);
++  background: var(--bg-2);
++  color: var(--text-1);
++  cursor: pointer;
++  min-height: 2.4rem;
++  /* pari dignità: nessuno .primary / size / colore preferenziale */
++}
++.odm-btn:disabled {
++  opacity: 0.45;
++  cursor: not-allowed;
++}
++.odm-btn:focus-visible {
++  outline: 2px solid var(--accent);
++  outline-offset: 2px;
++}
++
++/* Desktop ≥769: tre colonne affiancate */
++@media (min-width: 769px) {
++  .odm-head {
++    display: grid;
++    grid-template-columns: minmax(12rem, 1.6fr) repeat(3, minmax(5rem, 1fr));
++    gap: 0.35rem;
++    font-size: 0.68rem;
++    letter-spacing: 0.04em;
++    text-transform: uppercase;
++    color: var(--text-3);
++    margin-bottom: 0.25rem;
++  }
++  .odm-row {
++    display: grid;
++    grid-template-columns: minmax(12rem, 1.6fr) repeat(3, minmax(5rem, 1fr));
++    gap: 0.35rem;
++    align-items: stretch;
++    padding: 0.45rem 0;
++    border-bottom: 1px dashed color-mix(in srgb, var(--text-3) 22%, transparent);
++  }
++  .odm-cell {
++    flex-direction: column;
++    align-items: center;
++    justify-content: center;
++    text-align: center;
++  }
++  .odm-cell-col {
++    display: none;
++  }
++}
++
++/*
++ * ≤768: trasposizione — evidenza a tutta larghezza, tre celle in linea sotto
++ * (confronto preservato; niente UI che nasconde colonne).
++ */
++@media (max-width: 768px) {
++  .odm-row {
++    display: grid;
++    grid-template-columns: 1fr 1fr 1fr;
++    grid-template-areas:
++      "ev ev ev"
++      "c1 c2 c3";
++    gap: 0.35rem;
++    padding: 0.45rem 0;
++    border-bottom: 1px dashed color-mix(in srgb, var(--text-3) 22%, transparent);
++  }
++  .odm-ev {
++    grid-area: ev;
++  }
++  .odm-cell-1 {
++    grid-area: c1;
++  }
++  .odm-cell-2 {
++    grid-area: c2;
++  }
++  .odm-cell-3 {
++    grid-area: c3;
++  }
++  .odm-cell {
++    flex-direction: column;
++    align-items: center;
++    text-align: center;
++  }
++}
++</style>
+=== UNTRACKED oggiDecisionMatrix.test.js ===
+diff --git a/web/src/oggiDecisionMatrix.test.js b/web/src/oggiDecisionMatrix.test.js
+new file mode 100644
+index 0000000..ac19fd5
+--- /dev/null
++++ b/web/src/oggiDecisionMatrix.test.js
+@@ -0,0 +1,218 @@
++/**
++ * O15 — matrice decisionale: simboli, bande, eleggibilità, no duplicati.
++ */
++import assert from "node:assert/strict";
++import { describe, it } from "node:test";
++import {
++  SYMBOL_LEGEND,
++  MATRIX_COLUMNS,
++  MATRIX_BANDS,
++  symbolsForEvidence,
++  deepenDestinationForRows,
++  findDuplicateEvidenceIds,
++  groupEvidenceByBand,
++  evidenceFromNameProposal,
++  evidenceFromChassis,
++  evidenceFromMove,
++  evidenceFromFdb,
++  matrixActionsFor,
++  isDecisionMatrixEligible,
++  buildMatrixViewModel,
++} from "./oggiDecisionMatrix.js";
++
++describe("O15 SYMBOL_LEGEND", () => {
++  it("definisce + – ? — per ciascuna colonna stabile", () => {
++    assert.deepEqual(MATRIX_COLUMNS, [
++      "approfondisci",
++      "applica",
++      "non_applicare",
++    ]);
++    for (const col of MATRIX_COLUMNS) {
++      assert.ok(SYMBOL_LEGEND[col]["+"].includes("sostiene"));
++      assert.ok(SYMBOL_LEGEND[col]["–"].includes("contraddice"));
++      assert.ok(SYMBOL_LEGEND[col]["?"].includes("insufficiente"));
++      assert.ok(SYMBOL_LEGEND[col]["—"].includes("non pertinente"));
++    }
++  });
++});
++
++describe("O15 symbolsForEvidence", () => {
++  it("deriva simboli da proprietà oggettive (non AI)", () => {
++    const sym = symbolsForEvidence({
++      id: "e1",
++      label: "proposta",
++      source: "dhcp",
++      freshness: "fresh",
++      band: "observed",
++      kind: "proposal",
++      present: true,
++      supports_apply: true,
++      supports_dismiss: false,
++      needs_verify: false,
++      weak_source: false,
++    });
++    assert.equal(typeof sym.approfondisci, "string");
++    assert.equal(typeof sym.applica, "string");
++    assert.equal(typeof sym.non_applicare, "string");
++    assert.ok(["+", "–", "?", "—"].includes(sym.approfondisci));
++  });
++
++  it("inferenza non sostiene da sola l'applicazione (I1)", () => {
++    const sym = symbolsForEvidence({
++      id: "ai1",
++      label: "guess",
++      source: "ai",
++      freshness: "not_measured",
++      band: "inference",
++      kind: "proposal",
++      present: true,
++      needs_verify: true,
++      supports_apply: true,
++    });
++    assert.equal(sym.applica, "?");
++    assert.equal(sym.non_applicare, "?");
++  });
++
++  it("divergenza contraddice applica e sostiene approfondisci", () => {
++    const sym = symbolsForEvidence({
++      id: "d1",
++      label: "collisione",
++      source: "resolver",
++      freshness: "fresh",
++      band: "deterministic",
++      kind: "collision",
++      present: true,
++      divergence: true,
++      opposes_apply: true,
++      needs_verify: true,
++    });
++    assert.equal(sym.approfondisci, "+");
++    assert.equal(sym.applica, "–");
++  });
++});
++
++describe("O15 bande e duplicati", () => {
++  it("bande nell'ordine I1; vuote dichiarate", () => {
++    const bands = groupEvidenceByBand([
++      {
++        id: "a",
++        label: "x",
++        source: "dhcp",
++        freshness: "fresh",
++        band: "observed",
++      },
++    ]);
++    assert.deepEqual(
++      bands.map((b) => b.band),
++      [...MATRIX_BANDS],
++    );
++    assert.equal(bands[0].empty, false);
++    assert.equal(bands[1].empty, true);
++    assert.equal(bands[3].empty, true);
++  });
++
++  it("nessun id evidenza duplicato sulle builder", () => {
++    const row = {
++      asset_id: 7,
++      current_name: "A",
++      proposed_name: "B",
++      source: "dhcp",
++      confidence: 0.9,
++      collision: true,
++      port: "SW1:3",
++    };
++    const ev = evidenceFromNameProposal(row);
++    assert.deepEqual(findDuplicateEvidenceIds(ev), []);
++    const vm = buildMatrixViewModel(ev, matrixActionsFor("name", { evidence: ev }));
++    assert.deepEqual(vm.duplicates, []);
++    assert.ok(vm.bands.every((b) => "empty" in b));
++  });
++});
++
++describe("O15 eleggibilità famiglie", () => {
++  it("name e move sono eleggibili", () => {
++    const nameEv = evidenceFromNameProposal({
++      asset_id: 1,
++      proposed_name: "X",
++      source: "dhcp",
++    });
++    const nameAct = matrixActionsFor("name", { evidence: nameEv });
++    assert.equal(isDecisionMatrixEligible(nameAct), true);
++
++    const moveEv = evidenceFromMove({ id: 9, asset_id: 2, suggested_port: "1/1" });
++    const moveAct = matrixActionsFor("move", { evidence: moveEv });
++    assert.equal(isDecisionMatrixEligible(moveAct), true);
++  });
++
++  it("chassis senza tieni_manuale NON eleggibile (F-9)", () => {
++    const card = {
++      chassis_id: "c1",
++      actions: ["correggi", "adotta_proposta"],
++      proposed_name: "P",
++      name_kind: "fact",
++      members: [],
++    };
++    const ev = evidenceFromChassis(card);
++    const act = matrixActionsFor("chassis", { evidence: ev, card });
++    assert.equal(isDecisionMatrixEligible(act), false);
++  });
++
++  it("chassis con tieni_manuale eleggibile", () => {
++    const card = {
++      chassis_id: "c2",
++      actions: ["correggi", "tieni_manuale", "sostituisci_proposta"],
++      proposed_name: "P",
++      conflict: true,
++      name_kind: "fact",
++      members: [{ asset_id: 1 }],
++    };
++    const ev = evidenceFromChassis(card);
++    const act = matrixActionsFor("chassis", { evidence: ev, card });
++    assert.equal(isDecisionMatrixEligible(act), true);
++  });
++
++  it("FDB senza ignore NON eleggibile", () => {
++    const card = {
++      uid: "u1",
++      signal: "S-A",
++      actions: [{ id: "acknowledge", label: "Riconosci" }, { id: "dossier", label: "Dossier" }],
++    };
++    const ev = evidenceFromFdb(card, { freshness: "fresco" });
++    const act = matrixActionsFor("fdb", { evidence: ev, card });
++    assert.equal(isDecisionMatrixEligible(act), false);
++  });
++
++  it("FDB con acknowledge+ignore eleggibile; deepen → plant", () => {
++    const card = {
++      uid: "u2",
++      signal: "S-B",
++      switch_code: "GS",
++      port_number: 3,
++      actions: [
++        { id: "acknowledge", label: "Riconosci" },
++        { id: "ignore", label: "Ignora" },
++      ],
++    };
++    const ev = evidenceFromFdb(card, { freshness: "fresco" });
++    assert.equal(deepenDestinationForRows(ev), "plant");
++    const act = matrixActionsFor("fdb", { evidence: ev, card });
++    assert.equal(isDecisionMatrixEligible(act), true);
++  });
++});
++
++describe("O15 nessun verdetto implicito nel view-model", () => {
++  it("non espone score/count/forza colonne", () => {
++    const ev = evidenceFromNameProposal({
++      asset_id: 3,
++      proposed_name: "Z",
++      source: "nmap",
++      confidence: 0.4,
++    });
++    const vm = buildMatrixViewModel(ev, matrixActionsFor("name", { evidence: ev }));
++    const json = JSON.stringify(vm);
++    assert.equal(json.includes("score"), false);
++    assert.equal(json.includes("strength"), false);
++    assert.equal(json.includes("recommended"), false);
++    assert.deepEqual(vm.columns, MATRIX_COLUMNS);
++  });
++});
