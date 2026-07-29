@@ -1,4 +1,4 @@
-wc_l: 909
+wc_l: 951
 # OBS-O22 — Blocco 0 + OBS-CHASSIS-ID + OBS-SUPERSESSIONE-UI — 0.10.91
 Data report: 2026-07-29 22:01 UTC
 Auth catture: session mint TTL 180s, token non pubblicato.
@@ -746,7 +746,50 @@ Dettaglio rotte (verdict/Δh/census):
   "pass": true
 }
 ```
-### G4 ricattura deployed
+### G4 ricattura deployed — CHIUSO (tentativo attuale, nessun retry aggiuntivo)
+
+Policy: se census non combacia → `INVALID_CENSUS` con i dati già raccolti; nessun nuovo ciclo di misura.
+
+```json
+{
+  "status": "CLOSED",
+  "policy": "tentativo attuale only — nessun retry/nuova misura/ciclo aggiuntivo",
+  "closed_at_utc": "2026-07-29T22:04:07Z",
+  "invalid": [
+    {
+      "route": "topology@768",
+      "census_match": false,
+      "census_local": [
+        27,
+        27
+      ],
+      "census_deployed": [
+        47,
+        47
+      ],
+      "delta_h": 1490,
+      "try_recorded_in_artifact": 1,
+      "note": "census non combacia — INVALID_CENSUS con dati già raccolti; nessun nuovo ciclo"
+    }
+  ],
+  "pass": [
+    "oggi@1280",
+    "oggi@768",
+    "oggi@390",
+    "inventory@1280",
+    "inventory@768",
+    "inventory@390",
+    "topology@1280",
+    "topology@390",
+    "plant@390"
+  ],
+  "len_invalid_asserted": 1,
+  "len_pass_asserted": 9,
+  "come_potrebbe_fallire": "se si rilanciasse G4 o si assorbisse Δh sotto R nonostante census diverge — vietato da questa chiusura"
+}
+```
+
+Dettaglio rotte (artefatto `docs/obs-o22-G4.json`, invariato nei numeri):
 ```json
 {
   "oggi@1280": {
@@ -867,7 +910,7 @@ Dettaglio rotte (verdict/Δh/census):
   }
 }
 ```
-topology@768 **INVALID_CENSUS** onesto (paths 27 vs 47) — DEBT topology API; non forzato sotto R.
+topology@768 **INVALID_CENSUS** onesto (paths local 27 vs deployed 47) — DEBT topology API; non forzato sotto R. G4 chiuso su questo tentativo.
 
 ### G5 commit/push — vedi §8 (hash effettivi, push confermato)
 
@@ -878,15 +921,14 @@ Nessuno script one-shot residuo in repo (`/tmp/o22_verify_v.py` non committato).
 
 ```
 feature (0.10.91): 76da2a25bbfa0e1382d1417dd7ae3e5b15b772a0
-  feat(observatory): chassis disambiguati e vocab supersessione in disclosure (0.10.91)
-docs seals:
-  9e65fd3443219985c1cf1c844c1ba94bcedfba27  sigilla report O22 con hash commit G5
-  6c684f55b1aae06e69de6962dad1c257ab081cd1  conferma push O22 in report G5
-HEAD tip (= questo commit report): be427c80fe47be698a9c61f40d87201a4fecd693
-origin/feature/obs-currency: be427c80fe47be698a9c61f40d87201a4fecd693 (dopo push)
-branch: feature/obs-currency = origin/feature/obs-currency
-push: CONFERMATO (dcef325..tip). Vietati main/merge/tag/force/rewrite — non usati.
-O21 base confermata: dcef3259088d4bd8b922b79bceb74373fb631ffd
+G4 chiusura:       8c3ddd720a78b1e86fd529020852ff4a61ee33dd
+tip pre-fix §8:  00f5338e56c7d92aeddb5e9a89a39e4a37ebab36
+branch: feature/obs-currency = origin/feature/obs-currency (push confermato sotto)
+push: CONFERMATO. Vietati main/merge/tag/force/rewrite — non usati.
+O21 base: dcef3259088d4bd8b922b79bceb74373fb631ffd
+G4: CLOSED — topology@768 INVALID_CENSUS
+  census_local=[27,27] ≠ census_deployed=[47,47]; Δh=1490
+  nessun retry / nuova misura / ciclo aggiuntivo
 ```
 
 
