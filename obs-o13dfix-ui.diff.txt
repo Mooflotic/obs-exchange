@@ -1,0 +1,32 @@
+# obs-o13dfix-ui.diff.txt
+# Tema: web/src/** O13D non già in obs-o13d-novelty.diff.txt / obs-o13d-color.diff.txt.
+# Già coperti novelty: views/Oggi.vue
+# Già coperti color: views/Incidents.vue, views/Plant.vue
+# Qui: api.js, observatoryUx.js (marker O13D). Nota: erano anche in obs-o13d-meta.diff.txt;
+# ridichiarati qui per tema UI come da gap O13D.
+#
+diff --git a/observatory/web/src/api.js b/observatory/web/src/api.js
+index be0296f..73d8ed5 100644
+--- a/observatory/web/src/api.js
++++ b/observatory/web/src/api.js
+@@ -279,6 +279,7 @@ export const api = {
+   /** Deploy proof string — must remain a live property (minifiers drop void/comments). */
+   "obs-o13c-marker": true,
+   "obs-o13c-fix-marker": true,
++  "obs-o13d-marker": true,
+   egressAck: (body) =>
+     request("/api/egress/ack", { method: "POST", body }),
+   egressBaseline: () => request("/api/egress/baseline"),
+diff --git a/observatory/web/src/observatoryUx.js b/observatory/web/src/observatoryUx.js
+index 2d15448..75a0b7a 100644
+--- a/observatory/web/src/observatoryUx.js
++++ b/observatory/web/src/observatoryUx.js
+@@ -472,6 +472,8 @@ export const AI_INFERENCE_DISCLAIMER = "Può sbagliare — verifica sempre le ev
+ export const OBS_O13C_MARKER = "obs-o13c-marker";
+ /** Bundle proof string for OBS-EGRESS O13C-FIX deploy markers. */
+ export const OBS_O13CFIX_MARKER = "obs-o13c-fix-marker";
++/** Bundle proof string for OBS-EGRESS O13D deploy markers. */
++export const OBS_O13D_MARKER = "obs-o13d-marker";
+ 
+ /** NameProposal / hostname source rank — ai sotto manual (I5). */
+ export const PROPOSAL_SOURCE_RANK = {
