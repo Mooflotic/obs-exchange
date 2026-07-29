@@ -1962,10 +1962,10 @@ index 077cd06..e78fb60 100644
    </div>
 
 diff --git a/observatory/web/src/api.js b/observatory/web/src/api.js
-index 1f0a71d..e808d91 100644
+index 1f0a71d..2b083d3 100644
 --- a/observatory/web/src/api.js
 +++ b/observatory/web/src/api.js
-@@ -254,4 +267,23 @@ export const api = {
+@@ -254,4 +267,24 @@ export const api = {
      request(`/api/snapshots/${snapshotId}/confirm-baseline`, { method: "POST" }),
    sensors: () => request("/api/sensors"),
    reliability: () => request("/api/reliability"),
@@ -1977,8 +1977,9 @@ index 1f0a71d..e808d91 100644
 +  behaviorAck: (body) =>
 +    request("/api/behavior/ack", { method: "POST", body }),
 +  behaviorBaseline: () => request("/api/behavior/baseline"),
-+  // obs-o13c-marker — egress hybrid signals (bundle proof)
 +  egressSignals: () => request("/api/egress/signals"),
++  /** Deploy proof string — must remain a live property (minifiers drop void/comments). */
++  "obs-o13c-marker": true,
 +  egressAck: (body) =>
 +    request("/api/egress/ack", { method: "POST", body }),
 +  egressBaseline: () => request("/api/egress/baseline"),
