@@ -1,0 +1,22 @@
+# O10 W2 — densità mobile (solo interventi densità)
+# File: Oggi.vue · Timeline.vue · Plant.vue · Inventory.vue (meta contrasto anche in W3)
+
+# --- Oggi.vue ---
++ narrowUi matchMedia(max-width:640px)
++ <details class="oggi-collapse"> legenda P1–P6 · summary dichiara 6 livelli
++ <details id="oggi-secondary"> Altro in coda · N · priorità max Pn
+  (sezioni FDB/P1 restano aperte)
+
+# --- Timeline.vue ---
++ unreadRows / readRows
++ <details class="timeline-read-collapse"> Già letti · N · nessuna azione P1 pendente
++ title su trend/summary (valore intero)
+
+# --- Plant.vue ---
++ <details class="fdb-coverage-panel"> summary: Copertura FDB · N switch
+
+# Height full-page @390 (misurate):
+# /oggi 13680 → 13228
+# /plant 5972 → 5442
+# /timeline 19210 → 13400
+# /inventory,/monitoring,/runbook invariate (solo contrasto/wrap)
