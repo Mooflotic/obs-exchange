@@ -1,0 +1,49 @@
+{
+  "wave": "O21-B0.1",
+  "auth_provenance": "catture autenticate via session mint, scadenza 180s (fonte run harness 36s×5), token non pubblicato",
+  "width": 768,
+  "R_height": 320,
+  "allowlist": [
+    {
+      "pattern": "Fritz TR-064",
+      "debt": "DEBT-O20-OGGI-API-HEIGHT-JITTER",
+      "reason": "O16-M1/O17: card coverage Fritz TR-064 presente/assente tra run (coverage_source_blind); causa payload API, non layout UI"
+    },
+    {
+      "pattern": "Zeek behaviour",
+      "debt": "DEBT-O20-OGGI-API-HEIGHT-JITTER",
+      "reason": "O20 V only_post_info: card «Zeek behaviour» intermittente insieme a Fritz nello stesso Δ+409 @768; stessa famiglia coverage_source_* API-based"
+    }
+  ],
+  "len_allowlist_asserted": 2,
+  "come_potrebbe_fallire": "se Δ resta >R dopo esclusione Fritz/Zeek, la causa non è quella allowlist — STOP, non escludere altro",
+  "o20_reference_delta_plus409": {
+    "source": "docs/obs-o20.md / KNOWN_DEBT (artefatto pinnato)",
+    "delta_h": 409,
+    "note": "Δ−212 solo-chat NON ammesso come evidenza"
+  },
+  "pre": {
+    "h_raw": 16780,
+    "h_excl": 16780,
+    "cards_n": 28,
+    "flaky_hidden_n": 0,
+    "flaky_hidden": [],
+    "frontend_version": null,
+    "api_health_version": null,
+    "script_src": "/assets/index-C6Ud7we9.js"
+  },
+  "post": {
+    "h_raw": 16780,
+    "h_excl": 16780,
+    "cards_n": 28,
+    "flaky_hidden_n": 0,
+    "flaky_hidden": [],
+    "frontend_version": null,
+    "api_health_version": null,
+    "script_src": "/assets/index-DRlt-wzC.js"
+  },
+  "delta_h_raw": 0,
+  "delta_h_excl_flaky": 0,
+  "pass_excl": true,
+  "pass_raw": true
+}
