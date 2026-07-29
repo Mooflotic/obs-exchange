@@ -1,0 +1,20 @@
+18
+{
+  "solo_NAS": [
+    "scripts/_w4a_measure.py"
+  ],
+  "solo_repo": [
+    "scripts/oggi_density_partition_measure.py",
+    "scripts/oggi_density_prototype_measure.py",
+    "scripts/oggi_density_verify_ab.py"
+  ],
+  "motivation": {
+    "solo_NAS": "decisione Michele; resta sul NAS; non analizzare",
+    "solo_repo": "suite misura densità O17: partizione/stabilità, prototipi, verifica A/B — gira in locale, non sul NAS"
+  },
+  "orphans": [],
+  "attic_this_wave": [
+    "_attic/o16_measure_m.py",
+    "_attic/o15_scrub_subset_proof.py"
+  ]
+}
