@@ -1,0 +1,59 @@
+# OBS-UX O9-FIX — diff SOLO correzioni categoria (a) «rotto»
+# Timeline overflow @390 · Runbook markdown tables overflow @768/390
+# Runtime: 0.10.73 · servizi: web (+ recreate api solo per remount VERSION)
+
+diff --git a/observatory/web/src/views/Timeline.vue b/observatory/web/src/views/Timeline.vue
+--- a/observatory/web/src/views/Timeline.vue
++++ b/observatory/web/src/views/Timeline.vue
+@@ -281,7 +281,7 @@
+ </template>
+ 
+ <style scoped>
+-.timeline-panel { max-width: 1100px; }
++.timeline-panel { max-width: 1100px; min-width: 0; width: 100%; }
+ .mute-banner {
+   display: flex;
+   justify-content: space-between;
+@@ -300,8 +300,14 @@
+   background: rgba(230, 195, 92, 0.06);
+ }
+ .group-note { font-size: 0.78rem; margin: 0.7rem 0; }
+-.timeline-list { display: grid; gap: 0.28rem; }
++.timeline-list { display: grid; gap: 0.28rem; min-width: 0; }
+ .timeline-event {
++  /* O9-FIX (a): min-width:0 + overflow contain nowrap min-content in CSS grid */
++  min-width: 0;
++  max-width: 100%;
++  overflow: hidden;
+   border: 1px solid var(--line);
+   border-radius: 8px;
+   padding: 0.4rem 0.55rem;
+   background: rgba(8, 14, 10, 0.72);
+ }
+
+diff --git a/observatory/web/src/assets/matrix.css b/observatory/web/src/assets/matrix.css
+--- a/observatory/web/src/assets/matrix.css
++++ b/observatory/web/src/assets/matrix.css
+@@ -566,8 +566,23 @@
+ .md-body pre {
+   background: var(--bg-2); border: 1px solid var(--line);
+   padding: 0.75rem; border-radius: 8px; overflow: auto;
+ }
+-.md-body table { width: 100%; border-collapse: collapse; margin: 0.75rem 0; font-size: 0.9rem; }
++.md-body {
++  /* O9-FIX (a): tabelle markdown larghe non devono espandere il documento
++     (body overflow-x:hidden le cliperebbe senza scroll). Scrollport locale. */
++  overflow-x: auto;
++  max-width: 100%;
++  min-width: 0;
++  -webkit-overflow-scrolling: touch;
++}
++.md-body table {
++  width: max-content;
++  max-width: none;
++  min-width: 100%;
++  border-collapse: collapse;
++  margin: 0.75rem 0;
++  font-size: 0.9rem;
++}
+ .md-body th, .md-body td { border-bottom: 1px solid var(--border); padding: 0.35rem 0.4rem; text-align: left; }
