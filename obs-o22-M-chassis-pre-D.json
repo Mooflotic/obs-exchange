@@ -1,0 +1,87 @@
+{
+  "wave": "O22-M-chassis",
+  "auth_provenance": "session mint TTL 180s, token non pubblicato",
+  "endpoint_assets": "/api/assets?include_historical=true&all_proposals=true",
+  "endpoint_chassis": "/api/chassis",
+  "assets_n": 151,
+  "chassis_groups_n": 14,
+  "all_chassis_rows_n": 14,
+  "len_all_chassis_asserted": 14,
+  "multi_member_cards_n": 14,
+  "len_multi_asserted": 14,
+  "collision_groups_all_chassis": [
+    {
+      "display_name": "Sky",
+      "n_chassis": 2,
+      "chassis": [
+        {
+          "chassis_id": 31,
+          "members_n": 2,
+          "member_ids": [
+            61,
+            137
+          ],
+          "display_name": "Sky",
+          "name_kind": "member_name",
+          "primary_mac": "38:A6:CE:79:D4:FD",
+          "primary_ip": "192.168.2.254",
+          "mac_last_octet": "FD"
+        },
+        {
+          "chassis_id": 33,
+          "members_n": 3,
+          "member_ids": [
+            43,
+            136,
+            149
+          ],
+          "display_name": "Sky",
+          "name_kind": "member_name",
+          "primary_mac": "38:A6:CE:3E:9C:AA",
+          "primary_ip": "192.168.2.101",
+          "mac_last_octet": "AA"
+        }
+      ],
+      "len_chassis_asserted": 2
+    }
+  ],
+  "len_collision_groups_all_asserted": 1,
+  "collision_groups_buildChassisNameCards_population": [
+    {
+      "display_name": "Sky",
+      "n_chassis": 2,
+      "chassis": [
+        {
+          "chassis_id": 31,
+          "members_n": 2,
+          "member_ids": [
+            61,
+            137
+          ],
+          "display_name": "Sky",
+          "name_kind": "member_name",
+          "primary_mac": "38:A6:CE:79:D4:FD",
+          "primary_ip": "192.168.2.254",
+          "mac_last_octet": "FD"
+        },
+        {
+          "chassis_id": 33,
+          "members_n": 3,
+          "member_ids": [
+            43,
+            136,
+            149
+          ],
+          "display_name": "Sky",
+          "name_kind": "member_name",
+          "primary_mac": "38:A6:CE:3E:9C:AA",
+          "primary_ip": "192.168.2.101",
+          "mac_last_octet": "AA"
+        }
+      ],
+      "len_chassis_asserted": 2
+    }
+  ],
+  "len_collision_groups_cards_asserted": 1,
+  "come_potrebbe_fallire": "display_name assente o normalizzazione diversa nasconde collisioni"
+}
