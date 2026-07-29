@@ -1,0 +1,256 @@
+254
+{
+  "wave": "O17-V",
+  "auth_provenance": "catture autenticate via session mint, scadenza 180s (fonte run harness 36s×5), token non pubblicato",
+  "criteria": {
+    "census_align": {
+      "ok": true,
+      "census": {
+        "famiglie_matrice": 10,
+        "righe_matrice": 40,
+        "card_apparati": 14,
+        "problem_cards": 30,
+        "informative_without_matrix": 20,
+        "coverage_cards": 5,
+        "coverage_titles": [
+          "Sorgente copertura vecchia · ASUSTOR NAS SNMP (Cassiopea)",
+          "Sorgente disabilitata · Zeek conn / flow_observations (legacy storico)",
+          "Sorgente disabilitata · Zeek intel (DNS/SNI → ip_intel)",
+          "Sorgente disabilitata · Zeek DHCP hostnames",
+          "Novità egress soppressa · Zeek egress hybrid (ext host+port / int relazione)"
+        ],
+        "coda_triage": 0,
+        "coda_rumore": 0
+      }
+    },
+    "C1": {
+      "ok": true,
+      "len_pre": 120,
+      "len_post": 120,
+      "diff": []
+    },
+    "C2": {
+      "ok": true,
+      "len_pre": 40,
+      "len_post": 40,
+      "diff": []
+    },
+    "C3": {
+      "ok": true,
+      "fdb_only_pre": [],
+      "fdb_only_post": [],
+      "app_only_pre": [],
+      "app_only_post": [],
+      "reps_via_pre": {
+        "APPROFONDISCI": 50,
+        "APPLICA": 50,
+        "NON APPLICARE": 50
+      },
+      "reps_via_post": {
+        "APPROFONDISCI": 40,
+        "APPLICA": 40,
+        "NON APPLICARE": 40
+      }
+    },
+    "C4": {
+      "ok": true,
+      "violations": []
+    },
+    "C5": {
+      "ok": true,
+      "columns": [
+        {
+          "text": "APPROFONDISCI",
+          "width": "118.266px",
+          "fontSize": "10.88px",
+          "fontWeight": "400",
+          "fontFamily": "Inter, -apple-system, system-ui, sans-serif",
+          "color": "rgb(102, 112, 133)",
+          "backgroundColor": "rgba(0, 0, 0, 0)",
+          "borderTopWidth": "0px",
+          "borderTopStyle": "none",
+          "padding": "0px",
+          "margin": "0px",
+          "textTransform": "uppercase",
+          "opacity": "1",
+          "order": "0"
+        },
+        {
+          "text": "APPLICA",
+          "width": "118.266px",
+          "fontSize": "10.88px",
+          "fontWeight": "400",
+          "fontFamily": "Inter, -apple-system, system-ui, sans-serif",
+          "color": "rgb(102, 112, 133)",
+          "backgroundColor": "rgba(0, 0, 0, 0)",
+          "borderTopWidth": "0px",
+          "borderTopStyle": "none",
+          "padding": "0px",
+          "margin": "0px",
+          "textTransform": "uppercase",
+          "opacity": "1",
+          "order": "0"
+        },
+        {
+          "text": "NON APPLICARE",
+          "width": "118.281px",
+          "fontSize": "10.88px",
+          "fontWeight": "400",
+          "fontFamily": "Inter, -apple-system, system-ui, sans-serif",
+          "color": "rgb(102, 112, 133)",
+          "backgroundColor": "rgba(0, 0, 0, 0)",
+          "borderTopWidth": "0px",
+          "borderTopStyle": "none",
+          "padding": "0px",
+          "margin": "0px",
+          "textTransform": "uppercase",
+          "opacity": "1",
+          "order": "0"
+        }
+      ],
+      "buttons": [
+        {
+          "w": 117.203125,
+          "h": 38.390625,
+          "text": "Impianto"
+        },
+        {
+          "w": 117.203125,
+          "h": 38.390625,
+          "text": "Riconosci"
+        },
+        {
+          "w": 117.21875,
+          "h": 38.390625,
+          "text": "Ignora"
+        }
+      ],
+      "nondom": true,
+      "btn_ok": true,
+      "diffs": []
+    },
+    "C6": {
+      "ok": true,
+      "R_fdb_M1": 0,
+      "R_apparati_M1": 0,
+      "R_pagina_coverage_M1": 312,
+      "post": {
+        "h_fdb": 13061,
+        "h_apparati": 7363,
+        "h_pagina": 23646
+      },
+      "pre": {
+        "h_fdb": 13514,
+        "h_apparati": 7605,
+        "h_pagina": 24341
+      }
+    },
+    "C7": {
+      "ok": true,
+      "coverage_titles_match": true,
+      "note": "coverage non in elenco file D; titoli allineati se census ok"
+    },
+    "C8": {
+      "ok": true,
+      "pre768": {
+        "pagina": 18706,
+        "fdb": 10842,
+        "app": 4990
+      },
+      "post768": {
+        "pagina": 18706,
+        "fdb": 10842,
+        "app": 4990
+      },
+      "pre1280": {
+        "pagina": 15167,
+        "fdb": 9623,
+        "app": 3283
+      },
+      "post1280": {
+        "pagina": 15167,
+        "fdb": 9623,
+        "app": 3283
+      }
+    },
+    "C9": {
+      "fdb_reduced": true,
+      "app_reduced": true,
+      "pagina_reduced": true,
+      "pre": {
+        "fdb": 13514,
+        "app": 7605,
+        "pagina": 24341
+      },
+      "post": {
+        "fdb": 13061,
+        "app": 7363,
+        "pagina": 23646
+      },
+      "via_labels_visible_post": 0,
+      "heads_visible_post": 30,
+      "unique_ok": true,
+      "ok": true
+    }
+  },
+  "pre": {
+    "h_pagina": 24341,
+    "h_fdb": 13514,
+    "h_apparati": 7605,
+    "census": {
+      "famiglie_matrice": 10,
+      "righe_matrice": 40,
+      "card_apparati": 14,
+      "problem_cards": 30,
+      "informative_without_matrix": 20,
+      "coverage_cards": 5,
+      "coverage_titles": [
+        "Sorgente copertura vecchia · ASUSTOR NAS SNMP (Cassiopea)",
+        "Sorgente disabilitata · Zeek conn / flow_observations (legacy storico)",
+        "Sorgente disabilitata · Zeek intel (DNS/SNI → ip_intel)",
+        "Sorgente disabilitata · Zeek DHCP hostnames",
+        "Novità egress soppressa · Zeek egress hybrid (ext host+port / int relazione)"
+      ],
+      "coda_triage": 0,
+      "coda_rumore": 0
+    },
+    "rep_via": {
+      "APPROFONDISCI": 50,
+      "APPLICA": 50,
+      "NON APPLICARE": 50
+    },
+    "cell_col_visible": 120,
+    "odm_head_visible": 0
+  },
+  "post": {
+    "h_pagina": 23646,
+    "h_fdb": 13061,
+    "h_apparati": 7363,
+    "census": {
+      "famiglie_matrice": 10,
+      "righe_matrice": 40,
+      "card_apparati": 14,
+      "problem_cards": 30,
+      "informative_without_matrix": 20,
+      "coverage_cards": 5,
+      "coverage_titles": [
+        "Sorgente copertura vecchia · ASUSTOR NAS SNMP (Cassiopea)",
+        "Sorgente disabilitata · Zeek conn / flow_observations (legacy storico)",
+        "Sorgente disabilitata · Zeek intel (DNS/SNI → ip_intel)",
+        "Sorgente disabilitata · Zeek DHCP hostnames",
+        "Novità egress soppressa · Zeek egress hybrid (ext host+port / int relazione)"
+      ],
+      "coda_triage": 0,
+      "coda_rumore": 0
+    },
+    "rep_via": {
+      "APPROFONDISCI": 40,
+      "APPLICA": 40,
+      "NON APPLICARE": 40
+    },
+    "cell_col_visible": 0,
+    "odm_head_visible": 30,
+    "marker_pm": true,
+    "marker_pa": true
+  }
+}
