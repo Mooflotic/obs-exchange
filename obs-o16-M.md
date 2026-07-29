@@ -1,4 +1,4 @@
-wc -l=178
+178
 # OBS-O16 — Fase M (MISURA) — STOP
 
 ```
