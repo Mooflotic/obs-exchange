@@ -1,0 +1,2126 @@
+diff --git a/api/app/services/behaviour.py b/api/app/services/behaviour.py
+new file mode 100644
+index 0000000..796d478
+--- /dev/null
++++ b/api/app/services/behaviour.py
+@@ -0,0 +1,803 @@
++"""O11 — Zeek behaviour evidence: ingest, freshness, character-change, Oggi cards.
++
++F-7: write evidence, derive state. No invented numeric thresholds for character
++change (structural set comparison only). Baseline starts in costruzione until
++intentional observation depth is declared sufficient (A4 / Z5).
++"""
++
++from __future__ import annotations
++
++import hashlib
++import logging
++from datetime import datetime
++from typing import Any
++
++from sqlalchemy import func, select
++from sqlalchemy.orm import Session
++
++from app.facts.ip_association import (
++    associate_ip_at,
++    associate_mac_direct,
++    subject_for_association,
++)
++from app.models import (
++    Asset,
++    Chassis,
++    Interface,
++    Suggestion,
++    ZeekBehaviorEvidence,
++    utcnow,
++)
++from app.services.fdb_defense import FDB_STALE_HOURS
++
++log = logging.getLogger("observatory.behaviour")
++
++# Breaker ceilings — same numeric contract as fact shadow (do not raise).
++MAX_EVIDENCE_ROWS = 20_000
++MAX_GROWTH_PER_DAY = 2_000
++MAX_TABLE_BYTES = 50 * 1024 * 1024
++
++SENSOR_ID = "zeek-span"
++KINDS_FP = frozenset({"ja4", "ja4s", "ja4d", "dhcp_param_list", "dhcp_vendor", "dhcp_hostname"})
++
++# O11 A4: JA4 was never consumed before this wave → baseline in construction.
++# Flip only via explicit admin/Michele action (acknowledge baseline_ready), never auto.
++BASELINE_META_KIND = "_baseline"
++BASELINE_META_DEDUP = "meta|baseline|o11"
++
++
++def _norm_mac(mac: str | None) -> str:
++    return (mac or "").replace("-", ":").strip().upper()
++
++
++def _parse_ts(value: Any) -> datetime | None:
++    if value is None:
++        return None
++    if isinstance(value, datetime):
++        return value.replace(tzinfo=None) if value.tzinfo else value
++    if isinstance(value, (int, float)):
++        return datetime.utcfromtimestamp(float(value))
++    text = str(value).strip()
++    if not text:
++        return None
++    try:
++        return datetime.utcfromtimestamp(float(text))
++    except ValueError:
++        pass
++    try:
++        if text.endswith("Z"):
++            text = text[:-1] + "+00:00"
++        dt = datetime.fromisoformat(text)
++        if dt.tzinfo is not None:
++            from datetime import timezone
++
++            return dt.astimezone(timezone.utc).replace(tzinfo=None)
++        return dt
++    except ValueError:
++        return None
++
++
++def _dedup_key(kind: str, value: str, mac: str, ip: str, association: str) -> str:
++    raw = f"{kind}|{value}|{mac or ip}|{association}"
++    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:64]
++
++
++def evidence_table_stats(db: Session) -> dict[str, Any]:
++    total = db.scalar(select(func.count()).select_from(ZeekBehaviorEvidence)) or 0
++    today_start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
++    today = (
++        db.scalar(
++            select(func.count())
++            .select_from(ZeekBehaviorEvidence)
++            .where(ZeekBehaviorEvidence.first_seen >= today_start)
++        )
++        or 0
++    )
++    # Approximate size via payload lengths (no DB file maintenance).
++    rows = db.scalars(select(ZeekBehaviorEvidence)).all()
++    approx = sum(
++        len((r.dedup_key or ""))
++        + len(r.kind or "")
++        + len(r.value or "")
++        + len(r.src_ip or "")
++        + len(r.src_mac or "")
++        + 64
++        for r in rows
++    )
++    return {
++        "rows_total": int(total),
++        "rows_today": int(today),
++        "approx_bytes": int(approx),
++        "ceilings": {
++            "rows_total": MAX_EVIDENCE_ROWS,
++            "rows_today": MAX_GROWTH_PER_DAY,
++            "bytes": MAX_TABLE_BYTES,
++        },
++    }
++
++
++def evaluate_evidence_breaker(db: Session) -> tuple[bool, str]:
++    st = evidence_table_stats(db)
++    if st["rows_total"] >= MAX_EVIDENCE_ROWS:
++        return True, f"zeek_behavior_evidence rows_total={st['rows_total']} >= {MAX_EVIDENCE_ROWS}"
++    if st["rows_today"] >= MAX_GROWTH_PER_DAY:
++        return True, f"zeek_behavior_evidence rows_today={st['rows_today']} >= {MAX_GROWTH_PER_DAY}"
++    if st["approx_bytes"] >= MAX_TABLE_BYTES:
++        return True, f"zeek_behavior_evidence approx_bytes={st['approx_bytes']} >= {MAX_TABLE_BYTES}"
++    return False, ""
++
++
++def freshness_for_observed_at(observed_at: datetime | None, *, now: datetime | None = None) -> dict[str, Any]:
++    """Reuse FDB_STALE_HOURS window — same vocabulary as O2/O5/O10 (no second vocab)."""
++    now = now or utcnow()
++    if observed_at is None:
++        return {
++            "state": "not_measured",
++            "display": "non misurato",
++            "source": SENSOR_ID,
++            "age_hours": None,
++            "window_hours": FDB_STALE_HOURS,
++        }
++    age_h = max(0.0, (now - observed_at).total_seconds() / 3600.0)
++    if age_h > FDB_STALE_HOURS:
++        return {
++            "state": "stale",
++            "display": "vecchio",
++            "source": SENSOR_ID,
++            "age_hours": round(age_h, 3),
++            "window_hours": FDB_STALE_HOURS,
++            "last_at": observed_at.isoformat() + "Z",
++            "note": f"età {age_h:.1f} h > finestra {FDB_STALE_HOURS} h",
++        }
++    return {
++        "state": "fresh",
++        "display": "fresco",
++        "source": SENSOR_ID,
++        "age_hours": round(age_h, 3),
++        "window_hours": FDB_STALE_HOURS,
++        "last_at": observed_at.isoformat() + "Z",
++    }
++
++
++def ensure_baseline_meta(db: Session, *, started_at: datetime | None = None) -> ZeekBehaviorEvidence:
++    row = db.scalar(
++        select(ZeekBehaviorEvidence).where(ZeekBehaviorEvidence.dedup_key == BASELINE_META_DEDUP)
++    )
++    if row:
++        return row
++    at = started_at or utcnow()
++    row = ZeekBehaviorEvidence(
++        dedup_key=BASELINE_META_DEDUP,
++        kind=BASELINE_META_KIND,
++        value="in_costruzione",
++        association="mac_direct",
++        sensor_id=SENSOR_ID,
++        first_seen=at,
++        last_seen=at,
++        observation_count=1,
++        evidence={
++            "baseline_status": "in_costruzione",
++            "baseline_ready": False,
++            "reason": (
++                "A4: JA4/JA4D non erano consumati prima di O11; "
++                "profondità storica intenzionale insufficiente a distinguere "
++                "«nuovo» da «mai osservato perché non guardavamo»"
++            ),
++            "o11_marker": "obs-o11-baseline",
++        },
++    )
++    db.add(row)
++    db.flush()
++    return row
++
++
++def baseline_status(db: Session) -> dict[str, Any]:
++    row = ensure_baseline_meta(db)
++    ev = dict(row.evidence or {})
++    ready = bool(ev.get("baseline_ready")) and (row.value == "ready")
++    return {
++        "status": "ready" if ready else "in_costruzione",
++        "baseline_ready": ready,
++        "baseline_started_at": (row.first_seen.isoformat() + "Z") if row.first_seen else None,
++        "reason": ev.get("reason") or "",
++        "o11_marker": "obs-o11-baseline",
++    }
++
++
++def mark_baseline_ready(db: Session, *, user_id: int | None = None, reason: str = "") -> dict[str, Any]:
++    """Explicit Michele action — never auto. Writes evidence meta only."""
++    row = ensure_baseline_meta(db)
++    ev = dict(row.evidence or {})
++    ev["baseline_ready"] = True
++    ev["baseline_status"] = "ready"
++    ev["marked_ready_by"] = user_id
++    ev["marked_ready_reason"] = reason or "azione esplicita"
++    ev["marked_ready_at"] = utcnow().isoformat() + "Z"
++    row.value = "ready"
++    row.evidence = ev
++    row.last_seen = utcnow()
++    db.flush()
++    return baseline_status(db)
++
++
++def upsert_evidence_item(db: Session, item: dict[str, Any]) -> str:
++    """Upsert one fingerprint observation. Returns action created|refreshed|skipped_*."""
++    kind = str(item.get("kind") or "").strip()
++    value = str(item.get("value") or "").strip()
++    if kind not in KINDS_FP or not value or value in ("-", "null"):
++        return "skipped_invalid"
++
++    open_, reason = evaluate_evidence_breaker(db)
++    if open_:
++        log.error("zeek_behavior breaker open: %s", reason)
++        return "skipped_breaker"
++
++    observed_at = _parse_ts(item.get("observed_at")) or utcnow()
++    src_ip = str(item.get("src_ip") or "").strip()
++    src_mac = _norm_mac(item.get("src_mac"))
++
++    if src_mac:
++        assoc = associate_mac_direct(db, src_mac)
++        if src_ip:
++            # Keep IP for display; association remains mac_direct.
++            pass
++    elif src_ip:
++        assoc = associate_ip_at(db, src_ip, observed_at)
++        src_mac = assoc.mac or src_mac
++    else:
++        return "skipped_no_identity"
++
++    subject_type, subject_id, asset_id = subject_for_association(assoc)
++    association = assoc.status
++    if association == "unresolved" and not src_mac and not assoc.asset_id:
++        # Still store unresolved IP-only evidence (I2).
++        pass
++
++    key = _dedup_key(kind, value, src_mac, src_ip, association)
++    existing = db.scalar(
++        select(ZeekBehaviorEvidence).where(ZeekBehaviorEvidence.dedup_key == key)
++    )
++    payload = {
++        "assoc_reason": assoc.reason,
++        "fact_id": assoc.fact_id,
++        "fact_state": assoc.fact_state,
++        "ja4s": item.get("ja4s"),
++        "server_name": item.get("server_name"),
++        "uid": item.get("uid"),
++        "o11_marker": "obs-o11-evidence",
++    }
++    if existing:
++        existing.last_seen = max(existing.last_seen or observed_at, observed_at)
++        existing.observation_count = int(existing.observation_count or 0) + 1
++        if subject_type and not existing.subject_type:
++            existing.subject_type = subject_type
++            existing.subject_id = subject_id
++        if asset_id and not existing.asset_id:
++            existing.asset_id = asset_id
++        if src_mac and not existing.src_mac:
++            existing.src_mac = src_mac
++        ev = dict(existing.evidence or {})
++        ev.update({k: v for k, v in payload.items() if v is not None})
++        existing.evidence = ev
++        db.flush()
++        return "refreshed"
++
++    row = ZeekBehaviorEvidence(
++        dedup_key=key,
++        kind=kind,
++        value=value[:255],
++        src_ip=src_ip,
++        src_mac=src_mac,
++        association=association,
++        subject_type=subject_type or "",
++        subject_id=subject_id,
++        asset_id=asset_id,
++        sensor_id=SENSOR_ID,
++        first_seen=observed_at,
++        last_seen=observed_at,
++        observation_count=1,
++        evidence=payload,
++    )
++    db.add(row)
++    db.flush()
++    return "created"
++
++
++def ingest_zeek_behavior_batch(db: Session, items: list[dict[str, Any]]) -> dict[str, Any]:
++    ensure_baseline_meta(db)
++    stats = {
++        "received": len(items),
++        "created": 0,
++        "refreshed": 0,
++        "skipped_invalid": 0,
++        "skipped_breaker": 0,
++        "skipped_no_identity": 0,
++    }
++    for raw in items:
++        if not isinstance(raw, dict):
++            stats["skipped_invalid"] += 1
++            continue
++        action = upsert_evidence_item(db, raw)
++        if action in stats:
++            stats[action] += 1
++        elif action.startswith("skipped_"):
++            stats[action] = stats.get(action, 0) + 1
++    open_, reason = evaluate_evidence_breaker(db)
++    st = evidence_table_stats(db)
++    return {
++        **stats,
++        "breaker_open": open_,
++        "breaker_reason": reason,
++        "table": st,
++        "baseline": baseline_status(db),
++        "o11_marker": "obs-o11-ingest",
++    }
++
++
++def _member_asset_ids(db: Session, asset: Asset) -> list[int]:
++    if asset.chassis_id:
++        members = db.scalars(
++            select(Asset.id).where(Asset.chassis_id == int(asset.chassis_id))
++        ).all()
++        return [int(x) for x in members]
++    return [int(asset.id)]
++
++
++def _evidence_for_asset(db: Session, asset: Asset) -> list[ZeekBehaviorEvidence]:
++    ids = _member_asset_ids(db, asset)
++    chassis_id = int(asset.chassis_id) if asset.chassis_id else None
++    clauses = [ZeekBehaviorEvidence.asset_id.in_(ids)]
++    if chassis_id is not None:
++        clauses.append(
++            (ZeekBehaviorEvidence.subject_type == "chassis")
++            & (ZeekBehaviorEvidence.subject_id == chassis_id)
++        )
++    # Also by MAC of all member interfaces
++    macs = [
++        _norm_mac(i.mac)
++        for i in db.scalars(select(Interface).where(Interface.asset_id.in_(ids))).all()
++        if i.mac
++    ]
++    if macs:
++        clauses.append(ZeekBehaviorEvidence.src_mac.in_(macs))
++
++    from sqlalchemy import or_
++
++    rows = list(
++        db.scalars(
++            select(ZeekBehaviorEvidence)
++            .where(
++                ZeekBehaviorEvidence.kind != BASELINE_META_KIND,
++                or_(*clauses) if clauses else ZeekBehaviorEvidence.id < 0,
++            )
++            .order_by(ZeekBehaviorEvidence.last_seen.desc())
++        ).all()
++    )
++    # Dedupe by id
++    seen: set[int] = set()
++    out: list[ZeekBehaviorEvidence] = []
++    for r in rows:
++        if r.id in seen:
++            continue
++        seen.add(r.id)
++        out.append(r)
++    return out
++
++
++def build_does_block(db: Session, asset: Asset, *, now: datetime | None = None) -> dict[str, Any]:
++    """Dossier «Cosa fa» — facts only (I1). Includes O13C egress destinations."""
++    now = now or utcnow()
++    rows = _evidence_for_asset(db, asset)
++    fingerprints: list[dict[str, Any]] = []
++    for r in rows:
++        fingerprints.append(
++            {
++                "kind": r.kind,
++                "value": r.value,
++                "src_ip": r.src_ip or None,
++                "src_mac": r.src_mac or None,
++                "association": r.association,
++                "association_uncertain": r.association == "uncertain",
++                "first_seen": r.first_seen.isoformat() + "Z" if r.first_seen else None,
++                "last_seen": r.last_seen.isoformat() + "Z" if r.last_seen else None,
++                "observation_count": int(r.observation_count or 0),
++                "freshness": freshness_for_observed_at(r.last_seen, now=now),
++                "source": r.sensor_id or SENSOR_ID,
++                "o11_marker": "obs-o11-does",
++            }
++        )
++    bl = baseline_status(db)
++    from app.services.egress import build_egress_for_asset
++
++    egress = build_egress_for_asset(db, asset, now=now)
++    evidence_available = bool(fingerprints) or bool(egress.get("evidence_available"))
++    return {
++        "title": "Cosa fa",
++        "habits_href": f"/api/assets/{asset.id}/habits",
++        "note": (
++            "Evidenze Zeek (JA4/JA4D/DHCP) + destinazioni egress hybrid + abitudini SPAN. "
++            "Associazione IP↔MAC non corrente → marcata incerta (I2)."
++        ),
++        "evidence_available": evidence_available,
++        "empty_reason": None
++        if evidence_available
++        else "nessuna evidenza disponibile (I2)",
++        "fingerprints": fingerprints,
++        "egress": egress,
++        "baseline": bl,
++        "o11_marker": "obs-o11-does",
++        "o13c_marker": "obs-o13c",
++    }
++
++
++def build_identity_inference(
++    db: Session,
++    asset: Asset,
++    *,
++    ai_enabled: bool,
++    ai_configured: bool,
++    now: datetime | None = None,
++) -> dict[str, Any]:
++    """Separate INFERENZA IA block — never writes facts. Degrades if no engine (I2)."""
++    now = now or utcnow()
++    does = build_does_block(db, asset, now=now)
++    fps = does.get("fingerprints") or []
++    evidence_refs = [
++        {"kind": f["kind"], "value": f["value"], "association": f["association"]}
++        for f in fps
++        if f.get("kind") in ("ja4", "ja4d", "dhcp_param_list", "dhcp_vendor", "dhcp_hostname")
++    ]
++
++    base = {
++        "title": "INFERENZA IA",
++        "label": "INFERENZA IA",
++        "disclaimer": (
++            "Output inferito — non certezza; nessuna azione automatica; "
++            "nessuna scrittura di fatti. Accettare una proposta = azione esplicita "
++            "di Michele con provenienza manuale."
++        ),
++        "evidence": evidence_refs,
++        "o11_marker": "obs-o11-inferenza",
++    }
++
++    if not evidence_refs:
++        return {
++            **base,
++            "proposal_available": False,
++            "proposal": None,
++            "status": "nessuna evidenza disponibile",
++            "confidence": None,
++            "limits": ["Nessuna evidenza Zeek da cui derivare una proposta (I2)."],
++            "verification_action": "Verificare presenza traffico SPAN / DHCP per questo MAC.",
++            "llm_slot": {
++                "enabled": False,
++                "reason": "nessuna evidenza; slot /ai Groq non cablato",
++            },
++        }
++
++    if not ai_enabled or not ai_configured:
++        return {
++            **base,
++            "proposal_available": False,
++            "proposal": None,
++            "status": "proposta non disponibile: nessun motore di inferenza configurato",
++            "confidence": None,
++            "limits": [
++                "AI_ENABLED=false oppure chiave/motore assente.",
++                "Percorso /ai (Groq) non cablato in produzione (STOP costi).",
++                "Evidenze mostrate sopra restano fatti osservati.",
++            ],
++            "verification_action": (
++                "Aprire il Dossier, confrontare JA4/JA4D/DHCP con inventario noto, "
++                "assegnare nome manuale se riconosciuto."
++            ),
++            "llm_slot": {
++                "enabled": False,
++                "reason": "nessun motore di inferenza configurato (I2 degradazione sicura)",
++            },
++        }
++
++    # Engine present but still no paid path — refuse to invent live output.
++    return {
++        **base,
++        "proposal_available": False,
++        "proposal": None,
++        "status": "proposta non disponibile: motore presente ma percorso /ai non cablato",
++        "confidence": None,
++        "limits": [
++            "Motore locale dichiarato ma O11 non invoca LLM (vietato simulare output).",
++            "Accettazione futura: solo dopo azione esplicita + provenienza manuale.",
++        ],
++        "verification_action": "Confermare manualmente l'identità dal Dossier (azione reversibile).",
++        "llm_slot": {"enabled": False, "reason": "/ai non cablato — nessuna chiamata"},
++    }
++
++
++def structural_character_changes(
++    db: Session, *, now: datetime | None = None
++) -> list[dict[str, Any]]:
++    """New JA4/JA4D/dhcp FP not in prior set for subject. Gated by baseline_ready."""
++    now = now or utcnow()
++    bl = baseline_status(db)
++    if not bl["baseline_ready"]:
++        return []
++
++    rows = list(
++        db.scalars(
++            select(ZeekBehaviorEvidence).where(
++                ZeekBehaviorEvidence.kind.in_(["ja4", "ja4d", "dhcp_param_list", "dhcp_vendor"])
++            )
++        ).all()
++    )
++    by_subj: dict[tuple[str, int], list[ZeekBehaviorEvidence]] = {}
++    for r in rows:
++        if not r.subject_type or r.subject_id is None:
++            continue
++        by_subj.setdefault((r.subject_type, int(r.subject_id)), []).append(r)
++
++    cards: list[dict[str, Any]] = []
++    for (stype, sid), group in by_subj.items():
++        # Prior set = values whose first_seen is strictly before the newest first_seen of another value
++        by_kind_value: dict[tuple[str, str], ZeekBehaviorEvidence] = {}
++        for r in group:
++            key = (r.kind, r.value)
++            prev = by_kind_value.get(key)
++            if prev is None or (r.first_seen and prev.first_seen and r.first_seen < prev.first_seen):
++                by_kind_value[key] = r
++
++        # Character change: a fingerprint whose first_seen is after at least one other
++        # distinct fingerprint of same kind already existed for the subject.
++        for (kind, value), r in by_kind_value.items():
++            peers = [
++                p
++                for (k, v), p in by_kind_value.items()
++                if k == kind and v != value and p.first_seen and r.first_seen and p.first_seen < r.first_seen
++            ]
++            if not peers:
++                continue
++            # Also require the new FP last_seen to be fresh enough to surface
++            fr = freshness_for_observed_at(r.last_seen, now=now)
++            if fr["state"] == "stale":
++                continue
++            asset_id = r.asset_id
++            label = f"{stype}:{sid}"
++            if stype == "asset" and asset_id:
++                a = db.get(Asset, asset_id)
++                label = (a.name if a and a.name else None) or f"asset {asset_id}"
++            elif stype == "chassis":
++                ch = db.get(Chassis, sid)
++                label = (ch.label if ch and ch.label else None) or f"chassis {sid}"
++            cards.append(
++                {
++                    "uid": f"beh:cc:{stype}:{sid}:{kind}:{hashlib.sha256(value.encode()).hexdigest()[:12]}",
++                    "signal": "B-C",
++                    "kind": "behavior_character_change",
++                    "title": "dispositivo cambiato carattere",
++                    "subject_type": stype,
++                    "subject_id": sid,
++                    "asset_id": asset_id,
++                    "label": label,
++                    "new_fingerprint": {"kind": kind, "value": value},
++                    "prior_fingerprints": [
++                        {"kind": kind, "value": p.value} for p in peers[:8]
++                    ],
++                    "association": r.association,
++                    "freshness": fr,
++                    "defense_priority_id": "conflitto_identita",
++                    "o11_marker": "obs-o11-character",
++                    "actions": [
++                        {
++                            "id": "open_dossier",
++                            "label": "Apri Dossier",
++                            "href": f"/dossier/{asset_id}" if asset_id else "/dossier",
++                            "reversible": True,
++                        },
++                        {
++                            "id": "acknowledge",
++                            "label": "Riconosci / archivia segnale",
++                            "requires_confirm": True,
++                            "reversible": True,
++                        },
++                    ],
++                }
++            )
++    return cards
++
++
++def unknown_with_evidence_cards(db: Session, *, now: datetime | None = None) -> list[dict[str, Any]]:
++    """Unrecognized or solo-L2 with Zeek evidence — member rows for B-I group (G7).
++
++    B3: one member per chassis (or singleton asset), never N cards for multi-NIC.
++    MAC shown is evidence ``src_mac`` (not first chassis interface — O11-FIX G6 display).
++    """
++    now = now or utcnow()
++    assets = list(db.scalars(select(Asset)).all())
++    members: list[dict[str, Any]] = []
++    seen_subjects: set[tuple[str, int]] = set()
++    for asset in assets:
++        status = (asset.status or "").lower()
++        name = (asset.name or "").strip()
++        solo_l2 = True
++        for iface in asset.interfaces or []:
++            for addr in iface.addresses or []:
++                if addr.is_current and addr.ip:
++                    solo_l2 = False
++                    break
++        unrecognized = status in {"nuovo", "sconosciuto", "unknown"} or not name
++        if not (unrecognized or solo_l2):
++            continue
++        rows = _evidence_for_asset(db, asset)
++        useful = [
++            r
++            for r in rows
++            if r.kind in ("ja4", "ja4d", "dhcp_param_list", "dhcp_vendor", "dhcp_hostname")
++        ]
++        if len(useful) < 1:
++            continue
++        if asset.chassis_id:
++            subj = ("chassis", int(asset.chassis_id))
++        else:
++            subj = ("asset", int(asset.id))
++        if subj in seen_subjects:
++            continue
++        seen_subjects.add(subj)
++        # Prefer evidence MAC (G6): avoid first member interface (e.g. F8 vs F9).
++        src_macs = sorted(
++            {_norm_mac(r.src_mac) for r in useful if r.src_mac},
++            key=lambda m: m or "",
++        )
++        label = f"{subj[0]}:{subj[1]}"
++        if subj[0] == "chassis":
++            ch = db.get(Chassis, subj[1])
++            label = (ch.label if ch and ch.label else None) or label
++        elif asset.name:
++            label = asset.name
++        members.append(
++            {
++                "uid": f"beh:id:{subj[0]}:{subj[1]}",
++                "signal": "B-I",
++                "kind": "behavior_unknown_with_evidence",
++                "subject_type": subj[0],
++                "subject_id": subj[1],
++                "asset_id": int(asset.id),
++                "label": label,
++                "mac": src_macs[0] if src_macs else None,
++                "macs": src_macs,
++                "solo_l2": solo_l2,
++                "unrecognized": unrecognized,
++                "evidence_kinds": sorted({r.kind for r in useful}),
++                "evidence_count": len(useful),
++                "defense_priority_id": "ignoto_con_evidenze_zeek",
++                "dossier_href": f"/dossier/{asset.id}?from=oggi&focus=does",
++                "assign_name_href": f"/dossier/{asset.id}?from=oggi&focus=name",
++            }
++        )
++    return members
++
++
++def group_unknown_evidence_card(members: list[dict[str, Any]]) -> dict[str, Any] | None:
++    """O11-FIX G7: one expandable B-I voice instead of N P1 cards."""
++    if not members:
++        return None
++    members_sorted = sorted(
++        members, key=lambda m: (m.get("subject_type") or "", int(m.get("subject_id") or 0))
++    )
++    first = members_sorted[0]
++    return {
++        "uid": "beh:id:group",
++        "signal": "B-I",
++        "kind": "behavior_unknown_with_evidence_group",
++        "title": (
++            f"{len(members_sorted)} ignoti con evidenze Zeek "
++            "(proposta automatica non disponibile — assegnazione manuale)"
++        ),
++        "count": len(members_sorted),
++        "members": members_sorted,
++        "expandable": True,
++        "asset_id": first.get("asset_id"),
++        "defense_priority_id": "ignoto_con_evidenze_zeek",
++        "o11_marker": "obs-o11fix-unknown-group",
++        "actions": [
++            {
++                "id": "open_evidences",
++                "label": "Apri evidenze (primo in elenco)",
++                "href": first.get("dossier_href") or "/dossier",
++                "reversible": True,
++            },
++            {
++                "id": "assign_name",
++                "label": "Assegna nome manuale (primo in elenco)",
++                "href": first.get("assign_name_href") or "/dossier",
++                "requires_confirm": False,
++                "reversible": True,
++            },
++            {
++                "id": "acknowledge",
++                "label": "Archivia gruppo (dopo ispezione)",
++                "requires_confirm": True,
++                "reversible": True,
++            },
++        ],
++    }
++
++
++def build_behavior_signals(db: Session, *, now: datetime | None = None) -> dict[str, Any]:
++    now = now or utcnow()
++    ensure_baseline_meta(db)
++    bl = baseline_status(db)
++    acked = {
++        s.uid
++        for s in db.scalars(
++            select(Suggestion).where(
++                Suggestion.source == "behavior",
++                Suggestion.status.in_(["approved", "rejected"]),
++            )
++        ).all()
++    }
++    cc = [c for c in structural_character_changes(db, now=now) if c["uid"] not in acked]
++    unk_members = [
++        c for c in unknown_with_evidence_cards(db, now=now) if c["uid"] not in acked
++    ]
++    # Group ack: if group uid acked, hide all; also hide individually acked members.
++    if "beh:id:group" in acked:
++        unk_members = []
++    group = group_unknown_evidence_card(unk_members)
++    unk_cards = [group] if group else []
++    open_, reason = evaluate_evidence_breaker(db)
++    return {
++        "cards": cc + unk_cards,
++        "character_change_cards": cc,
++        "unknown_evidence_cards": unk_cards,
++        "unknown_evidence_members": unk_members,
++        "baseline": bl,
++        "breaker_open": open_,
++        "breaker_reason": reason,
++        "table": evidence_table_stats(db),
++        "o11_marker": "obs-o11fix-signals",
++        "note": (
++            None
++            if bl["baseline_ready"]
++            else (
++                f"Baseline comportamento in costruzione dal {bl['baseline_started_at']}: "
++                "nessun segnale «cambiato carattere» emesso (Z5/A4)."
++            )
++        ),
++    }
++
++
++def acknowledge_behavior_signal(
++    db: Session,
++    *,
++    uid: str,
++    action: str,
++    reason: str = "",
++    user_id: int | None = None,
++) -> Suggestion:
++    status = "approved" if action in {"acknowledge", "riconosci", "archive"} else "rejected"
++    existing = db.scalar(select(Suggestion).where(Suggestion.uid == uid))
++    kind = "behavior_character_change" if uid.startswith("beh:cc:") else "behavior_unknown_with_evidence"
++    if existing:
++        existing.status = status
++        existing.decided_at = utcnow()
++        existing.decided_by = user_id
++        existing.body = reason or existing.body
++        payload = dict(existing.payload or {})
++        payload["action"] = action
++        existing.payload = payload
++        db.flush()
++        return existing
++    s = Suggestion(
++        uid=uid,
++        kind=kind,
++        status=status,
++        title=kind,
++        body=reason or action,
++        payload={"action": action, "reason": reason},
++        source="behavior",
++        confidence=1.0,
++        decided_at=utcnow(),
++        decided_by=user_id,
++    )
++    db.add(s)
++    db.flush()
++    return s
+
+diff --git a/observatory/api/app/services/dossier_answer.py b/observatory/api/app/services/dossier_answer.py
+new file mode 100644
+index 0000000..d762dd0
+--- /dev/null
++++ b/observatory/api/app/services/dossier_answer.py
+@@ -0,0 +1,669 @@
++"""O7 — Dossier as answers (six questions), not a raw dump."""
++
++from __future__ import annotations
++
++from datetime import datetime
++from typing import Any
++
++from sqlalchemy import select
++from sqlalchemy.orm import Session, joinedload
++
++from app.facts.port_fdb import list_current_port_fdb_mac, list_mac_fdb_history
++from app.facts.resolver import current
++from app.models import Asset, Interface, Switch, SwitchPort, utcnow
++from app.services.fdb_defense import FDB_STALE_HOURS, classify_port_roles
++from app.services.gs308_branch import devices_behind_gs308
++from app.services.macutil import is_locally_administered, normalize_mac, oui_prefix
++from app.services.switch_capabilities import switch_capabilities
++
++GS308_CODE = "308ep"
++
++
++def _iso(dt: datetime | None) -> str | None:
++    if dt is None:
++        return None
++    if dt.tzinfo is None:
++        return dt.isoformat() + "Z"
++    return dt.isoformat()
++
++
++def _age_hours(when: datetime | None, *, now: datetime) -> float | None:
++    if when is None:
++        return None
++    w = when if when.tzinfo else when
++    n = now if now.tzinfo else now
++    # naive compare
++    if getattr(w, "tzinfo", None) and getattr(n, "tzinfo", None) is None:
++        n = n.replace(tzinfo=w.tzinfo)
++    try:
++        return max(0.0, (n - w).total_seconds() / 3600.0)
++    except TypeError:
++        return None
++
++
++def _load_asset(db: Session, asset_id: int) -> Asset | None:
++    return db.scalar(
++        select(Asset)
++        .where(Asset.id == int(asset_id))
++        .options(
++            joinedload(Asset.interfaces).joinedload(Interface.addresses),
++            joinedload(Asset.name_proposals),
++        )
++    )
++
++
++def _primary_mac(asset: Asset) -> str | None:
++    for iface in asset.interfaces or []:
++        m = normalize_mac(iface.mac or "")
++        if m:
++            return m
++    return None
++
++
++def _current_ip(asset: Asset) -> str | None:
++    for iface in asset.interfaces or []:
++        for addr in iface.addresses or []:
++            if addr.is_current and addr.ip:
++                return addr.ip
++    return None
++
++
++def _name_block(db: Session, asset: Asset) -> dict[str, Any]:
++    """Cos'è — name with provenance (I2: nome non noto)."""
++    # Prefer chassis-scoped fact if present
++    chassis_id = getattr(asset, "chassis_id", None)
++    if chassis_id is not None:
++        chassis_id = int(chassis_id)
++
++    fact = None
++    subject = None
++    if chassis_id:
++        fact = current(db, "chassis", int(chassis_id), "asset.name")
++        subject = ("chassis", int(chassis_id))
++    if fact is None:
++        fact = current(db, "asset", int(asset.id), "asset.name")
++        subject = ("asset", int(asset.id))
++
++    held = (asset.name or "").strip()
++    if fact and (fact.value_norm or "").strip():
++        return {
++            "name": fact.value_norm.strip(),
++            "name_kind": "manual" if fact.source == "manual" else "fact",
++            "provenance": {
++                "source": fact.source,
++                "authority": fact.authority,
++                "subject_type": subject[0] if subject else None,
++                "subject_id": subject[1] if subject else None,
++                "observed_at": _iso(fact.observed_at),
++                "label": "manuale" if fact.source == "manual" else f"fatto ({fact.source})",
++            },
++            "held_legacy_name": held if held and held != fact.value_norm.strip() else None,
++        }
++    if held:
++        # legacy column — not a fact (DEBT-CHASSIS-NAME-LEGACY-HELD)
++        return {
++            "name": held,
++            "name_kind": "legacy_manual",
++            "provenance": {
++                "source": "asset.name_column",
++                "authority": None,
++                "label": "legacy_manual",
++                "note": "Nome su colonna Asset — non ancora fatto nel resolver (I2).",
++            },
++            "held_legacy_name": None,
++        }
++    return {
++        "name": None,
++        "name_label": "nome non noto",
++        "name_kind": "absent",
++        "provenance": {
++            "source": None,
++            "label": "assente",
++            "note": "nome non noto (I2)",
++        },
++        "held_legacy_name": None,
++    }
++
++
++def _placement_for_mac(
++    db: Session,
++    mac: str,
++    *,
++    now: datetime,
++) -> dict[str, Any]:
++    """Dove sta — FDB current + dietro-308; freshness O2/O5 vocabulary."""
++    roles = classify_port_roles(db)
++    behind = devices_behind_gs308(db)
++    behind_macs = {d["mac"] for d in behind.get("devices") or []}
++    if mac in behind_macs:
++        att = behind.get("attestation") or {}
++        return {
++            "kind": "behind_308",
++            "label": "dietro il 308, porta interna non determinabile",
++            "link": "/gs308",
++            "attestation": {
++                "switch_code": att.get("switch_code"),
++                "port_id": att.get("port_id"),
++                "port_number": att.get("port_number"),
++                "rule": att.get("rule"),
++            },
++            "source": "fdb",
++            "authority": 60,
++            "freshness": {
++                "state": "misurata_fresca" if behind.get("last_fdb_at") else "sorgente_non_disponibile",
++                "source": "fdb_upstream",
++                "last_at": behind.get("last_fdb_at"),
++                "note": behind.get("disclaimer"),
++            },
++        }
++
++    currents = [
++        fa
++        for fa in list_current_port_fdb_mac(db)
++        if normalize_mac(fa.get("value_norm") or "") == mac
++    ]
++    if not currents:
++        return {
++            "kind": "unknown",
++            "label": "posizione non determinabile",
++            "note": "MAC assente dalla FDB corrente degli switch gestiti (I2)",
++            "freshness": {
++                "state": "sorgente_non_disponibile",
++                "source": "fdb",
++                "note": "nessun binding port.fdb_mac current",
++            },
++        }
++
++    # Prefer access over uplink / non_determinato (structural role, not count).
++    ranked = []
++    for fa in currents:
++        pid = int(fa["subject_id"])
++        role = roles.get(pid, {}).get("ruolo_porta", "non_determinato")
++        rank = 0 if role == "accesso" else (1 if role == "non_determinato" else 2)
++        ranked.append((rank, fa, role, pid))
++    ranked.sort(key=lambda x: (x[0], -int(x[1]["id"])))
++    _rank, fa, role, pid = ranked[0]
++    port = db.get(SwitchPort, pid)
++    sw = db.get(Switch, port.switch_id) if port else None
++    cap = switch_capabilities(sw.model if sw else None)
++    meta = dict(sw.meta or {}) if sw else {}
++    poll = dict(meta.get("fdb_poll") or {})
++
++    freshness: dict[str, Any]
++    if cap.get("fdb_supported") is False:
++        freshness = {
++            "state": "non_coperta",
++            "source": "fdb",
++            "note": cap.get("fdb_message") or "FDB non supportato dall'apparato (I7)",
++            "last_error": poll.get("error") or None,
++        }
++    elif poll.get("ok") is False:
++        freshness = {
++            "state": "sorgente_non_disponibile",
++            "source": "fdb",
++            "note": "sorgente_non_disponibile (≠ dispositivo_assente)",
++            "last_error": poll.get("error") or "poll FDB fallito",
++            "last_at": poll.get("at"),
++        }
++    else:
++        last = None
++        if poll.get("at"):
++            try:
++                last = datetime.fromisoformat(str(poll["at"]).replace("Z", ""))
++            except ValueError:
++                last = port.last_fdb_at if port else None
++        else:
++            last = port.last_fdb_at if port else None
++        age = _age_hours(last, now=now)
++        if age is not None and age > FDB_STALE_HOURS:
++            freshness = {
++                "state": "sorgente_non_fresca",
++                "source": "fdb",
++                "note": (
++                    f"sorgente_non_fresca — finestra {FDB_STALE_HOURS} h superata "
++                    f"(età {round(age, 1)} h); valore non reso come corrente"
++                ),
++                "last_at": _iso(last),
++                "age_hours": round(age, 2),
++                "last_error": poll.get("error") or None,
++                "display": "non misurato",
++            }
++        else:
++            freshness = {
++                "state": "misurata_fresca",
++                "source": "fdb",
++                "last_at": _iso(last) if last else _iso(fa.get("observed_at")),
++                "age_hours": None if age is None else round(age, 2),
++            }
++
++    vj = fa.get("value_json") or {}
++    measured_value = None
++    if freshness.get("state") in {"sorgente_non_fresca", "sorgente_non_disponibile", "non_coperta"}:
++        # D4: do not present stale value as current — declare non misurato
++        placement_value = {
++            "display": "non misurato",
++            "reason": freshness.get("note"),
++            "last_error": freshness.get("last_error"),
++            "last_known": {
++                "switch_code": sw.code if sw else None,
++                "port_number": int(port.number) if port else None,
++                "port_id": pid,
++                "as_of": freshness.get("last_at") or _iso(fa.get("observed_at")),
++            },
++        }
++    else:
++        placement_value = {
++            "display": f"{sw.code if sw else '?'}:{port.number if port else '?'}",
++            "switch_code": sw.code if sw else None,
++            "switch_id": sw.id if sw else None,
++            "port_id": pid,
++            "port_number": int(port.number) if port else None,
++            "ruolo_porta": role,
++            "ruolo_rule": roles.get(pid, {}).get("rule"),
++        }
++        measured_value = placement_value["display"]
++
++    return {
++        "kind": "fdb_port",
++        "label": placement_value.get("display"),
++        "value": placement_value,
++        "measured_as_current": measured_value,
++        "source": "fdb",
++        "authority": 60,
++        "freshness": freshness,
++        "baseline": {
++            "quality": (
++                "verified"
++                if vj.get("baseline")
++                else ("reconstructed" if vj.get("baseline_reconstructed") else "absent")
++            ),
++            "baseline_at": vj.get("baseline_at"),
++        },
++        "concurrent_ports": [
++            {
++                "port_id": int(x["subject_id"]),
++                "ruolo_porta": roles.get(int(x["subject_id"]), {}).get("ruolo_porta"),
++            }
++            for x in currents
++        ],
++    }
++
++
++def _history_block(db: Session, mac: str | None, placement: dict[str, Any]) -> dict[str, Any]:
++    if not mac:
++        return {
++            "available": False,
++            "note": "storia non disponibile — MAC assente (I2)",
++            "events": [],
++            "excluded_defect_count": 0,
++        }
++    hist = list_mac_fdb_history(db, mac)
++    events_out = []
++    for ev in hist["events"]:
++        vj = ev.get("value_json") or {}
++        events_out.append(
++            {
++                "id": ev["id"],
++                "state": ev["state"],
++                "reason": ev["reason"] or None,
++                "port_id": ev["subject_id"],
++                "switch": vj.get("switch"),
++                "port": vj.get("port"),
++                "observed_at": _iso(ev.get("observed_at")),
++                "superseded_by_id": ev.get("superseded_by_id"),
++            }
++        )
++    bl = placement.get("baseline") or {}
++    quality = bl.get("quality") or "absent"
++    if quality == "reconstructed":
++        first_seen_kind = "lower_bound_reconstructed"
++        first_seen_label = (
++            f"presente alla ricostruzione della baseline del {bl.get('baseline_at')}, "
++            "storia precedente non disponibile"
++        )
++    elif quality == "verified":
++        first_seen_kind = "baseline_verified"
++        first_seen_label = (
++            f"presente alla baseline verificata del {bl.get('baseline_at')}"
++        )
++    elif events_out:
++        first_seen_kind = "observed_first"
++        first_seen_label = f"prima osservazione FDB in catena: {events_out[0].get('observed_at')}"
++    else:
++        first_seen_kind = "absent"
++        first_seen_label = "storia FDB assente (I2)"
++
++    return {
++        "available": bool(events_out) or hist["excluded_defect_count"] > 0,
++        "events": events_out,
++        "event_count": len(events_out),
++        "excluded_defect_count": hist["excluded_defect_count"],
++        "excluded_note": (
++            f"{hist['excluded_defect_count']} eventi esclusi per difetto noto "
++            f"({hist['excluded_defect_reason']}) — vedi {hist['debt']}"
++            if hist["excluded_defect_count"]
++            else None
++        ),
++        "debt": hist["debt"],
++        "first_seen": {
++            "kind": first_seen_kind,
++            "label": first_seen_label,
++            "baseline_at": bl.get("baseline_at"),
++            "baseline_quality": quality,
++        },
++    }
++
++
++def _expected_block(asset: Asset, name: dict[str, Any], solo_l2: bool) -> dict[str, Any]:
++    status = (asset.status or "").strip() or "nuovo"
++    if status == "noto":
++        state = "atteso"
++    elif status == "ignorato":
++        state = "ignorato"
++    else:
++        state = "non_riconosciuto"
++    return {
++        "state": state,
++        "status_raw": status,
++        "solo_l2": solo_l2,
++        "central": solo_l2 or state == "non_riconosciuto" or name.get("name_kind") == "absent",
++        "ignore_reason": (asset.notes or "").strip() if status == "ignorato" else None,
++        "label": {
++            "atteso": "Atteso (riconosciuto)",
++            "non_riconosciuto": "Non riconosciuto",
++            "ignorato": "Ignorato",
++        }.get(state, state),
++    }
++
++
++def _inference_block(
++    db: Session,
++    asset: Asset,
++    mac: str | None,
++    name: dict[str, Any],
++    placement: dict[str, Any],
++) -> dict[str, Any]:
++    items = []
++    if mac:
++        items.append(
++            {
++                "label": f"OUI {oui_prefix(mac) or 'sconosciuto'}",
++                "source": "oui",
++                "confidence": 0.4,
++            }
++        )
++        if is_locally_administered(mac):
++            items.append(
++                {
++                    "label": "MAC localmente amministrato (LAA)",
++                    "source": "mac_structure",
++                    "confidence": 0.7,
++                }
++            )
++    for p in asset.name_proposals or []:
++        if (p.status or "pending") != "pending":
++            continue
++        val = (p.value or "").strip()
++        if not val:
++            continue
++        src = (p.source or "").lower()
++        items.append(
++            {
++                "label": f"Proposta nome «{val}»",
++                "source": src or "proposal",
++                "confidence": float(p.confidence) if p.confidence is not None else 0.5,
++                "kind": "name_proposal",
++            }
++        )
++    if placement.get("kind") == "behind_308":
++        items.append(
++            {
++                "label": "Collocazione dietro GS308EP (uplink FDB)",
++                "source": "topology_fdb",
++                "confidence": 0.65,
++            }
++        )
++    if name.get("name_kind") == "absent" and asset.vendor:
++        items.append(
++            {
++                "label": f"Vendor inventario «{asset.vendor}»",
++                "source": "inventory",
++                "confidence": 0.45,
++            }
++        )
++    return {
++        "title": "INFERENZA IA",
++        "disclaimer": (
++            "Proposte euristiche offline — non certezza; nessuna azione automatica; "
++            "nessuna scrittura. Slot LLM /ai (Groq) non cablato."
++        ),
++        "llm_slot": {"enabled": False, "reason": "/ai Groq non cablato (STOP costi)"},
++        "items": items,
++    }
++
++
++def _actions_block(
++    asset: Asset,
++    *,
++    solo_l2: bool,
++    behind_308: bool,
++    expected: dict[str, Any],
++) -> list[dict[str, Any]]:
++    actions = [
++        {
++            "id": "assign_name",
++            "label": "Assegna nome manuale",
++            "requires_confirm": True,
++            "reversible": True,
++        },
++        {
++            "id": "recognize_expected",
++            "label": "Riconosci come atteso",
++            "requires_confirm": True,
++            "reversible": True,
++            "disabled": expected.get("state") == "atteso",
++        },
++        {
++            "id": "ignore",
++            "label": "Ignora con motivo",
++            "requires_confirm": True,
++            "reversible": True,
++            "needs_reason": True,
++        },
++        {
++            "id": "open_plant",
++            "label": "Apri Impianto",
++            "href": f"/plant?asset={asset.id}",
++        },
++        {
++            "id": "open_topology",
++            "label": "Apri Topologia",
++            "href": f"/topology?highlight={asset.id}",
++        },
++    ]
++    if behind_308:
++        actions.insert(
++            2,
++            {
++                "id": "assign_308_port",
++                "label": "Assegna a porta del 308",
++                "href": f"/gs308?mac={_primary_mac(asset) or ''}",
++                "requires_confirm": False,
++                "note": "Scrive solo dopo conferma esplicita sulla vista 308",
++            },
++        )
++    if solo_l2 or expected.get("central"):
++        # blue-team: put recognition actions first (already ordered)
++        pass
++    return actions
++
++
++def build_dossier_answer(db: Session, asset_id: int, *, now: datetime | None = None) -> dict[str, Any] | None:
++    """Full O7 payload for GET /api/assets/{id}/dossier."""
++    now = now or utcnow()
++    asset = _load_asset(db, asset_id)
++    if asset is None:
++        return None
++
++    from app.services.asset_identity import build_asset_identity
++
++    identity = build_asset_identity(db, asset, include_technical=False)
++    mac = _primary_mac(asset)
++    ip = _current_ip(asset)
++    solo_l2 = ip is None
++    name = _name_block(db, asset)
++    placement = _placement_for_mac(db, mac, now=now) if mac else {
++        "kind": "unknown",
++        "label": "posizione non determinabile",
++        "note": "MAC assente (I2)",
++        "freshness": {"state": "sorgente_non_disponibile", "source": "fdb"},
++    }
++    history = _history_block(db, mac, placement)
++    expected = _expected_block(asset, name, solo_l2)
++    behind_308 = placement.get("kind") == "behind_308"
++    inference = _inference_block(db, asset, mac, name, placement)
++    from app.config import get_settings
++    from app.services.behaviour import build_does_block, build_identity_inference
++    from app.services.egress import build_egress_inference_block
++
++    settings = get_settings()
++    does = build_does_block(db, asset, now=now)
++    ai_configured = bool(settings.ai_enabled) and (
++        bool((settings.ai_api_key or "").strip())
++        or bool((settings.ai_base_url or "").strip())
++    )
++    # Groq / paid path never wired; treat as unconfigured for proposal generation.
++    identity_inference = build_identity_inference(
++        db,
++        asset,
++        ai_enabled=False,  # O11: never call paid/live LLM
++        ai_configured=False,
++        now=now,
++    )
++    egress_inference = build_egress_inference_block(
++        db,
++        asset,
++        ai_enabled=False,
++        ai_configured=False,
++        now=now,
++    )
++    # Merge heuristic items (existing) with O11 identity slot — keep separate fields.
++    inference = {
++        **inference,
++        "identity_proposal": identity_inference,
++        "egress_proposal": egress_inference,
++        "o11_marker": "obs-o11-inferenza",
++        "o13c_marker": "obs-o13c",
++    }
++    actions = _actions_block(
++        asset, solo_l2=solo_l2, behind_308=behind_308, expected=expected
++    )
++
++    # SNMP/FDB fields when this asset is the GS308EP management node
++    non_measured = []
++    sw308 = db.scalar(select(Switch).where(Switch.code == GS308_CODE))
++    is_308 = bool(
++        sw308
++        and (
++            ip == "192.168.1.8"
++            or "GS308" in (asset.name or "").upper()
++            or "308EP" in (asset.name or "").upper()
++        )
++    )
++    if is_308 and sw308:
++        poll = dict((sw308.meta or {}).get("fdb_poll") or {})
++        spoll = dict((sw308.meta or {}).get("snmp_poll") or {})
++        non_measured.append(
++            {
++                "field": "fdb_locale_308",
++                "display": "non misurato",
++                "state": "non_coperta",
++                "reason": "FDB non supportato dal GS308EP (I7)",
++                "last_error": poll.get("error") or None,
++                "last_at": poll.get("at"),
++            }
++        )
++        non_measured.append(
++            {
++                "field": "snmp_308",
++                "display": "non misurato",
++                "state": "sorgente_non_disponibile",
++                "reason": "SNMP non supportato / fallito sul GS308EP (I7)",
++                "last_error": spoll.get("error") or None,
++                "last_at": spoll.get("at"),
++            }
++        )
++
++    if placement.get("freshness", {}).get("display") == "non misurato" or placement.get(
++        "value", {}
++    ).get("display") == "non misurato":
++        non_measured.append(
++            {
++                "field": "posizione_fdb",
++                "display": "non misurato",
++                "state": placement["freshness"].get("state"),
++                "reason": placement["freshness"].get("note"),
++                "last_error": placement["freshness"].get("last_error"),
++            }
++        )
++
++    return {
++        "asset_id": int(asset.id),
++        "mac": mac,
++        "ip": ip,
++        "solo_l2": solo_l2,
++        "blue_team_priority": bool(expected.get("central")),
++        "questions": {
++            "what": {
++                "title": "Cos'è",
++                "name": name.get("name"),
++                "name_label": name.get("name") or name.get("name_label") or "nome non noto",
++                "name_kind": name.get("name_kind"),
++                "provenance": name.get("provenance"),
++                "vendor": identity.get("vendor_display") or identity.get("labels", {}).get("vendor"),
++                "vendor_reliable": identity.get("vendor_reliable"),
++                "device_type": identity.get("labels", {}).get("device_type"),
++                "os": identity.get("labels", {}).get("os"),
++                "mac": mac,
++                "randomized": bool(mac and is_locally_administered(mac)),
++                "ip": ip,
++                "solo_l2": solo_l2,
++            },
++            "where": {
++                "title": "Dove sta",
++                **placement,
++            },
++            "since": {
++                "title": "Da quando",
++                **history,
++                "asset_first_seen": {
++                    "kind": "asset_column",
++                    "at": _iso(asset.first_seen or asset.portal_first_seen),
++                    "note": "first_seen colonna Asset (≠ baseline FDB)",
++                },
++            },
++            "does": {
++                "title": "Cosa fa",
++                **does,
++            },
++            "expected": {
++                "title": "È atteso?",
++                **expected,
++            },
++            "actions": {
++                "title": "Cosa posso fare ora",
++                "items": actions,
++            },
++        },
++        "inference": inference,
++        "non_measured": non_measured,
++        "diagnosis": {
++            "collapsed_by_default": True,
++            "note": (
++                "Dettaglio diagnostico (OS candidates, scan readiness, interfacce grezze) "
++                "chiuso di default — non è il percorso decisionale."
++            ),
++            "identity_endpoint": f"/api/assets/{asset.id}/identity?technical=0",
++            "technical_endpoint": f"/api/assets/{asset.id}/identity?technical=1",
++        },
++    }
+
+diff --git a/observatory/web/src/views/Dossier.vue b/observatory/web/src/views/Dossier.vue
+index 077cd06..e78fb60 100644
+--- a/observatory/web/src/views/Dossier.vue
++++ b/observatory/web/src/views/Dossier.vue
+@@ -32,34 +31,32 @@ const loading = ref(false);
+ const error = ref("");
+ const assets = ref([]);
+ const chassisPayload = ref({ chassis: [] });
+-const asset = ref(null);
++const dossier = ref(null);
+ const recent = ref(readRecentDossiers());
++const showDiagnosis = ref(false);
++const busyKey = ref("");
++const notice = ref("");
++const ignoreReason = ref("");
+ 
+ const devices = computed(() => composeDevices(assets.value, chassisPayload.value));
+-
+ const searchHits = computed(() => {
+   if (!q.value.trim()) return [];
+   return devices.value.filter((d) => matchDeviceSearch(d, q.value)).slice(0, 40);
+ });
+ 
+-const presenceLabel = computed(() => {
+-  if (!asset.value) return "—";
+-  if (asset.value.presence_state) return humanPresenceState(asset.value.presence_state);
+-  return asset.value.status || "—";
+-});
+-
+-const primaryIp = computed(() => {
+-  const bindings = asset.value?.ip_bindings || [];
+-  const cur = bindings.find((b) => b.is_current);
+-  if (cur?.ip) return cur.ip;
+-  const ips = asset.value?.ips || [];
+-  return ips[0] || "—";
+-});
+-
+-const primaryMac = computed(() => {
+-  const macs = asset.value?.macs || [];
+-  return macs[0] || "—";
+-});
++const Q = computed(() => dossier.value?.questions || {});
++const what = computed(() => Q.value.what || {});
++const nameProvenance = computed(() => dossierNameProvenance(what.value));
++const where = computed(() => Q.value.where || {});
++const since = computed(() => Q.value.since || {});
++const expected = computed(() => Q.value.expected || {});
++const actions = computed(() => Q.value.actions?.items || []);
++const inference = computed(() => dossier.value?.inference || null);
++const identityProposal = computed(() => inference.value?.identity_proposal || null);
++const egressProposal = computed(() => inference.value?.egress_proposal || null);
++const doesBlock = computed(() => Q.value.does || {});
++const egressBlock = computed(() => doesBlock.value?.egress || {});
++const nonMeasured = computed(() => dossier.value?.non_measured || []);
+ 
+ async function loadHubList() {
+   loading.value = true;
+diff --git a/observatory/web/src/views/Dossier.vue b/observatory/web/src/views/Dossier.vue
+index 077cd06..e78fb60 100644
+--- a/observatory/web/src/views/Dossier.vue
++++ b/observatory/web/src/views/Dossier.vue
+@@ -197,61 +245,370 @@ watch(
+       </section>
+     </template>
+ 
+-    <!-- Full page dossier -->
+     <template v-else>
+       <div class="dossier-head">
+         <div class="dossier-head-main">
+           <button type="button" class="dossier-back" @click="router.push('/dossier')">← Dossier</button>
+-          <h1 class="dossier-title" :class="{ unnamed: asset && !asset.name }">
+-            {{ loading ? "…" : (asset?.name || "Device senza nome") }}
++          <h1 class="dossier-title" :class="{ unnamed: dossier && !what.name }">
++            {{ loading ? "…" : (what.name_label || "nome non noto") }}
+           </h1>
+-          <div class="dossier-sub mono">
+-            <span class="presence">{{ presenceLabel }}</span>
+-            <span>·</span>
+-            <span>{{ primaryIp }}</span>
+-            <span>·</span>
+-            <span>{{ primaryMac }}</span>
+-          </div>
+-          <p v-if="isGs308epAsset(assetId)" class="dossier-branch-link">
+-            <a href="#ramo-308">Scheda ramo GS308EP ↓</a>
+-            ·
+-            <router-link to="/plant">Impianto</router-link>
+-            ·
+-            <router-link to="/topology">Topologia</router-link>
++          <p v-if="dossier?.blue_team_priority" class="blue-team" role="status">
++            Percorso blue-team: dispositivo non riconosciuto o solo-L2 — evidenzia evidenze e azioni.
+           </p>
+         </div>
+-        <div class="dossier-actions">
+-          <button type="button" class="dossier-btn" @click="goInventory">Inventario</button>
+-          <button type="button" class="dossier-btn" @click="goTopology">Topologia</button>
+-        </div>
+       </div>
+       <ViewStateBanner v-if="error" kind="error" :message="error" />
+-      <ViewStateBanner v-else-if="loading && !asset" kind="loading" />
+-      <template v-else-if="assetId">
+-        <nav class="dossier-toc" aria-label="Sezioni dossier">
+-          <a href="#chi-sei">chi sei</a>
+-          <a href="#connesso">come sei connesso</a>
+-          <a href="#decidi">tu decidi</a>
+-          <a href="#abitudini">abitudini</a>
+-          <a href="#note">note</a>
+-          <a v-if="isGs308epAsset(assetId)" href="#ramo-308">ramo 308</a>
++      <ViewStateBanner v-else-if="loading && !dossier" kind="loading" />
++      <p v-if="notice" class="notice" role="status">{{ notice }}</p>
++
++      <template v-if="dossier">
++        <nav class="dossier-toc" aria-label="Sei domande">
++          <a href="#q-actions">azioni</a>
++          <a href="#q-what">cos'è</a>
++          <a href="#q-where">dove</a>
++          <a href="#q-since">da quando</a>
++          <a href="#q-does">cosa fa</a>
++          <a href="#q-expected">atteso?</a>
++          <a href="#q-inference">inferenza</a>
+         </nav>
+-        <div v-if="isGs308epAsset(assetId)" id="ramo-308">
+-          <Branch308Card
+-            :switch-data="{ code: '308ep', ip: primaryIp !== '—' ? primaryIp : undefined }"
+-          />
+-        </div>
+-        <AssetIdentity :asset-id="assetId" />
+-        <AssetChassis id="connesso" :asset-id="assetId" />
+-        <div id="decidi">
+-          <AssetDecide :asset-id="assetId" @saved="loadAsset(assetId)" />
+-        </div>
+-        <div id="abitudini">
++
++        <!-- Q6 first: Cosa posso fare ora -->
++        <section id="q-actions" class="q-block actions-first" :class="{ priority: dossier.blue_team_priority }">
++          <h2><span class="q-n">6</span> {{ Q.actions?.title || "Cosa posso fare ora" }}</h2>
++          <div class="action-row">
++            <button
++              v-for="act in actions"
++              :key="act.id"
++              type="button"
++              class="dossier-btn"
++              :disabled="!!busyKey || act.disabled"
++              @click="runAction(act)"
++            >
++              {{ act.label }}
++            </button>
++          </div>
++          <label v-if="actions.some((a) => a.id === 'ignore')" class="ignore-reason">
++            Motivo ignora (se serve)
++            <input v-model="ignoreReason" type="text" placeholder="es. guest temporaneo" />
++          </label>
++          <details class="decide-more">
++            <summary>Altre decisioni (categoria, OS, note form)</summary>
++            <AssetDecide :asset-id="assetId" @saved="loadDossier(assetId)" />
++          </details>
++        </section>
++
++        <section id="q-what" class="q-block">
++          <h2><span class="q-n">1</span> Cos'è</h2>
++          <dl class="kv">
++            <dt>Nome</dt>
++            <dd>
++              {{ what.name_label }}
++              <VisualBadge
++                v-if="nameProvenance.badge"
++                :label="nameProvenance.badge.label"
++                :tone="nameProvenance.badge.tone"
++                :title="nameProvenance.badge.title"
++              />
++            </dd>
++            <dt>Vendor / OUI</dt>
++            <dd>{{ what.vendor || "non noto" }}</dd>
++            <dt>Tipo</dt>
++            <dd>{{ what.device_type || "non noto" }}</dd>
++            <dt>MAC</dt>
++            <dd class="mono">
++              {{ what.mac || "non noto" }}
++              <span v-if="what.randomized" class="chip">randomizzato</span>
++            </dd>
++            <dt>IP</dt>
++            <dd>
++              <template v-if="what.solo_l2">solo-L2 · IP non noto</template>
++              <span v-else class="mono">{{ what.ip }}</span>
++            </dd>
++            <dt>OS</dt>
++            <dd>{{ what.os || "non noto" }}</dd>
++          </dl>
++          <p v-if="nameProvenance.note" class="muted tiny">{{ nameProvenance.note }}</p>
++        </section>
++
++        <section id="q-where" class="q-block">
++          <h2><span class="q-n">2</span> Dove sta</h2>
++          <p v-if="where.kind === 'behind_308'" class="placement behind">
++            {{ where.label }}
++            ·
++            <router-link to="/gs308">apri vista GS308EP</router-link>
++          </p>
++          <p v-else-if="where.value?.display === 'non misurato'" class="placement warn">
++            Posizione: <strong>non misurato</strong>
++            — {{ where.value.reason || where.freshness?.note }}
++            <span v-if="where.value.last_error" class="mono"> · {{ where.value.last_error }}</span>
++            <span v-if="where.value.last_known" class="muted">
++              · ultimo noto {{ where.value.last_known.switch_code }}:{{ where.value.last_known.port_number }}
++              @ {{ where.value.last_known.as_of }}
++            </span>
++          </p>
++          <p v-else class="placement">
++            {{ where.label || where.measured_as_current || "posizione non determinabile" }}
++            <span v-if="where.value?.ruolo_porta" class="muted">
++              · ruolo {{ where.value.ruolo_porta }}
++            </span>
++          </p>
++          <p class="fresh-line">
++            Fonte {{ where.source || where.freshness?.source || "—" }}
++            · età/stato
++            <code>{{ where.freshness?.state || "—" }}</code>
++            <span v-if="where.freshness?.last_at"> · {{ where.freshness.last_at }}</span>
++          </p>
++        </section>
++
++        <section id="q-since" class="q-block">
++          <h2><span class="q-n">3</span> Da quando</h2>
++          <p>{{ since.first_seen?.label || "storia non disponibile (I2)" }}</p>
++          <p class="muted tiny">
++            kind={{ since.first_seen?.kind }}
++            · eventi mostrati {{ since.event_count ?? 0 }}
++          </p>
++          <p v-if="since.excluded_note" class="defect-note" role="status">
++            {{ since.excluded_note }}
++          </p>
++          <details v-if="since.events?.length" class="hist">
++            <summary>Catena FDB ({{ since.events.length }} eventi, senza difetto O4)</summary>
++            <ul>
++              <li v-for="ev in since.events" :key="ev.id" class="mono tiny">
++                #{{ ev.id }} {{ ev.state }}
++                {{ ev.switch }}:{{ ev.port }}
++                {{ ev.reason || "—" }}
++                @ {{ ev.observed_at }}
++              </li>
++            </ul>
++          </details>
++          <p v-if="since.asset_first_seen?.at" class="muted tiny">
++            Asset.first_seen (colonna): {{ since.asset_first_seen.at }}
++            — {{ since.asset_first_seen.note }}
++          </p>
++        </section>
++
++        <section id="q-does" class="q-block" data-o11="cosa-fa" data-o13c="egress">
++          <h2><span class="q-n">4</span> Cosa fa</h2>
++          <p v-if="doesBlock.baseline?.status === 'in_costruzione'" class="muted tiny">
++            Baseline comportamento in costruzione
++            <span v-if="doesBlock.baseline?.baseline_started_at">
++              dal {{ doesBlock.baseline.baseline_started_at }}
++            </span>
++            — nessun segnale «cambiato carattere» finché non dichiarata ready.
++          </p>
++          <template v-if="doesBlock.evidence_available && doesBlock.fingerprints?.length">
++            <ul class="fp-list">
++              <li v-for="(fp, i) in doesBlock.fingerprints" :key="i" class="fp-item">
++                <code>{{ fp.kind }}</code>
++                <span class="mono">{{ fp.value }}</span>
++                <span class="muted tiny">
++                  fonte {{ fp.source }}
++                  · {{ fp.freshness?.display || fp.freshness?.state }}
++                  <span v-if="fp.freshness?.age_hours != null">
++                    · età {{ fp.freshness.age_hours }} h
++                  </span>
++                  <span v-if="fp.last_seen"> · {{ fp.last_seen }}</span>
++                </span>
++                <span
++                  v-if="fp.association_uncertain || fp.association === 'uncertain'"
++                  class="chip warn"
++                  title="Associazione IP↔MAC non corrente al momento dell'osservazione (I2)"
++                >
++                  associazione incerta
++                </span>
++                <span v-else-if="fp.association === 'mac_direct'" class="chip">MAC diretto</span>
++              </li>
++            </ul>
++          </template>
++          <div
++            v-if="egressBlock.external_destinations?.length || egressBlock.internal_relations?.length"
++            class="egress-block"
++            data-o13c="egress"
++          >
++            <h3 class="muted tiny">Destinazioni egress (hybrid)</h3>
++            <p
++              v-if="egressBlock.association_quality"
++              class="muted tiny"
++              data-o13c="assoc-quality"
++            >
++              Associazione:
++              certain={{ egressBlock.association_quality.certain }}
++              · uncertain={{ egressBlock.association_quality.uncertain }}
++              · unresolved={{ egressBlock.association_quality.unresolved }}
++              <span v-if="egressBlock.association_quality.note">
++                — {{ egressBlock.association_quality.note }}
++              </span>
++            </p>
++            <ul v-if="egressBlock.external_destinations?.length" class="fp-list">
++              <li
++                v-for="(d, i) in egressBlock.external_destinations"
++                :key="'ext-' + i"
++                class="fp-item"
++              >
++                <code>ext</code>
++                <span class="mono">{{ d.dst_ip }}:{{ d.dport }}/{{ d.proto }}</span>
++                <VisualBadge
++                  :tone="d.freshness?.state === 'fresh' ? 'ok' : d.freshness?.state === 'stale' ? 'attn' : 'muted'"
++                  :label="d.freshness?.display || d.freshness?.state || '—'"
++                />
++                <span
++                  v-if="d.association_uncertain || d.association === 'uncertain'"
++                  class="chip warn"
++                >
++                  associazione incerta
++                </span>
++                <span v-if="d.evidence?.server_name" class="muted tiny">
++                  SNI {{ d.evidence.server_name }}
++                </span>
++                <span v-if="d.evidence?.dns_query" class="muted tiny">
++                  DNS {{ d.evidence.dns_query }}
++                </span>
++              </li>
++            </ul>
++            <ul v-if="egressBlock.internal_relations?.length" class="fp-list">
++              <li
++                v-for="(r, i) in egressBlock.internal_relations"
++                :key="'int-' + i"
++                class="fp-item"
++              >
++                <code>int</code>
++                <span class="mono">
++                  peer
++                  <template v-if="r.peer_subject_type">
++                    {{ r.peer_subject_type }}:{{ r.peer_subject_id }}
++                  </template>
++                  <template v-else>{{ r.peer_ip }}</template>
++                </span>
++                <span v-if="r.peer_unresolved" class="chip warn">peer non risolto</span>
++                <VisualBadge
++                  :tone="r.freshness?.state === 'fresh' ? 'ok' : r.freshness?.state === 'stale' ? 'attn' : 'muted'"
++                  :label="r.freshness?.display || r.freshness?.state || '—'"
++                />
++                <span class="muted tiny">{{ r.grain_note }}</span>
++              </li>
++            </ul>
++          </div>
++          <p
++            v-if="!doesBlock.evidence_available && !egressBlock.evidence_available"
++            class="muted"
++            data-o11="no-evidence"
++          >
++            {{ doesBlock.empty_reason || "nessuna evidenza disponibile" }}
++          </p>
+           <AssetHabits :asset-id="assetId" wide />
+-        </div>
+-        <div id="note">
+-          <AssetNotes :asset-id="assetId" @saved="loadAsset(assetId)" />
+-        </div>
++        </section>
++
++        <section id="q-expected" class="q-block" :class="{ priority: expected.central }">
++          <h2><span class="q-n">5</span> È atteso?</h2>
++          <p>
++            <span class="chip" :data-state="expected.state">{{ expected.label }}</span>
++            <span v-if="expected.solo_l2" class="chip">solo-L2</span>
++          </p>
++          <p v-if="expected.ignore_reason" class="muted">Motivo ignora: {{ expected.ignore_reason }}</p>
++          <p v-if="expected.central" class="muted">
++            Domanda centrale per questo dispositivo — usa le azioni in cima.
++          </p>
++        </section>
++
++        <section id="q-inference" class="q-block inference" data-o11="inferenza">
++          <h2><span class="tag infer">{{ inference?.title || AI_INFERENCE_LABEL }}</span></h2>
++          <p class="infer-disclaimer">{{ inference?.disclaimer }}</p>
++          <ul v-if="inference?.items?.length">
++            <li v-for="(it, i) in inference.items" :key="i">
++              {{ it.label }}
++              · fonte <code>{{ it.source }}</code>
++              · confidenza {{ Math.round((it.confidence || 0) * 100) }}%
++            </li>
++          </ul>
++          <p v-else class="muted">Nessun segnale di inferenza euristico disponibile.</p>
++
++          <div v-if="identityProposal" class="identity-proposal" data-o11="identity-proposal">
++            <h3 class="tag infer">{{ identityProposal.label || "INFERENZA IA" }} · identità</h3>
++            <p class="infer-disclaimer">{{ identityProposal.disclaimer }}</p>
++            <p>
++              <strong>Stato:</strong>
++              {{ identityProposal.status }}
++            </p>
++            <p v-if="identityProposal.evidence?.length" class="muted tiny">
++              Evidenze:
++              <span v-for="(ev, i) in identityProposal.evidence" :key="i">
++                <code>{{ ev.kind }}</code>={{ ev.value }}
++                <span v-if="ev.association"> ({{ ev.association }})</span>
++                <span v-if="i < identityProposal.evidence.length - 1"> · </span>
++              </span>
++            </p>
++            <p v-if="identityProposal.confidence != null">
++              Confidenza: {{ Math.round(identityProposal.confidence * 100) }}%
++            </p>
++            <p v-else class="muted">Confidenza: non applicabile (proposta non generata).</p>
++            <ul v-if="identityProposal.limits?.length">
++              <li v-for="(lim, i) in identityProposal.limits" :key="i" class="muted tiny">
++                Limite: {{ lim }}
++              </li>
++            </ul>
++            <p class="muted">
++              Azione di verifica: {{ identityProposal.verification_action }}
++            </p>
++            <p class="muted tiny">
++              LLM:
++              {{ identityProposal.llm_slot?.enabled ? "on" : "off" }}
++              — {{ identityProposal.llm_slot?.reason }}
++            </p>
++          </div>
++
++          <div
++            v-if="egressProposal"
++            class="identity-proposal"
++            data-o13c="egress"
++          >
++            <h3 class="tag infer">{{ egressProposal.label || "INFERENZA IA" }} · destinazioni</h3>
++            <p class="infer-disclaimer">{{ egressProposal.disclaimer }}</p>
++            <p>
++              <strong>Stato:</strong>
++              {{ egressProposal.status || "proposta non disponibile: nessun motore di inferenza configurato" }}
++            </p>
++            <p v-if="egressProposal.local_evidence?.length" class="muted tiny">
++              Evidenze locali (DNS/SNI):
++              <span v-for="(ev, i) in egressProposal.local_evidence" :key="i">
++                <code>{{ ev.dst_ip }}</code>
++                <span v-if="ev.server_name"> SNI={{ ev.server_name }}</span>
++                <span v-if="ev.dns_query"> DNS={{ ev.dns_query }}</span>
++                <span v-if="i < egressProposal.local_evidence.length - 1"> · </span>
++              </span>
++            </p>
++            <p v-else class="muted tiny">
++              Nessuna evidenza DNS/SNI locale — nessuna invenzione di nomi.
++            </p>
++            <ul v-if="egressProposal.limits?.length">
++              <li v-for="(lim, i) in egressProposal.limits" :key="i" class="muted tiny">
++                Limite: {{ lim }}
++              </li>
++            </ul>
++          </div>
++        </section>
++
++        <section v-if="nonMeasured.length" class="q-block">
++          <h2>Non misurato (freschezza)</h2>
++          <ul>
++            <li v-for="(nm, i) in nonMeasured" :key="i">
++              <code>{{ nm.field }}</code>: {{ nm.display }}
++              · {{ nm.state }} — {{ nm.reason }}
++              <span v-if="nm.last_error" class="mono"> · err: {{ nm.last_error }}</span>
++            </li>
++          </ul>
++        </section>
++
++        <section class="q-block">
++          <h2>Note</h2>
++          <AssetNotes :asset-id="assetId" @saved="loadDossier(assetId)" />
++        </section>
++
++        <details class="diagnosis" :open="showDiagnosis" @toggle="showDiagnosis = $event.target.open">
++          <summary>Dettaglio diagnostico (chiuso di default)</summary>
++          <p class="muted">{{ dossier.diagnosis?.note }}</p>
++          <p class="mono tiny">{{ dossier.diagnosis?.identity_endpoint }}</p>
++          <p class="mono tiny">technical grezzi: {{ dossier.diagnosis?.technical_endpoint }}</p>
++        </details>
+       </template>
+     </template>
+   </div>
+
+diff --git a/observatory/web/src/api.js b/observatory/web/src/api.js
+index 1f0a71d..e808d91 100644
+--- a/observatory/web/src/api.js
++++ b/observatory/web/src/api.js
+@@ -254,4 +267,23 @@ export const api = {
+     request(`/api/snapshots/${snapshotId}/confirm-baseline`, { method: "POST" }),
+   sensors: () => request("/api/sensors"),
+   reliability: () => request("/api/reliability"),
++  fdbDefenseSignals: () => request("/api/fdb-defense/signals"),
++  fdbDefensePlant: () => request("/api/fdb-defense/plant"),
++  fdbDefenseAck: (body) =>
++    request("/api/fdb-defense/ack", { method: "POST", body }),
++  behaviorSignals: () => request("/api/behavior/signals"),
++  behaviorAck: (body) =>
++    request("/api/behavior/ack", { method: "POST", body }),
++  behaviorBaseline: () => request("/api/behavior/baseline"),
++  // obs-o13c-marker — egress hybrid signals (bundle proof)
++  egressSignals: () => request("/api/egress/signals"),
++  egressAck: (body) =>
++    request("/api/egress/ack", { method: "POST", body }),
++  egressBaseline: () => request("/api/egress/baseline"),
++  coverageSources: () => request("/api/coverage/sources"),
++  coverageAck: (body) =>
++    request("/api/coverage/ack", { method: "POST", body }),
++  gs308View: () => request("/api/gs308/view"),
++  gs308Assign: (body) =>
++    request("/api/gs308/assign", { method: "POST", body }),
+ };
+
+diff --git a/observatory/web/src/observatoryUx.js b/observatory/web/src/observatoryUx.js
+index 3e89b27..4e2c78c 100644
+--- a/observatory/web/src/observatoryUx.js
++++ b/observatory/web/src/observatoryUx.js
+@@ -280,8 +466,10 @@ export function branch308ReachabilityLabel(status) {
+ }
+ 
+ /** Visible label for any AI-derived UI (E.1). */
+-export const AI_INFERENCE_LABEL = "Inferenza AI";
++export const AI_INFERENCE_LABEL = "INFERENZA IA";
+ export const AI_INFERENCE_DISCLAIMER = "Può sbagliare — verifica sempre le evidenze prima di adottare.";
++/** Bundle proof string for OBS-EGRESS O13C deploy markers. */
++export const OBS_O13C_MARKER = "obs-o13c-marker";
+ 
+ /** NameProposal / hostname source rank — ai sotto manual (I5). */
+ export const PROPOSAL_SOURCE_RANK = {
+
+diff --git a/api/app/routers/behavior.py b/api/app/routers/behavior.py
+new file mode 100644
+index 0000000..cfff1cc
+--- /dev/null
++++ b/api/app/routers/behavior.py
+@@ -0,0 +1,75 @@
++"""O11 — behaviour signals API (Oggi cards). No new top-level hub."""
++
++from __future__ import annotations
++
++from fastapi import APIRouter, Depends, Request
++from pydantic import BaseModel
++from sqlalchemy.orm import Session
++
++from app.auth import check_csrf, require_user
++from app.config import Settings, get_settings
++from app.db import get_db
++from app.models import User
++from app.services.behaviour import (
++    acknowledge_behavior_signal,
++    baseline_status,
++    build_behavior_signals,
++    mark_baseline_ready,
++)
++
++router = APIRouter(prefix="/api/behavior", tags=["behavior"])
++
++
++class AckBody(BaseModel):
++    uid: str
++    action: str = "acknowledge"
++    reason: str = ""
++
++
++class BaselineReadyBody(BaseModel):
++    reason: str = ""
++
++
++@router.get("/signals")
++def get_signals(db: Session = Depends(get_db), user: User = Depends(require_user)):
++    return build_behavior_signals(db)
++
++
++@router.get("/baseline")
++def get_baseline(db: Session = Depends(get_db), user: User = Depends(require_user)):
++    return baseline_status(db)
++
++
++@router.post("/baseline/ready")
++def post_baseline_ready(
++    body: BaselineReadyBody,
++    request: Request,
++    db: Session = Depends(get_db),
++    user: User = Depends(require_user),
++    settings: Settings = Depends(get_settings),
++):
++    """Explicit Michele action — marks behavioural baseline ready (Z5 exit)."""
++    check_csrf(request, settings)
++    out = mark_baseline_ready(db, user_id=user.id, reason=body.reason)
++    db.commit()
++    return {"ok": True, **out}
++
++
++@router.post("/ack")
++def post_ack(
++    body: AckBody,
++    request: Request,
++    db: Session = Depends(get_db),
++    user: User = Depends(require_user),
++    settings: Settings = Depends(get_settings),
++):
++    check_csrf(request, settings)
++    row = acknowledge_behavior_signal(
++        db,
++        uid=body.uid,
++        action=body.action,
++        reason=body.reason,
++        user_id=user.id,
++    )
++    db.commit()
++    return {"ok": True, "uid": row.uid, "status": row.status, "kind": row.kind}
+
+diff --git a/observatory/api/app/main.py b/observatory/api/app/main.py
+index d79b9d5..0b5c732 100644
+--- a/observatory/api/app/main.py
++++ b/observatory/api/app/main.py
+@@ -15,9 +15,14 @@ from app.routers import (
+     ai_routes,
+     assets,
+     auth_routes,
++    behavior,
+     chassis,
++    coverage,
+     dashboard,
++    egress,
+     evolution,
++    fdb_defense,
++    gs308,
+     ingest,
+     monitors,
+     suggestions,
+diff --git a/observatory/api/app/main.py b/observatory/api/app/main.py
+index d79b9d5..0b5c732 100644
+--- a/observatory/api/app/main.py
++++ b/observatory/api/app/main.py
+@@ -130,6 +135,11 @@ def create_app() -> FastAPI:
+     app.include_router(ai_routes.router)
+     app.include_router(ingest.router)
+     app.include_router(evolution.router)
++    app.include_router(fdb_defense.router)
++    app.include_router(behavior.router)
++    app.include_router(coverage.router)
++    app.include_router(egress.router)
++    app.include_router(gs308.router)
+     app.include_router(system.router)
+     return app
+ 
