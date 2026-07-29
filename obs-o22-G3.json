@@ -1,0 +1,41 @@
+{
+  "wave": "O22-G3",
+  "index_html_js": "/assets/index-EKiFcL_r.js",
+  "index_html_css": "/assets/index-qABMkN1m.css",
+  "js_bytes": 475927,
+  "css_bytes": 144003,
+  "js_http": 200,
+  "css_http": 200,
+  "markers": {
+    "0.10.91_in_js": true,
+    "applyChassisDisplayCollisions": true,
+    "superseded_hint": true,
+    "short_band": true,
+    "long_band_absent": true
+  },
+  "api_health": {
+    "ok": true,
+    "service": "observatory-api",
+    "version": "0.10.82"
+  },
+  "page": {
+    "frontend": "0.10.91",
+    "api_health_attr": "0.10.82",
+    "brand": "v0.10.91 · api 0.10.82 · 29/07",
+    "script": "http://192.168.1.3:8080/assets/index-EKiFcL_r.js",
+    "collisions": [
+      {
+        "t": "Sky · FD",
+        "id": "31"
+      },
+      {
+        "t": "Sky · AA",
+        "id": "33"
+      }
+    ],
+    "missing_hint": "missing|ttl_stale|superseded",
+    "missing_title": "Dati mancanti o non correnti — tre cause: (1) assente / sorgente non disponibile (I2); (2) scaduto per TTL (bassa correntezza, ancora current); (3) superseded /",
+    "missing_label": "Dati mancanti o non correnti"
+  },
+  "pass": true
+}
