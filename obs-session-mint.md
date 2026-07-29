@@ -14,15 +14,26 @@ Il mint evita di modificare password, utenti o store di autenticazione solo per 
 
 ## Come si genera
 
-1. Si ottiene una sessione valida sul runtime (login UI o cookie già emesso dal server con `SESSION_HOURS`).
+1. Si ottiene una sessione valida sul runtime (login UI o cookie già emesso dal server).
 2. Si scrive il file **fuori dall’albero del repo**:
    - percorso ufficiale: `/tmp/obs_session_mint.txt`
    - formato (valori mai stampati nei log dell’harness):
      - riga 1: `obs_session=<token>` oppure `nome` + riga 2 `valore`
      - opzionale: `obs_csrf=<token>`
-3. L’harness legge il file, autentica la cattura, emette la riga di provenienza, poi **cancella** il file.
+3. L’harness legge il file, verifica che non sia scaduto, autentica la cattura, emette la riga di provenienza, poi **cancella** il file.
 
-Durata della sessione sottostante: parametro esistente **`SESSION_HOURS`** (`api/app/config.py`, default `168`; stesso nome in `.env` / `.env.example`). Nessuna durata scelta a gusto dall’harness.
+## Scadenza del mint (O14-FIX) — indipendente da `SESSION_HOURS`
+
+| | |
+|--|--|
+| Parametro | `CAPTURE_MINT_TTL_SEC` (solo harness; default **180**) |
+| Fonte | run harness misurata **36 s** (`OBS_CAPTURE_ONLY=dossier`, 9 PNG, 2026-07-29) × **5** margine → **180 s** |
+| Enforcement | età `mtime` del file mint; se `age > TTL` il mint è rifiutato |
+| `SESSION_HOURS` | **non letto, non modificato** — resta la comodità della sessione UI umana |
+
+La riga di provenienza emessa dall’harness è del tipo:
+
+`catture autenticate via session mint, scadenza 180s (fonte run harness 36s×5), token non pubblicato`
 
 ## Dove finisce / dove non finisce
 
@@ -35,14 +46,13 @@ Durata della sessione sottostante: parametro esistente **`SESSION_HOURS`** (`api
 
 `.gitignore` copre comunque `obs_session_mint.txt` se il file venisse creato per errore sotto il repo.
 
-## Circoscrizione (O14)
+## Circoscrizione
 
 - Metodo **ufficiale** e **unico prioritario** per l’harness di cattura screenshot.
 - Non è una via d’accesso generale all’API o all’UI.
-- Vita breve dichiarata: allineata a `SESSION_HOURS`; il file mint viene rimosso a fine cattura.
-- I report che pubblicano screenshot devono riportare la riga di provenienza **emessa dall’harness** (non riscritta a mano), del tipo:
-  `catture autenticate via session mint, scadenza <SESSION_HOURS>h, token non pubblicato`
+- Vita breve dichiarata e misurata (vedi sopra); il file mint viene rimosso a fine cattura.
+- I report che pubblicano screenshot devono riportare la riga di provenienza **emessa dall’harness**.
 
 ## Cosa non si tocca
 
-Password admin, utenti, store di autenticazione, `.env` (oltre alla lettura indiretta di nomi/lunghezze e di `SESSION_HOURS` numerico). Nessun nuovo endpoint di autenticazione.
+Password admin, utenti, store di autenticazione, `.env` (oltre alla lettura indiretta di nomi/lunghezze di `ADMIN_*`). Nessun nuovo endpoint di autenticazione. `SESSION_HOURS` invariato.
