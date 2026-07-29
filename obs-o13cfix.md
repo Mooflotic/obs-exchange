@@ -208,7 +208,7 @@ Harness O9 (`Page.captureScreenshot` + `dsf=1`) **non eseguito in questa session
 
 | deliverable | sha256 | wc -l | URL |
 |-------------|--------|------:|-----|
-| [obs-o13cfix.md](https://raw.githubusercontent.com/Mooflotic/obs-exchange/main/obs-o13cfix.md) | `d83e22e39f5985bb54f777aa4bbd06b8068ab37f5bac22256d9fc03f01bc735c` | 230 | raw main |
+| [obs-o13cfix.md](https://raw.githubusercontent.com/Mooflotic/obs-exchange/main/obs-o13cfix.md) | `6f448cc15ed9e15e651920a1e04d0dae740e282118d74efb6bc93eecc3df9b40` | 230 | raw main |
 | [obs-o13cfix-baseline.diff.txt](https://raw.githubusercontent.com/Mooflotic/obs-exchange/main/obs-o13cfix-baseline.diff.txt) | `6c4ef6db7c7c7e302927d52b2dc76ac19a44fd8b50ec92768fd36e850d933811` | 2411 | raw |
 | [obs-o13cfix-rollback.diff.txt](https://raw.githubusercontent.com/Mooflotic/obs-exchange/main/obs-o13cfix-rollback.diff.txt) | `9fbb6a2e68382faea93add069f055bd976128fbc0028a2607ec71547e2c5b994` | 2171 | raw |
 | [obs-o13c.md](https://raw.githubusercontent.com/Mooflotic/obs-exchange/main/obs-o13c.md) (errata) | — | — | raw |
