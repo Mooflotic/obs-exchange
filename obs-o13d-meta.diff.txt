@@ -1,0 +1,92 @@
+diff --git a/observatory/CHANGELOG.md b/observatory/CHANGELOG.md
+index 1b622df..46c503a 100644
+--- a/observatory/CHANGELOG.md
++++ b/observatory/CHANGELOG.md
+@@ -1,5 +1,15 @@
+ # Changelog
+ 
++## 0.10.81 — OBS-UX O13D: auto-lift novità, soppressione visibile, gate colori
++
++- **C1 (i):** auto-lift soppressione novità alla chiusura baseline B2 (`signals_armed` + `novelty_auto_enabled`); env=false dopo lift = soppressione **manuale** visibile; `resolve_novelty_emission`.
++- Coverage `zeek_egress`: blocco `signal_suppression` distinto da cieca/disabilitata; card informativa `coverage_novelty_suppressed`.
++- **C2/C3:** test R3/R4/auto-lift; enumerazione 246 emissioni invalide; API unmark/remark ripesca R6.
++- **C6:** `scripts/color_literal_gate.py`; residui verde non-token (Incidents glow, Plant `.dot.up` / `#83c99c` → `var(--ok)`).
++- Debiti: quarta occorrenza oneshot measure; `DEBT-PUBLIC-CHANNEL-EXPOSURE`; `DEBT-SCREENSHOT-HARNESS-FRAGILE`.
++- Marker bundle `obs-o13d-marker`.
++
++
+ ## 0.10.80 — OBS-EGRESS O13C-FIX: baseline prematura, criteri B2, switch novità
+ 
+ - **B1:** baseline prematura invalidata (annotata, non cancellata); emissioni N5 su ready falso marcate `emitted_on_invalid_baseline` (246 in prod), ripescabili.
+diff --git a/observatory/VERSION b/observatory/VERSION
+index c43d78c..ec18028 100644
+--- a/observatory/VERSION
++++ b/observatory/VERSION
+@@ -1 +1 @@
+-0.10.80
++0.10.81
+diff --git a/observatory/docs/KNOWN_DEBT.md b/observatory/docs/KNOWN_DEBT.md
+index 80cc3fd..bd779c8 100644
+--- a/observatory/docs/KNOWN_DEBT.md
++++ b/observatory/docs/KNOWN_DEBT.md
+@@ -286,8 +286,22 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+ - **Risoluzione O12-FIX:** archivio recuperabile su obs-exchange (`obs-o11fix-postcheck-archivio.py`) + `mv` in `_attic/` (mai `rm`, mai allowlist).
+ - **Drift dichiarato:** dopo lo spostamento `file scansionati` repo **198** vs NAS **199** — delta = `scripts/_w4a_measure.py` solo sul NAS (`DEBT-PROD-SOURCE-DRIFT`).
+ - **Convenzione proposta (non implementata):** ogni script `scripts/_*.py` (prefisso underscore = oneshot/diagnosi) deve (a) vivere solo nel tempo dell'ondata, (b) essere `mv` in `_attic/` prima della chiusura, (c) comparire nel deliverable share se serve recupero; CI/gate locale fallisce se `scripts/_*.py` è presente a chiusura ondata.
++- **Quarta occorrenza (O13D / 0.10.81):** lasciati nel WT (non cancellati) `scripts/w5b_measure.py`, `scripts/w6review_measure.py`, `scripts/w7c_measure.py` — residuo measure oneshot; classificazione report: leave + debt. I 5 asset `docs/obs-ux2-assets/` restano leave (probe docs, non prodotto).
+ - **Vietato:** allowlistare lo script per far passare il gate; `rm` senza archivio; lasciare oneshot in `scripts/` su prod.
+ 
++## DEBT-PUBLIC-CHANNEL-EXPOSURE
++
++- **Priorità:** documentale / processo — annotato O13D / 0.10.81.
++- **Cosa:** il canale pubblico di share è **solo** `obs-exchange` (raw GitHub). Decisioni su cosa pubblicare, redact, e se includere PNG/report restano di Michele.
++- **Vietato:** assumere che il repo privato sia «safe to paste» su exchange; pubblicare IP/MAC/nomi/secret; cambiare canale senza decisione esplicita.
++
++## DEBT-SCREENSHOT-HARNESS-FRAGILE
++
++- **Priorità:** media (evidenza UI) — aperto O13D / 0.10.81.
++- **Cosa:** l'harness screenshot resta fragile across ondate: O1-FIX overflow viewport, O8 viewport Electron fisso (`DEBT-SCREENSHOT-HARNESS-FALSE-EVIDENCE`), O13C-FIX Playwright assente / cattura non ripetibile senza credenziali.
++- **Mitigazione nota:** `scripts/o9_capture_harness.md` (Emulation + `Page.captureScreenshot`); non affidarsi a `browser_take_screenshot` MCP per i breakpoint.
++- **Vietato:** dichiarare «tre breakpoint» senza W×H reali; inventare PNG come prova responsive.
++
+ ## DEBT-SNMP-PROFILE-PER-SWITCH — APERTO (registrato O2-FIX)
+ 
+ - **Priorità:** progetto FDB/SNMP — tre apparati condividono un solo profilo `default`.
+diff --git a/observatory/web/package.json b/observatory/web/package.json
+index 43710f3..dde407f 100644
+--- a/observatory/web/package.json
++++ b/observatory/web/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "lan-observatory-web",
+   "private": true,
+-  "version": "0.10.80",
++  "version": "0.10.81",
+   "type": "module",
+   "scripts": {
+     "dev": "vite",
+diff --git a/observatory/web/src/api.js b/observatory/web/src/api.js
+index be0296f..73d8ed5 100644
+--- a/observatory/web/src/api.js
++++ b/observatory/web/src/api.js
+@@ -279,6 +279,7 @@ export const api = {
+   /** Deploy proof string — must remain a live property (minifiers drop void/comments). */
+   "obs-o13c-marker": true,
+   "obs-o13c-fix-marker": true,
++  "obs-o13d-marker": true,
+   egressAck: (body) =>
+     request("/api/egress/ack", { method: "POST", body }),
+   egressBaseline: () => request("/api/egress/baseline"),
+diff --git a/observatory/web/src/observatoryUx.js b/observatory/web/src/observatoryUx.js
+index 2d15448..75a0b7a 100644
+--- a/observatory/web/src/observatoryUx.js
++++ b/observatory/web/src/observatoryUx.js
+@@ -472,6 +472,8 @@ export const AI_INFERENCE_DISCLAIMER = "Può sbagliare — verifica sempre le ev
+ export const OBS_O13C_MARKER = "obs-o13c-marker";
+ /** Bundle proof string for OBS-EGRESS O13C-FIX deploy markers. */
+ export const OBS_O13CFIX_MARKER = "obs-o13c-fix-marker";
++/** Bundle proof string for OBS-EGRESS O13D deploy markers. */
++export const OBS_O13D_MARKER = "obs-o13d-marker";
+ 
+ /** NameProposal / hostname source rank — ai sotto manual (I5). */
+ export const PROPOSAL_SOURCE_RANK = {
