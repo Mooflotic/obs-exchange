@@ -1,0 +1,1463 @@
+# OBS-O12-FIX registro K4 — SensorRun Zeek + coverage read + test
+
+## collector/main.py (vs HEAD)
+diff --git a/observatory/collector/collector/main.py b/observatory/collector/collector/main.py
+index cc58161..c3415a7 100644
+--- a/observatory/collector/collector/main.py
++++ b/observatory/collector/collector/main.py
+@@ -27,6 +27,7 @@ from collector.adapters.snmp_lldp import collect_switch_snapshot, group_fdb_by_p
+ from collector.adapters.zeek_conn import run_zeek_provider_cycle
+ from collector.adapters.zeek_intel import run_zeek_intel_cycle
+ from collector.adapters.zeek_dhcp_names import run_zeek_dhcp_names_cycle
++from collector.adapters.zeek_behavior import run_zeek_behavior_cycle
+ from collector.config import Settings
+ from collector.scan_jobs import process_scan_queue
+ 
+@@ -35,6 +36,52 @@ def headers(settings: Settings) -> dict[str, str]:
+     return {"X-Obs-Token": settings.observatory_secret}
+ 
+ 
++def _post_zeek_sensor_run(
++    settings: Settings,
++    *,
++    source: str,
++    started_at: datetime,
++    ok: bool,
++    error: str | None = None,
++    counts: dict | None = None,
++) -> None:
++    """O12-FIX K4 — registra esito ciclo Zeek in SensorRun (stesso registro degli altri provider).
++
++    POST /api/ingest/observations con observations=[] + sensor_run. Nessun retry in loop (S1).
++    """
++    api = settings.api_internal.rstrip("/")
++    finished = datetime.utcnow()
++    payload = {
++        "sensor_run": {
++            "source": source,
++            "sensor_id": "collector",
++            "started_at": started_at.isoformat(),
++            "finished_at": finished.isoformat(),
++            "ok": bool(ok),
++            "error": (error or None),
++            "counts": counts or {},
++        },
++        "observations": [],
++        "materialize": False,
++        "reconcile_presence": False,
++        "mark_missing": False,
++    }
++    try:
++        with httpx.Client(timeout=30.0) as client:
++            response = client.post(
++                f"{api}/api/ingest/observations",
++                headers=headers(settings),
++                json=payload,
++            )
++            if response.status_code >= 400:
++                print(
++                    f"[collector] sensor_run {source} post "
++                    f"{response.status_code}: {response.text[:160]}"
++                )
++    except Exception as exc:  # noqa: BLE001
++        print(f"[collector] sensor_run {source} post err: {exc}")
++
++
+ def _fritz_active(value) -> bool | None:
+     text = str(value or "").strip().lower()
+     if text in ("1", "true", "yes"):
+@@ -526,6 +573,7 @@ def _run_zeek_provider(settings: Settings) -> None:
+                     f"flow ingest batch {response.status_code}: {response.text[:200]}"
+                 )
+ 
++    started = datetime.utcnow()
+     try:
+         stats = run_zeek_provider_cycle(
+             log_dir=log_dir,
+@@ -538,8 +586,22 @@ def _run_zeek_provider(settings: Settings) -> None:
+             f"posted={stats.get('posted')} "
+             f"skip={stats.get('skipped_unresolved')}"
+         )
++        _post_zeek_sensor_run(
++            settings,
++            source="zeek_conn_flow",
++            started_at=started,
++            ok=True,
++            counts={k: stats.get(k) for k in ("records_read", "posted", "buckets_pending") if k in (stats or {})},
++        )
+     except Exception as exc:  # noqa: BLE001
+         print(f"[collector] zeek_conn err: {exc}")
++        _post_zeek_sensor_run(
++            settings,
++            source="zeek_conn_flow",
++            started_at=started,
++            ok=False,
++            error=f"{type(exc).__name__}: {exc}",
++        )
+ 
+     def _post_intel(items: list[dict]) -> None:
+         with httpx.Client(timeout=60.0) as client:
+@@ -553,14 +615,33 @@ def _run_zeek_provider(settings: Settings) -> None:
+                     f"ip-intel ingest {response.status_code}: {response.text[:200]}"
+                 )
+ 
++    started_intel = datetime.utcnow()
+     try:
+         intel = run_zeek_intel_cycle(log_dir=log_dir, post_intel=_post_intel)
+         print(
+             f"[collector] zeek_intel dns={intel.get('dns_rows')} "
+             f"ssl={intel.get('ssl_rows')} posted={intel.get('posted')}"
+         )
++        _post_zeek_sensor_run(
++            settings,
++            source="zeek_intel",
++            started_at=started_intel,
++            ok=True,
++            counts={
++                "dns_rows": intel.get("dns_rows"),
++                "ssl_rows": intel.get("ssl_rows"),
++                "posted": intel.get("posted"),
++            },
++        )
+     except Exception as exc:  # noqa: BLE001
+         print(f"[collector] zeek_intel err: {exc}")
++        _post_zeek_sensor_run(
++            settings,
++            source="zeek_intel",
++            started_at=started_intel,
++            ok=False,
++            error=f"{type(exc).__name__}: {exc}",
++        )
+ 
+     def _post_dhcp_names(items: list[dict]) -> None:
+         with httpx.Client(timeout=60.0) as client:
+@@ -574,6 +655,7 @@ def _run_zeek_provider(settings: Settings) -> None:
+                     f"dhcp-hostnames ingest {response.status_code}: {response.text[:200]}"
+                 )
+ 
++    started_dhcp = datetime.utcnow()
+     try:
+         dhcp_names = run_zeek_dhcp_names_cycle(
+             log_dir=log_dir, post_hints=_post_dhcp_names
+@@ -582,9 +664,74 @@ def _run_zeek_provider(settings: Settings) -> None:
+             f"[collector] zeek_dhcp_names dhcp={dhcp_names.get('dhcp_rows')} "
+             f"ja4d={dhcp_names.get('ja4d_rows')} posted={dhcp_names.get('posted')}"
+         )
++        _post_zeek_sensor_run(
++            settings,
++            source="zeek_dhcp_names",
++            started_at=started_dhcp,
++            ok=True,
++            counts={
++                "dhcp_rows": dhcp_names.get("dhcp_rows"),
++                "ja4d_rows": dhcp_names.get("ja4d_rows"),
++                "posted": dhcp_names.get("posted"),
++            },
++        )
+     except Exception as exc:  # noqa: BLE001
+         print(f"[collector] zeek_dhcp_names err: {exc}")
++        _post_zeek_sensor_run(
++            settings,
++            source="zeek_dhcp_names",
++            started_at=started_dhcp,
++            ok=False,
++            error=f"{type(exc).__name__}: {exc}",
++        )
++
+ 
++def _run_zeek_behavior(settings: Settings) -> None:
++    """O11 — JA4/JA4D/DHCP fingerprints. Independent of zeek_provider_enabled / FLOW_INGEST."""
++    api = settings.api_internal.rstrip("/")
++    log_dir = Path(getattr(settings, "zeek_log_dir", "/data/zeek"))
++
++    def _post_behavior(items: list[dict]) -> None:
++        with httpx.Client(timeout=60.0) as client:
++            response = client.post(
++                f"{api}/api/ingest/zeek-behavior",
++                headers=headers(settings),
++                json={"items": items},
++            )
++            if response.status_code >= 400:
++                raise RuntimeError(
++                    f"zeek-behavior ingest {response.status_code}: {response.text[:200]}"
++                )
++
++    started = datetime.utcnow()
++    try:
++        beh = run_zeek_behavior_cycle(log_dir=log_dir, post_items=_post_behavior)
++        print(
++            f"[collector] zeek_behavior ssl={beh.get('ssl_rows')} "
++            f"dhcp={beh.get('dhcp_rows')} ja4d={beh.get('ja4d_rows')} "
++            f"posted={beh.get('posted')} initial={beh.get('initial_full_read')}"
++        )
++        _post_zeek_sensor_run(
++            settings,
++            source="zeek_behavior",
++            started_at=started,
++            ok=True,
++            counts={
++                "ssl_rows": beh.get("ssl_rows"),
++                "dhcp_rows": beh.get("dhcp_rows"),
++                "ja4d_rows": beh.get("ja4d_rows"),
++                "posted": beh.get("posted"),
++            },
++        )
++    except Exception as exc:  # noqa: BLE001
++        print(f"[collector] zeek_behavior err: {exc}")
++        _post_zeek_sensor_run(
++            settings,
++            source="zeek_behavior",
++            started_at=started,
++            ok=False,
++            error=f"{type(exc).__name__}: {exc}",
++        )
+ 
+ def configure_scheduler(sched: BlockingScheduler, settings: Settings) -> None:
+     sched.add_job(
+@@ -649,6 +796,17 @@ def configure_scheduler(sched: BlockingScheduler, settings: Settings) -> None:
+             max_instances=1,
+             coalesce=True,
+         )
++    # O11-FIX G1: kill switch ZEEK_BEHAVIOR_ENABLED (default true); own interval.
++    if getattr(settings, "zeek_behavior_enabled", True):
++        sched.add_job(
++            _run_zeek_behavior,
++            "interval",
++            seconds=max(60, getattr(settings, "zeek_behavior_interval_sec", 300)),
++            args=[settings],
++            id="zeek-behavior",
++            max_instances=1,
++            coalesce=True,
++        )
+     if getattr(settings, "speedtest_nightly_enabled", False):
+         try:
+             hour, minute = (
+
+## api/app/services/source_coverage.py (new / untracked)
+diff --git a/observatory/api/app/services/source_coverage.py b/observatory/api/app/services/source_coverage.py
+new file mode 100644
+index 0000000..e57ab5a
+--- /dev/null
++++ b/observatory/api/app/services/source_coverage.py
+@@ -0,0 +1,942 @@
++"""O12 — copertura sorgenti di osservazione (un solo posto, un solo vocabolario).
++
++Stati (I2 — non confonderli):
++  coperta_fresca | coperta_vecchia | cieca | disabilitata | cadenza_non_nota
++
++La finestra di freschezza = cadenza configurata della sorgente (nessuna soglia inventata).
++GS308EP: limite strutturale (I7), mai «sorgente cieca».
++"""
++
++from __future__ import annotations
++
++import json
++import uuid
++from dataclasses import dataclass
++from datetime import datetime
++from typing import Any
++
++from sqlalchemy import func, select
++from sqlalchemy.orm import Session
++
++from app.config import Settings, get_settings
++from app.models import (
++    Asset,
++    FlowObservation,
++    Monitor,
++    SensorRun,
++    Suggestion,
++    Switch,
++    ZeekBehaviorEvidence,
++    utcnow,
++)
++from app.services.switch_capabilities import switch_capabilities
++
++# --- C1 census: declared once; C3 signals_lost derived from this (never hand-lists in UI) ---
++
++COVERAGE_STATES = frozenset(
++    {
++        "coperta_fresca",
++        "coperta_vecchia",
++        "cieca",
++        "disabilitata",
++        "cadenza_non_nota",
++    }
++)
++
++# Map to O10 FRESHNESS vocab (no second vocabulary).
++STATE_TO_FRESHNESS = {
++    "coperta_fresca": "fresh",
++    "coperta_vecchia": "stale",
++    "cieca": "not_covered",
++    "disabilitata": "not_measured",
++    "cadenza_non_nota": "not_measured",
++}
++
++
++def _cov_uid(kind: str, name: str) -> str:
++    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"obs-o12:{kind}:{name}"))
++
++
++@dataclass(frozen=True)
++class SourceSpec:
++    """C1 entry — name is the stable id used in cards and tests."""
++
++    name: str
++    label: str
++    job_or_endpoint: str
++    feeds: tuple[str, ...]
++    signals_lost_when_blind: tuple[str, ...]
++    enable_flag: str | None  # settings attr name; None = always-on
++    interval_attr: str | None  # settings attr; None → cadenza_non_nota
++    # How to resolve last success / last error (implemented below).
++    kind: str  # sensor_run | fdb_snmp | zeek_behavior | flow | portal | internet | nas | structural_skip
++    card_eligible: bool = True  # False = censita ma non genera card (alias di altra sorgente)
++
++
++SOURCE_SPECS: tuple[SourceSpec, ...] = (
++    SourceSpec(
++        name="fdb_snmp",
++        label="FDB / SNMP switch",
++        job_or_endpoint="collector topology+discovery → POST /api/ingest/fdb-switch",
++        feeds=("switch_ports.observed_macs", "switch.meta.fdb_poll", "port_fdb facts"),
++        signals_lost_when_blind=(
++            "MAC nuovo su porta di accesso",
++            "MAC-move fra porte di accesso",
++            "solo-L2 (presente in FDB senza IP corrente)",
++        ),
++        enable_flag=None,  # always scheduled; per-switch capability applies
++        interval_attr="topology_poll_interval_sec",  # invoked every topology cycle
++        kind="fdb_snmp",
++    ),
++    SourceSpec(
++        name="fritz_tr064",
++        label="Fritz TR-064 (hostlist / mesh / WLAN)",
++        job_or_endpoint="collector topology → POST /api/ingest/observations source=fritz",
++        feeds=("sensor_runs:fritz", "observations_raw", "asset.meta.link"),
++        signals_lost_when_blind=(
++            "associazioni WLAN / mesh Fritz",
++            "hostname e hostlist Fritz",
++        ),
++        enable_flag=None,  # always on when credentials present — treated always-on
++        interval_attr="topology_poll_interval_sec",
++        kind="sensor_run",
++    ),
++    SourceSpec(
++        name="nmap_discovery",
++        label="Nmap discovery (ARP sweep)",
++        job_or_endpoint="collector discovery → POST /api/ingest/observations source=nmap",
++        feeds=("sensor_runs:nmap", "observations_raw", "portal kinds nmap/arp/icmp"),
++        signals_lost_when_blind=("discovery host/MAC su CIDR", "presenza portal nmap"),
++        enable_flag=None,
++        interval_attr="collector_interval_sec",
++        kind="sensor_run",
++    ),
++    SourceSpec(
++        name="arp_icmp",
++        label="ARP / ICMP (kinds portal via nmap)",
++        job_or_endpoint="stesso job di nmap_discovery — non un provider separato",
++        feeds=("portal kinds arp|icmp", "presence_sources"),
++        signals_lost_when_blind=("presenza ARP/ICMP su CIDR",),
++        enable_flag=None,
++        interval_attr="collector_interval_sec",
++        kind="sensor_run",
++        card_eligible=False,  # alias di nmap_discovery — evita doppia card
++    ),
++    SourceSpec(
++        name="portal_presence",
++        label="Portal presence (watermark asset.portal_*)",
++        job_or_endpoint="observe_portal da ingest nmap/fdb/… → asset.portal_last_seen",
++        feeds=("asset.portal_last_seen", "presence_sources portal"),
++        signals_lost_when_blind=("presenza portal (first/last)", "active_discovery trust"),
++        enable_flag=None,
++        interval_attr="collector_interval_sec",
++        kind="portal",
++    ),
++    SourceSpec(
++        name="ssdp",
++        label="SSDP",
++        job_or_endpoint="collector discovery → POST /api/ingest/observations source=ssdp",
++        feeds=("sensor_runs:ssdp", "assets.ssdp_*", "name_proposals ssdp"),
++        signals_lost_when_blind=("banner/dispositivo SSDP",),
++        enable_flag=None,
++        interval_attr="collector_interval_sec",
++        kind="sensor_run",
++    ),
++    SourceSpec(
++        name="printer_mdns_ipp",
++        label="mDNS / IPP stampanti",
++        job_or_endpoint="collector discovery → POST /api/ingest/observations source=printer",
++        feeds=("sensor_runs:printer", "name_proposals ipp"),
++        signals_lost_when_blind=("discovery stampanti mDNS/IPP",),
++        enable_flag=None,
++        interval_attr="collector_interval_sec",
++        kind="sensor_run",
++    ),
++    SourceSpec(
++        name="zeek_behavior",
++        label="Zeek behaviour (JA4 / JA4D / DHCP fp)",
++        job_or_endpoint="collector zeek-behavior → POST /api/ingest/zeek-behavior",
++        feeds=("zeek_behavior_evidence",),
++        signals_lost_when_blind=(
++            "cambio di carattere (B-C)",
++            "evidenze fingerprint / Cosa fa",
++        ),
++        enable_flag="zeek_behavior_enabled",
++        interval_attr="zeek_behavior_interval_sec",
++        kind="zeek_behavior",
++    ),
++    SourceSpec(
++        name="zeek_conn_flow",
++        label="Zeek conn / flow_observations",
++        job_or_endpoint="collector zeek-conn → POST /api/ingest/flows",
++        feeds=("flow_observations",),
++        signals_lost_when_blind=(
++            "visibilità sulle destinazioni (flow)",
++            "conn.log SPAN → flow_observations",
++        ),
++        enable_flag="flow_ingest_enabled",  # API gate; provider also ZEEK_PROVIDER
++        interval_attr="zeek_provider_interval_sec",
++        kind="flow",
++    ),
++    SourceSpec(
++        name="zeek_intel",
++        label="Zeek intel (DNS/SNI → ip_intel)",
++        job_or_endpoint="collector zeek-conn → POST /api/ingest/ip-intel",
++        feeds=("ip_intel",),
++        signals_lost_when_blind=("nomi DNS/SNI su IP (ip_intel)",),
++        enable_flag="flow_ingest_enabled",
++        interval_attr="zeek_provider_interval_sec",
++        kind="flow",  # same enable/cadence family as flow
++    ),
++    SourceSpec(
++        name="zeek_dhcp_names",
++        label="Zeek DHCP hostnames",
++        job_or_endpoint="collector zeek-conn → POST /api/ingest/dhcp-hostnames",
++        feeds=("name_proposals source=dhcp",),
++        signals_lost_when_blind=("proposte nome da DHCP Zeek",),
++        enable_flag="zeek_provider_enabled",
++        interval_attr="zeek_provider_interval_sec",
++        kind="flow",
++    ),
++    SourceSpec(
++        name="internet_probe",
++        label="Internet probe (WAN / checks)",
++        job_or_endpoint="collector checks → POST /api/ingest/topology (internet branch)",
++        feeds=("monitor.kind=internet", "internet_health"),
++        signals_lost_when_blind=("stato WAN / reachability internet",),
++        enable_flag=None,
++        interval_attr="internet_probe_interval_sec",
++        kind="internet",
++    ),
++    SourceSpec(
++        name="asustor_nas_snmp",
++        label="ASUSTOR NAS SNMP (Cassiopea)",
++        job_or_endpoint="collector asustor-nas-core → POST /api/ingest/asustor-snmp",
++        feeds=("asset.meta.asustor_snmp",),
++        signals_lost_when_blind=("telemetria NAS (temp/UPS/storage)",),
++        enable_flag=None,
++        interval_attr="snmp_nas_poll_interval_sec",
++        kind="nas",
++    ),
++    SourceSpec(
++        name="gs308ep_structural",
++        label="GS308EP (limite strutturale)",
++        job_or_endpoint="n/a — FDB SNMP non supportato (I7)",
++        feeds=("mappa manuale / FDB·LLDP upstream",),
++        signals_lost_when_blind=(),  # not a fault
++        enable_flag=None,
++        interval_attr=None,
++        kind="structural_skip",
++        card_eligible=False,
++    ),
++)
++
++# sensor_run source key per SourceSpec.name
++_SENSOR_RUN_SOURCE = {
++    "fritz_tr064": "fritz",
++    "nmap_discovery": "nmap",
++    "arp_icmp": "nmap",  # stessi SensorRun di nmap_discovery
++    "ssdp": "ssdp",
++    "printer_mdns_ipp": "printer",
++}
++
++
++def _parse_ts(value: Any) -> datetime | None:
++    if value is None:
++        return None
++    if isinstance(value, datetime):
++        return value.replace(tzinfo=None) if value.tzinfo else value
++    text = str(value).strip()
++    if not text:
++        return None
++    try:
++        if text.endswith("Z"):
++            text = text[:-1] + "+00:00"
++        dt = datetime.fromisoformat(text)
++        return dt.astimezone().replace(tzinfo=None) if dt.tzinfo else dt
++    except ValueError:
++        return None
++
++
++def _flag_enabled(settings: Settings, attr: str | None) -> tuple[bool, str | None]:
++    if attr is None:
++        return True, None
++    return bool(getattr(settings, attr, False)), attr
++
++
++def _interval_sec(settings: Settings, attr: str | None) -> int | None:
++    if attr is None:
++        return None
++    # Collector attrs may live only on collector Settings; API Settings has a subset.
++    # Prefer API settings; fall back to known defaults declared in code (not invented).
++    if hasattr(settings, attr):
++        val = getattr(settings, attr)
++        if val is None:
++            return None
++        raw = max(1, int(val))
++    else:
++        # Defaults from collector/config.py (documented, not invented).
++        defaults = {
++            "topology_poll_interval_sec": 60,
++            "collector_interval_sec": 900,
++            "zeek_provider_interval_sec": 300,
++            "zeek_behavior_interval_sec": 300,
++            "internet_probe_interval_sec": 60,
++            "snmp_nas_poll_interval_sec": 60,
++        }
++        if attr not in defaults:
++            return None
++        raw = defaults[attr]
++    # Floor identici a collector/main.py configure_scheduler (cadenza reale, non inventata).
++    floors = {
++        "topology_poll_interval_sec": 15,
++        "collector_interval_sec": 60,
++        "internet_probe_interval_sec": 30,
++        "zeek_provider_interval_sec": 60,
++        "zeek_behavior_interval_sec": 60,
++        "snmp_nas_poll_interval_sec": 60,
++    }
++    return max(floors.get(attr, 1), raw)
++
++
++def _last_sensor_run(db: Session, source: str) -> dict[str, Any]:
++    last_ok = db.scalar(
++        select(SensorRun)
++        .where(SensorRun.source == source, SensorRun.ok.is_(True))
++        .order_by(SensorRun.started_at.desc())
++        .limit(1)
++    )
++    last_err = db.scalar(
++        select(SensorRun)
++        .where(SensorRun.source == source, SensorRun.ok.is_(False))
++        .order_by(SensorRun.started_at.desc())
++        .limit(1)
++    )
++    last_any = db.scalar(
++        select(SensorRun)
++        .where(SensorRun.source == source)
++        .order_by(SensorRun.started_at.desc())
++        .limit(1)
++    )
++    err_text = None
++    if last_err is not None:
++        err_text = (last_err.error or "").strip() or "ultimo errore non registrato"
++    elif last_any is not None and not last_any.ok:
++        err_text = (last_any.error or "").strip() or "ultimo errore non registrato"
++    return {
++        "last_success_at": last_ok.started_at if last_ok else None,
++        "last_error_at": last_err.started_at if last_err else None,
++        "last_error": err_text,
++        "last_attempt_ok": last_any.ok if last_any else None,
++        "last_attempt_at": last_any.started_at if last_any else None,
++    }
++
++
++def _last_fdb_snmp(db: Session) -> dict[str, Any]:
++    """Aggregate FDB-capable switches only; GS308EP excluded (I7)."""
++    newest_ok: datetime | None = None
++    newest_err: str | None = None
++    newest_err_at: datetime | None = None
++    supporting = 0
++    for sw in db.scalars(select(Switch)).all():
++        cap = switch_capabilities(getattr(sw, "model", None) or sw.name)
++        if cap.get("fdb_supported") is False:
++            continue
++        supporting += 1
++        meta = dict(sw.meta or {})
++        fp = dict(meta.get("fdb_poll") or {})
++        at = _parse_ts(fp.get("at"))
++        ok = fp.get("ok")
++        err = str(fp.get("error") or "")
++        if ok and at and (newest_ok is None or at > newest_ok):
++            newest_ok = at
++        if ok is False and at and (newest_err_at is None or at > newest_err_at):
++            newest_err_at = at
++            newest_err = err or "poll FDB non ok (errore assente nel meta — difetto di registro)"
++    return {
++        "last_success_at": newest_ok,
++        "last_error_at": newest_err_at,
++        "last_error": newest_err,
++        "last_attempt_ok": None if newest_ok is None and newest_err_at is None else (
++            newest_ok is not None
++            and (newest_err_at is None or newest_ok >= newest_err_at)
++        ),
++        "last_attempt_at": max(
++            [t for t in (newest_ok, newest_err_at) if t is not None],
++            default=None,
++        ),
++        "fdb_supporting_switches": supporting,
++    }
++
++
++def _last_zeek_behavior(db: Session) -> dict[str, Any]:
++    """Success from evidence MAX(last_seen); error from SensorRun source=zeek_behavior (K4)."""
++    row = db.scalar(
++        select(func.max(ZeekBehaviorEvidence.last_seen)).where(
++            ZeekBehaviorEvidence.kind != "_baseline"
++        )
++    )
++    sr = _last_sensor_run(db, "zeek_behavior")
++    last_error = sr.get("last_error")
++    if last_error is None and row is None and sr.get("last_success_at") is None:
++        last_error = "ultimo errore non registrato"
++    last_success = row or sr.get("last_success_at")
++    return {
++        "last_success_at": last_success,
++        "last_error_at": sr.get("last_error_at"),
++        "last_error": last_error,
++        "last_attempt_ok": sr.get("last_attempt_ok") if sr.get("last_attempt_at") else (
++            True if row else None
++        ),
++        "last_attempt_at": sr.get("last_attempt_at") or row,
++        "registry_note": (
++            "successo evidenza=MAX(last_seen); errore ciclo=SensorRun source=zeek_behavior"
++        ),
++    }
++
++
++def _last_flow(db: Session) -> dict[str, Any]:
++    """Success from flow_observations; error from SensorRun source=zeek_conn_flow (K4)."""
++    row = db.scalar(select(func.max(FlowObservation.observed_at)))
++    sr = _last_sensor_run(db, "zeek_conn_flow")
++    last_error = sr.get("last_error")
++    if last_error is None and row is None and sr.get("last_success_at") is None:
++        last_error = "ultimo errore non registrato"
++    return {
++        "last_success_at": row or sr.get("last_success_at"),
++        "last_error_at": sr.get("last_error_at"),
++        "last_error": last_error,
++        "last_attempt_ok": sr.get("last_attempt_ok"),
++        "last_attempt_at": sr.get("last_attempt_at") or row,
++        "registry_note": (
++            "successo=MAX(observed_at); errore ciclo=SensorRun source=zeek_conn_flow"
++        ),
++    }
++
++
++def _last_zeek_named_sensor(db: Session, source: str) -> dict[str, Any]:
++    """intel / dhcp_names: esito ciclo solo da SensorRun (K4)."""
++    sr = _last_sensor_run(db, source)
++    last_error = sr.get("last_error")
++    if last_error is None and sr.get("last_success_at") is None:
++        last_error = "ultimo errore non registrato"
++    return {
++        "last_success_at": sr.get("last_success_at"),
++        "last_error_at": sr.get("last_error_at"),
++        "last_error": last_error,
++        "last_attempt_ok": sr.get("last_attempt_ok"),
++        "last_attempt_at": sr.get("last_attempt_at"),
++        "registry_note": f"esito ciclo=SensorRun source={source}",
++    }
++
++
++def _last_portal(db: Session) -> dict[str, Any]:
++    row = db.scalar(select(func.max(Asset.portal_last_seen)))
++    return {
++        "last_success_at": row,
++        "last_error_at": None,
++        "last_error": None
++        if row
++        else "nessun asset.portal_last_seen registrato",
++        "last_attempt_ok": True if row else None,
++        "last_attempt_at": row,
++        "registry_note": "ultimo successo = MAX(asset.portal_last_seen)",
++    }
++
++
++def _last_internet(db: Session) -> dict[str, Any]:
++    mon = db.scalar(select(Monitor).where(Monitor.kind == "internet").limit(1))
++    if mon is None:
++        return {
++            "last_success_at": None,
++            "last_error_at": None,
++            "last_error": "monitor.kind=internet assente",
++            "last_attempt_ok": None,
++            "last_attempt_at": None,
++            "registry_note": "da monitor.kind=internet",
++        }
++    health = dict((mon.config or {}).get("internet_health") or {})
++    last_probe = health.get("last_probe")
++    probe_at = None
++    if isinstance(last_probe, dict):
++        probe_at = _parse_ts(
++            last_probe.get("at")
++            or last_probe.get("checked_at")
++            or last_probe.get("observed_at")
++        )
++    at = (
++        _parse_ts(health.get("checked_at") or health.get("at") or health.get("last_ok_at"))
++        or probe_at
++        or getattr(mon, "last_checked_at", None)
++    )
++    if isinstance(at, datetime):
++        at = at.replace(tzinfo=None) if at.tzinfo else at
++    state = str(health.get("state") or "").lower()
++    cause = health.get("cause")
++    ok = state in {"online", "ok", "up"} if state else None
++    if ok is True and at is not None:
++        return {
++            "last_success_at": at,
++            "last_error_at": None,
++            "last_error": None,
++            "last_attempt_ok": True,
++            "last_attempt_at": at,
++            "registry_note": "da monitor.last_checked_at / internet_health",
++        }
++    if ok is True and at is None:
++        return {
++            "last_success_at": None,
++            "last_error_at": None,
++            "last_error": "internet online senza timestamp (difetto di registro)",
++            "last_attempt_ok": True,
++            "last_attempt_at": None,
++            "registry_note": "da monitor.kind=internet config.internet_health",
++        }
++    err = f"internet_health.state={state or 'assente'}; cause={cause or 'assente'}"
++    return {
++        "last_success_at": None,
++        "last_error_at": at,
++        "last_error": err,
++        "last_attempt_ok": False if ok is False else None,
++        "last_attempt_at": at,
++        "registry_note": "da monitor.kind=internet config.internet_health",
++    }
++
++
++def _last_nas(db: Session) -> dict[str, Any]:
++    """Ultimo poll ASUSTOR da meta.asustor_snmp su asset NAS."""
++    newest_ok: datetime | None = None
++    newest_err_at: datetime | None = None
++    newest_err: str | None = None
++    for asset in db.scalars(select(Asset)).all():
++        meta = dict(asset.meta or {})
++        snmp = dict(meta.get("asustor_snmp") or {})
++        if not snmp:
++            continue
++        at = _parse_ts(
++            snmp.get("observed_at")
++            or snmp.get("at")
++            or snmp.get("polled_at")
++            or snmp.get("updated_at")
++        )
++        err = snmp.get("poll_error") or snmp.get("error")
++        ok = snmp.get("ok")
++        if ok is False and at and (newest_err_at is None or at > newest_err_at):
++            newest_err_at = at
++            newest_err = str(err or "asustor_snmp ok=false")
++        if ok is not False and at and (newest_ok is None or at > newest_ok):
++            newest_ok = at
++    return {
++        "last_success_at": newest_ok,
++        "last_error_at": newest_err_at,
++        "last_error": newest_err
++        if newest_err
++        else (None if newest_ok else "nessun meta.asustor_snmp"),
++        "last_attempt_ok": None
++        if newest_ok is None and newest_err_at is None
++        else (
++            newest_ok is not None
++            and (newest_err_at is None or newest_ok >= newest_err_at)
++        ),
++        "last_attempt_at": max(
++            [t for t in (newest_ok, newest_err_at) if t is not None],
++            default=None,
++        ),
++        "registry_note": "da asset.meta.asustor_snmp (ok/observed_at)",
++    }
++
++
++def classify_source(
++    *,
++    enabled: bool,
++    enable_flag: str | None,
++    interval_sec: int | None,
++    last_success_at: datetime | None,
++    last_error: str | None,
++    now: datetime,
++) -> dict[str, Any]:
++    """Pure C2 classifier — used by production and C5 tests."""
++    if not enabled:
++        return {
++            "state": "disabilitata",
++            "reason": f"flag {enable_flag or '?'} = false (scelta operatore, non guasto)",
++            "age_sec": None,
++            "window_sec": interval_sec,
++        }
++    if interval_sec is None:
++        return {
++            "state": "cadenza_non_nota",
++            "reason": "cadenza non dichiarata in configurazione — nessuna finestra inventata",
++            "age_sec": None,
++            "window_sec": None,
++        }
++    if last_success_at is None:
++        return {
++            "state": "cieca",
++            "reason": "nessun successo registrato mentre la sorgente è abilitata",
++            "age_sec": None,
++            "window_sec": interval_sec,
++            "last_error": last_error,
++        }
++    age = (now - last_success_at).total_seconds()
++    if age <= interval_sec:
++        return {
++            "state": "coperta_fresca",
++            "reason": f"ultimo successo entro cadenza {interval_sec}s",
++            "age_sec": round(age, 3),
++            "window_sec": interval_sec,
++        }
++    # Oltre cadenza con data nota → coperta_vecchia (I2). Card allarme: sì (cieca per difesa).
++    return {
++        "state": "coperta_vecchia",
++        "reason": (
++            f"ultimo successo oltre cadenza {interval_sec}s "
++            f"(age={round(age, 1)}s) — data {last_success_at.isoformat()}"
++        ),
++        "age_sec": round(age, 3),
++        "window_sec": interval_sec,
++        "last_error": last_error,
++        "alarm": True,  # oltre cadenza = non coperto per difesa (C4)
++    }
++
++
++def evaluate_source(
++    db: Session,
++    spec: SourceSpec,
++    settings: Settings,
++    *,
++    now: datetime | None = None,
++    override_enabled: bool | None = None,
++    override_last_success: datetime | None = None,
++    override_last_error: str | None = None,
++    override_interval: int | None = None,
++) -> dict[str, Any]:
++    now = now or utcnow()
++    if spec.kind == "structural_skip":
++        return {
++            "name": spec.name,
++            "label": spec.label,
++            "state": "limite_strutturale",
++            "o12_marker": "obs-o12-structural",
++            "note": "I7 — GS308EP non espone FDB SNMP; non è sorgente cieca",
++            "job_or_endpoint": spec.job_or_endpoint,
++            "feeds": list(spec.feeds),
++            "signals_lost_when_blind": [],
++            "enable_flag": None,
++            "enabled": None,
++            "interval_sec": None,
++            "freshness_vocab": "not_covered",
++            "card_eligible": False,
++        }
++
++    enabled, flag = _flag_enabled(settings, spec.enable_flag)
++    if override_enabled is not None:
++        enabled = override_enabled
++    # flow family: also need zeek_provider for collector side when classifying "should run"
++    if spec.name in {"zeek_conn_flow", "zeek_intel"} and enabled:
++        # API ingest on is not enough if provider off — still "disabilitata" if provider off
++        if not bool(getattr(settings, "zeek_provider_enabled", False)):
++            enabled = False
++            flag = "zeek_provider_enabled"
++    if spec.name == "zeek_dhcp_names":
++        enabled, flag = _flag_enabled(settings, "zeek_provider_enabled")
++        if override_enabled is not None:
++            enabled = override_enabled
++
++    interval = (
++        override_interval
++        if override_interval is not None
++        else _interval_sec(settings, spec.interval_attr)
++    )
++
++    if override_last_success is not None or override_last_error is not None:
++        last = {
++            "last_success_at": override_last_success,
++            "last_error": override_last_error,
++            "last_error_at": None,
++            "last_attempt_ok": None,
++            "last_attempt_at": override_last_success,
++        }
++    elif spec.kind == "sensor_run":
++        last = _last_sensor_run(db, _SENSOR_RUN_SOURCE[spec.name])
++    elif spec.kind == "fdb_snmp":
++        last = _last_fdb_snmp(db)
++    elif spec.kind == "zeek_behavior":
++        last = _last_zeek_behavior(db)
++    elif spec.kind == "portal":
++        last = _last_portal(db)
++    elif spec.kind == "internet":
++        last = _last_internet(db)
++    elif spec.kind == "nas":
++        last = _last_nas(db)
++    elif spec.kind == "flow":
++        if spec.name == "zeek_conn_flow":
++            last = _last_flow(db)
++        elif spec.name == "zeek_intel":
++            last = _last_zeek_named_sensor(db, "zeek_intel")
++        elif spec.name == "zeek_dhcp_names":
++            last = _last_zeek_named_sensor(db, "zeek_dhcp_names")
++        else:
++            last = {
++                "last_success_at": None,
++                "last_error": "ultimo errore non registrato",
++                "last_error_at": None,
++                "last_attempt_ok": None,
++                "last_attempt_at": None,
++            }
++    else:
++        last = {
++            "last_success_at": None,
++            "last_error": "kind sconosciuto",
++            "last_error_at": None,
++            "last_attempt_ok": None,
++            "last_attempt_at": None,
++        }
++
++    # Special: flow/intel/dhcp with registry gap but disabled → disabilitata first
++    cls = classify_source(
++        enabled=enabled,
++        enable_flag=flag or spec.enable_flag,
++        interval_sec=interval,
++        last_success_at=last.get("last_success_at"),
++        last_error=last.get("last_error"),
++        now=now,
++    )
++    # Soft: coperta_vecchia is primary; alarm path uses alarm flag / state set
++    display_state = cls["state"]
++    display_extra = None
++
++    last_success = last.get("last_success_at")
++    not_covered = display_state in {"cieca", "coperta_vecchia", "disabilitata"}
++    return {
++        "name": spec.name,
++        "label": spec.label,
++        "state": display_state,
++        "display_extra": display_extra,
++        "reason": cls.get("reason"),
++        "job_or_endpoint": spec.job_or_endpoint,
++        "feeds": list(spec.feeds),
++        "signals_lost_when_blind": list(spec.signals_lost_when_blind)
++        if display_state in {"cieca", "coperta_vecchia"}
++        else (
++            list(spec.signals_lost_when_blind)
++            if display_state == "disabilitata"
++            else []
++        ),
++        "signals_not_observable": list(spec.signals_lost_when_blind) if not_covered else [],
++        "enable_flag": flag or spec.enable_flag,
++        "enabled": enabled,
++        "interval_sec": interval,
++        "interval_attr": spec.interval_attr,
++        "age_sec": cls.get("age_sec"),
++        "window_sec": cls.get("window_sec"),
++        "last_success_at": last_success.isoformat() + "Z" if last_success else None,
++        "last_error": last.get("last_error"),
++        "last_error_at": (
++            last["last_error_at"].isoformat() + "Z"
++            if last.get("last_error_at")
++            else None
++        ),
++        "registry_note": last.get("registry_note"),
++        "freshness_vocab": STATE_TO_FRESHNESS.get(display_state, "not_measured"),
++        "o12_marker": "obs-o12-source",
++        "card_eligible": spec.card_eligible,
++        "defense_priority_id": (
++            "sorgente_non_disponibile"
++            if display_state in {"cieca", "coperta_vecchia"}
++            else "igiene_nome"
++        ),
++    }
++
++
++def build_coverage_report(
++    db: Session,
++    settings: Settings | None = None,
++    *,
++    now: datetime | None = None,
++) -> dict[str, Any]:
++    settings = settings or get_settings()
++    now = now or utcnow()
++    sources = [evaluate_source(db, spec, settings, now=now) for spec in SOURCE_SPECS]
++    return {
++        "sources": sources,
++        "o12_marker": "obs-o12-coverage",
++        "generated_at": now.isoformat() + "Z",
++        "vocab": {
++            "states": sorted(COVERAGE_STATES | {"limite_strutturale"}),
++            "freshness_map": STATE_TO_FRESHNESS,
++            "note": "Stati copertura → FRESHNESS O10 (nessun secondo vocabolario)",
++        },
++    }
++
++
++def coverage_alarm_cards(
++    db: Session,
++    settings: Settings | None = None,
++    *,
++    now: datetime | None = None,
++) -> list[dict[str, Any]]:
++    """C4 — cards for cieca only. disabilitata → informational (separate)."""
++    settings = settings or get_settings()
++    now = now or utcnow()
++    report = build_coverage_report(db, settings, now=now)
++    acked = {
++        s.uid
++        for s in db.scalars(
++            select(Suggestion).where(
++                Suggestion.source == "coverage",
++                Suggestion.status.in_(["approved", "rejected"]),
++            )
++        ).all()
++    }
++    cards: list[dict[str, Any]] = []
++    info: list[dict[str, Any]] = []
++    for src in report["sources"]:
++        if src.get("state") == "limite_strutturale":
++            continue
++        if not src.get("card_eligible", True):
++            continue
++        # C4: cieca (nessun successo) e coperta_vecchia (oltre cadenza) → card allarme.
++        # Motivazione O12: oltre cadenza = ciechi per difesa; stato I2 resta distinto.
++        if src["state"] in {"cieca", "coperta_vecchia"}:
++            uid = _cov_uid("blind", src["name"])
++            signal_key = f"cov:blind:{src['name']}"
++            if uid in acked:
++                continue
++            err = (
++                (src.get("last_error") or "").strip()
++                or (src.get("reason") or "").strip()
++                or "ultimo errore non registrato"
++            )
++            cards.append(
++                {
++                    "uid": uid,
++                    "signal_key": signal_key,
++                    "signal": "C-S",
++                    "kind": "coverage_source_blind",
++                    "title": (
++                        f"Sorgente cieca · {src['label']}"
++                        if src["state"] == "cieca"
++                        else f"Sorgente copertura vecchia · {src['label']}"
++                    ),
++                    "source_name": src["name"],
++                    "state": src["state"],
++                    "last_success_at": src.get("last_success_at"),
++                    "last_error": err,
++                    "signals_lost": src.get("signals_not_observable") or [],
++                    "interval_sec": src.get("interval_sec"),
++                    "enable_flag": src.get("enable_flag"),
++                    "defense_priority_id": "sorgente_non_disponibile",
++                    "o12_marker": "obs-o12-blind-card",
++                    "actions": [
++                        {
++                            "id": "open_plant",
++                            "label": "Apri Impianto / copertura",
++                            "href": "/plant?from=oggi&coverage=1",
++                            "reversible": True,
++                        },
++                        {
++                            "id": "acknowledge",
++                            "label": "Presa visione",
++                            "requires_confirm": True,
++                            "reversible": True,
++                        },
++                    ],
++                }
++            )
++        elif src["state"] == "disabilitata":
++            uid = _cov_uid("disabled", src["name"])
++            signal_key = f"cov:disabled:{src['name']}"
++            if uid in acked:
++                continue
++            info.append(
++                {
++                    "uid": uid,
++                    "signal_key": signal_key,
++                    "signal": "C-D",
++                    "kind": "coverage_source_disabled",
++                    "title": f"Sorgente disabilitata · {src['label']}",
++                    "source_name": src["name"],
++                    "state": "disabilitata",
++                    "enable_flag": src.get("enable_flag"),
++                    "last_success_at": src.get("last_success_at"),
++                    "signals_not_observable": src.get("signals_not_observable") or [],
++                    "defense_priority_id": "igiene_nome",
++                    "o12_marker": "obs-o12-disabled-info",
++                    "body": (
++                        f"Flag {src.get('enable_flag')} = false — non è un guasto. "
++                        f"Da quando (ultimo successo noto): {src.get('last_success_at') or 'non registrato'}."
++                    ),
++                    "actions": [
++                        {
++                            "id": "open_plant",
++                            "label": "Vedi copertura",
++                            "href": "/plant?from=oggi&coverage=1",
++                            "reversible": True,
++                        },
++                        {
++                            "id": "acknowledge",
++                            "label": "Nascondi voce",
++                            "requires_confirm": False,
++                            "reversible": True,
++                        },
++                    ],
++                }
++            )
++    return cards + info
++
++
++def acknowledge_coverage_signal(
++    db: Session,
++    *,
++    uid: str,
++    action: str,
++    reason: str = "",
++    user_id: int | None = None,
++    kind: str = "coverage_source_blind",
++) -> Suggestion:
++    status = "approved" if action in {"acknowledge", "archive"} else "rejected"
++    existing = db.scalar(select(Suggestion).where(Suggestion.uid == uid))
++    if existing:
++        existing.status = status
++        existing.decided_at = utcnow()
++        existing.decided_by = user_id
++        existing.body = reason or existing.body
++        payload = dict(existing.payload or {})
++        payload["action"] = action
++        existing.payload = payload
++        db.flush()
++        return existing
++    s = Suggestion(
++        uid=uid,
++        kind=kind[:64],
++        source="coverage",
++        status=status,
++        title=(reason or uid)[:255],
++        body=reason or action,
++        payload={"action": action, "o12": True},
++        decided_at=utcnow(),
++        decided_by=user_id,
++    )
++    db.add(s)
++    db.flush()
++    return s
++
++
++def diagnose_flow_ingest_flag(settings: Settings | None = None) -> dict[str, Any]:
++    """C6 — classify FLOW_INGEST; origin evidence is filled by report from NAS bak scan."""
++    settings = settings or get_settings()
++    enabled = bool(getattr(settings, "flow_ingest_enabled", False))
++    provider = bool(getattr(settings, "zeek_provider_enabled", False))
++    return {
++        "flow_ingest_enabled": enabled,
++        "zeek_provider_enabled": provider,
++        "classification": "disabilitata" if not enabled else (
++            "disabilitata_provider" if not provider else "abilitata"
++        ),
++        "o12_marker": "obs-o12-flow-c6",
++        "note": (
++            "Riattivazione flow/conn = O13. Qui solo classificazione. "
++            "Origine del flag: vedi obs-o12.md accertamento .env.bak-* (nomi/presenza)."
++        ),
++    }
+
+## tests/test_o12_coverage.py (new / untracked)
+diff --git a/observatory/tests/test_o12_coverage.py b/observatory/tests/test_o12_coverage.py
+new file mode 100644
+index 0000000..d297043
+--- /dev/null
++++ b/observatory/tests/test_o12_coverage.py
+@@ -0,0 +1,271 @@
++"""O12 — source coverage classifier + C5 negative control (R1–R6 nodes)."""
++
++from __future__ import annotations
++
++import sys
++import uuid
++from datetime import datetime, timedelta
++from pathlib import Path
++
++import pytest
++from sqlalchemy import create_engine
++from sqlalchemy.orm import sessionmaker
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
++
++from app.config import Settings, get_settings
++from app.db import Base
++from app.models import SensorRun, Switch, ZeekBehaviorEvidence
++from app.services.source_coverage import (
++    SOURCE_SPECS,
++    classify_source,
++    coverage_alarm_cards,
++    evaluate_source,
++    build_coverage_report,
++)
++
++
++@pytest.fixture()
++def db(tmp_path, monkeypatch):
++    db_path = tmp_path / "o12.db"
++    monkeypatch.setenv("SQLITE_PATH", str(db_path))
++    get_settings.cache_clear()
++    engine = create_engine(f"sqlite:///{db_path}")
++    Base.metadata.create_all(engine)
++    Session = sessionmaker(bind=engine)
++    session = Session()
++    yield session
++    session.close()
++    get_settings.cache_clear()
++
++
++def _settings(**over) -> Settings:
++    get_settings.cache_clear()
++    base = {
++        "flow_ingest_enabled": False,
++        "zeek_provider_enabled": False,
++        "zeek_behavior_enabled": True,
++        "zeek_behavior_interval_sec": 300,
++        "zeek_provider_interval_sec": 300,
++        "topology_poll_interval_sec": 60,
++        "collector_interval_sec": 900,
++    }
++    base.update(over)
++    return Settings(**base)
++
++
++def test_r1_fdb_fresh_no_blind_card(db):
++    """R1: FDB vivo → coperta_fresca, nessuna card cieca FDB."""
++    sw = Switch(code="lgs", name="LGS328C", ip="192.168.1.2", model="LGS328C")
++    sw.meta = {
++        "fdb_poll": {
++            "ok": True,
++            "at": datetime.utcnow().isoformat() + "Z",
++            "error": "",
++            "entries": 10,
++        }
++    }
++    db.add(sw)
++    db.commit()
++    settings = _settings()
++    spec = next(s for s in SOURCE_SPECS if s.name == "fdb_snmp")
++    row = evaluate_source(db, spec, settings)
++    assert row["state"] == "coperta_fresca"
++    cards = coverage_alarm_cards(db, settings)
++    assert not any(c.get("source_name") == "fdb_snmp" and c["state"] == "cieca" for c in cards)
++
++
++def test_r2_flow_disabled_classified(db):
++    """R2: flow_observations con flag false → disabilitata + segnali persi."""
++    settings = _settings(flow_ingest_enabled=False, zeek_provider_enabled=False)
++    spec = next(s for s in SOURCE_SPECS if s.name == "zeek_conn_flow")
++    row = evaluate_source(db, spec, settings)
++    assert row["state"] == "disabilitata"
++    assert row["enable_flag"] in {"flow_ingest_enabled", "zeek_provider_enabled"}
++    assert any("destinazioni" in s.lower() or "flow" in s.lower() for s in row["signals_not_observable"])
++    cards = coverage_alarm_cards(db, settings)
++    blind = [c for c in cards if c.get("source_name") == "zeek_conn_flow" and c["kind"] == "coverage_source_blind"]
++    info = [c for c in cards if c.get("source_name") == "zeek_conn_flow" and c["kind"] == "coverage_source_disabled"]
++    assert blind == []
++    assert len(info) == 1
++
++
++def test_r3_behavior_disabled_no_alarm(db):
++    """R3: ZEEK_BEHAVIOR_ENABLED=false → disabilitata, no card allarme."""
++    settings = _settings(zeek_behavior_enabled=False)
++    spec = next(s for s in SOURCE_SPECS if s.name == "zeek_behavior")
++    row = evaluate_source(db, spec, settings, override_enabled=False)
++    assert row["state"] == "disabilitata"
++    cards = coverage_alarm_cards(db, settings)
++    # Force evaluate with disabled in report by monkeypatching settings on build
++    # coverage_alarm_cards uses settings.zeek_behavior_enabled
++    assert not any(
++        c.get("source_name") == "zeek_behavior" and c["kind"] == "coverage_source_blind"
++        for c in cards
++    )
++    assert any(
++        c.get("source_name") == "zeek_behavior" and c["kind"] == "coverage_source_disabled"
++        for c in cards
++    )
++
++
++def test_r4_blind_card_appears_and_clears(db):
++    """R4: oltre cadenza → card con errore; ritorno fresco → sparisce."""
++    settings = _settings(zeek_behavior_enabled=True, zeek_behavior_interval_sec=300)
++    spec = next(s for s in SOURCE_SPECS if s.name == "zeek_behavior")
++    old = datetime.utcnow() - timedelta(seconds=900)
++    row = evaluate_source(
++        db,
++        spec,
++        settings,
++        override_last_success=old,
++        override_last_error="ciclo fallito: connection refused (test)",
++    )
++    assert row["state"] == "coperta_vecchia"
++    assert "connection refused" in (row.get("last_error") or "")
++    assert row["signals_not_observable"]
++
++    # Inject stale evidence so report sees cieca/vecchia, then fresh
++    db.add(
++        ZeekBehaviorEvidence(
++            dedup_key="t1",
++            kind="ja4",
++            value="x",
++            src_mac="AA:BB:CC:DD:EE:01",
++            association="mac_direct",
++            sensor_id="zeek-span",
++            first_seen=old,
++            last_seen=old,
++            observation_count=1,
++            evidence={},
++        )
++    )
++    db.commit()
++    cards = coverage_alarm_cards(db, settings)
++    blind = [c for c in cards if c.get("source_name") == "zeek_behavior" and c["kind"] == "coverage_source_blind"]
++    assert len(blind) == 1
++    assert blind[0]["last_error"]
++    assert blind[0]["signals_lost"]
++    assert blind[0]["defense_priority_id"] == "sorgente_non_disponibile"
++    assert blind[0]["state"] == "coperta_vecchia"
++    assert any(a["id"] == "open_plant" for a in blind[0]["actions"])
++
++    # Refresh evidence
++    row_db = db.query(ZeekBehaviorEvidence).filter_by(dedup_key="t1").one()
++    row_db.last_seen = datetime.utcnow()
++    db.commit()
++    cards2 = coverage_alarm_cards(db, settings)
++    assert not any(
++        c.get("source_name") == "zeek_behavior" and c["kind"] == "coverage_source_blind"
++        for c in cards2
++    )
++
++
++def test_r5_cadenza_non_nota(db):
++    """R5: senza cadenza → cadenza_non_nota, nessuna finestra inventata."""
++    cls = classify_source(
++        enabled=True,
++        enable_flag="x",
++        interval_sec=None,
++        last_success_at=datetime.utcnow(),
++        last_error=None,
++        now=datetime.utcnow(),
++    )
++    assert cls["state"] == "cadenza_non_nota"
++    assert cls["window_sec"] is None
++
++
++def test_r6_gs308ep_structural_not_blind(db):
++    """R6: GS308EP → limite strutturale, non cieca (I7)."""
++    sw = Switch(code="gs", name="GS308EP", ip="192.168.1.8", model="GS308EP")
++    sw.meta = {
++        "fdb_poll": {
++            "ok": False,
++            "at": "2026-07-18T02:02:50Z",
++            "error": "SNMP Timeout",
++        }
++    }
++    db.add(sw)
++    db.commit()
++    settings = _settings()
++    spec = next(s for s in SOURCE_SPECS if s.name == "gs308ep_structural")
++    row = evaluate_source(db, spec, settings)
++    assert row["state"] == "limite_strutturale"
++    # FDB aggregate ignores GS308EP — with only GS308 present, no supporting switch success
++    fdb = next(s for s in SOURCE_SPECS if s.name == "fdb_snmp")
++    fdb_row = evaluate_source(db, fdb, settings)
++    # No FDB-capable switch → cieca or no success — must NOT classify GS308 as the source name
++    assert fdb_row["name"] == "fdb_snmp"
++    cards = coverage_alarm_cards(db, settings)
++    assert not any(c.get("source_name") == "gs308ep_structural" for c in cards)
++
++
++def test_census_names_stable():
++    names = [s.name for s in SOURCE_SPECS]
++    assert "fdb_snmp" in names
++    assert "zeek_conn_flow" in names
++    assert "zeek_behavior" in names
++    assert "gs308ep_structural" in names
++    # signals_lost derived from specs (C3), not empty for observation sources
++    flow = next(s for s in SOURCE_SPECS if s.name == "zeek_conn_flow")
++    assert flow.signals_lost_when_blind
++
++
++def test_s4_zeek_fail_sensor_run_on_blind_card(db):
++    """O12-FIX S4: SensorRun fallito → card C-S mostra l'errore integrale."""
++    settings = _settings(zeek_behavior_enabled=True, zeek_behavior_interval_sec=300)
++    old = datetime.utcnow() - timedelta(seconds=900)
++    db.add(
++        SensorRun(
++            source="zeek_behavior",
++            sensor_id="collector",
++            started_at=old,
++            finished_at=old,
++            ok=False,
++            error="RuntimeError: ciclo fallito: connection refused (test S4)",
++            counts={},
++        )
++    )
++    db.add(
++        ZeekBehaviorEvidence(
++            dedup_key="s4",
++            kind="ja4",
++            value="x",
++            src_mac="AA:BB:CC:DD:EE:02",
++            association="mac_direct",
++            sensor_id="zeek-span",
++            first_seen=old,
++            last_seen=old,
++            observation_count=1,
++            evidence={},
++        )
++    )
++    db.commit()
++    cards = coverage_alarm_cards(db, settings)
++    blind = [
++        c
++        for c in cards
++        if c.get("source_name") == "zeek_behavior" and c["kind"] == "coverage_source_blind"
++    ]
++    assert len(blind) == 1
++    assert "connection refused" in (blind[0].get("last_error") or "")
++    assert blind[0]["last_error"]  # mai vuoto
++
++
++def test_s5_missing_error_declared_not_empty(db):
++    """O12-FIX S5: senza SensorRun → «ultimo errore non registrato», mai '' o '0'."""
++    settings = _settings(zeek_behavior_enabled=True, zeek_behavior_interval_sec=300)
++    spec = next(s for s in SOURCE_SPECS if s.name == "zeek_behavior")
++    row = evaluate_source(db, spec, settings)
++    assert row["state"] == "cieca"
++    err = row.get("last_error") or ""
++    assert err == "ultimo errore non registrato"
++    assert err not in {"", "0", "None"}
++    cards = coverage_alarm_cards(db, settings)
++    blind = [
++        c
++        for c in cards
++        if c.get("source_name") == "zeek_behavior" and c["kind"] == "coverage_source_blind"
++    ]
++    assert len(blind) == 1
++    assert blind[0]["last_error"] == "ultimo errore non registrato"
