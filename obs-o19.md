@@ -1,3 +1,4 @@
+<!-- wc -l = 624 -->
 # OBS-O19 — OBS-MAPPA — 0.10.88
 
 Base: `af98330` (post-O18). Ramo: `feature/obs-currency`.
