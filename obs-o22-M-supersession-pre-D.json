@@ -1,0 +1,413 @@
+{
+  "wave": "O22-M-supersession",
+  "auth_provenance": "session mint TTL 180s, token non pubblicato",
+  "admin_facts_conflicts": {
+    "status": 200,
+    "ok": true,
+    "n": 0,
+    "sample": [],
+    "keys": [
+      "conflicts",
+      "count"
+    ],
+    "body_head": "{\"conflicts\":[],\"count\":0}"
+  },
+  "oggi": {
+    "len_asserted": 54,
+    "items": [
+      {
+        "kind": "heading",
+        "text": "Dati mancanti o non correntiEvidenzaAPPROFONDISCIAPPLICANON APPLICARESegnale S-C: Solo L2 · F0:B0:14:90:87:96Fonte: fdb·Correntezza: non misurato+APPROFONDISCI+",
+        "band": "missing_stale",
+        "i": 4
+      },
+      {
+        "kind": "heading",
+        "text": "Dati mancanti o non correnti",
+        "band": "",
+        "i": 5
+      },
+      {
+        "kind": "heading",
+        "text": "Dati mancanti o non correntiEvidenzaAPPROFONDISCIAPPLICANON APPLICARESegnale S-C: Solo L2 · F0:B0:14:90:87:97Fonte: fdb·Correntezza: non misurato+APPROFONDISCI+",
+        "band": "missing_stale",
+        "i": 12
+      },
+      {
+        "kind": "heading",
+        "text": "Dati mancanti o non correnti",
+        "band": "",
+        "i": 13
+      },
+      {
+        "kind": "heading",
+        "text": "Dati mancanti o non correntiEvidenzaAPPROFONDISCIAPPLICANON APPLICARESegnale S-C: Solo L2 · 38:A6:CE:3E:9C:A8Fonte: fdb·Correntezza: non misurato+APPROFONDISCI+",
+        "band": "missing_stale",
+        "i": 20
+      },
+      {
+        "kind": "heading",
+        "text": "Dati mancanti o non correnti",
+        "band": "",
+        "i": 21
+      },
+      {
+        "kind": "heading",
+        "text": "Dati mancanti o non correntiEvidenzaAPPROFONDISCIAPPLICANON APPLICARESegnale S-C: Solo L2 · 38:A6:CE:40:A7:76Fonte: fdb·Correntezza: non misurato+APPROFONDISCI+",
+        "band": "missing_stale",
+        "i": 28
+      },
+      {
+        "kind": "heading",
+        "text": "Dati mancanti o non correnti",
+        "band": "",
+        "i": 29
+      },
+      {
+        "kind": "heading",
+        "text": "Dati mancanti o non correntiEvidenzaAPPROFONDISCIAPPLICANON APPLICARESegnale S-C: Solo L2 · 70:50:AF:FC:0A:F8Fonte: fdb·Correntezza: non misurato+APPROFONDISCI+",
+        "band": "missing_stale",
+        "i": 36
+      },
+      {
+        "kind": "heading",
+        "text": "Dati mancanti o non correnti",
+        "band": "",
+        "i": 37
+      },
+      {
+        "kind": "heading",
+        "text": "Dati mancanti o non correntiEvidenzaAPPROFONDISCIAPPLICANON APPLICARESegnale S-C: Solo L2 · 70:50:AF:FB:86:F8Fonte: fdb·Correntezza: non misurato+APPROFONDISCI+",
+        "band": "missing_stale",
+        "i": 44
+      },
+      {
+        "kind": "heading",
+        "text": "Dati mancanti o non correnti",
+        "band": "",
+        "i": 45
+      },
+      {
+        "kind": "heading",
+        "text": "Dati mancanti o non correntiEvidenzaAPPROFONDISCIAPPLICANON APPLICARESegnale S-C: Solo L2 · D4:52:EE:C3:25:16Fonte: fdb·Correntezza: non misurato+APPROFONDISCI+",
+        "band": "missing_stale",
+        "i": 52
+      },
+      {
+        "kind": "heading",
+        "text": "Dati mancanti o non correnti",
+        "band": "",
+        "i": 53
+      },
+      {
+        "kind": "heading",
+        "text": "Dati mancanti o non correntiEvidenzaAPPROFONDISCIAPPLICANON APPLICARESegnale S-C: Solo L2 · D4:52:EE:C3:25:17Fonte: fdb·Correntezza: non misurato+APPROFONDISCI+",
+        "band": "missing_stale",
+        "i": 60
+      },
+      {
+        "kind": "heading",
+        "text": "Dati mancanti o non correnti",
+        "band": "",
+        "i": 61
+      },
+      {
+        "kind": "heading",
+        "text": "Dati mancanti o non correntiEvidenzaAPPROFONDISCIAPPLICANON APPLICARESegnale S-C: Solo L2 · 70:50:AF:FB:86:FAFonte: fdb·Correntezza: non misurato+APPROFONDISCI+",
+        "band": "missing_stale",
+        "i": 68
+      },
+      {
+        "kind": "heading",
+        "text": "Dati mancanti o non correnti",
+        "band": "",
+        "i": 69
+      },
+      {
+        "kind": "odm_band",
+        "band": "observed",
+        "label": "Fatti osservati",
+        "rows": 1,
+        "i": 0
+      },
+      {
+        "kind": "odm_band",
+        "band": "missing_stale",
+        "label": "Dati mancanti o non correnti",
+        "rows": 2,
+        "i": 1
+      },
+      {
+        "kind": "odm_band",
+        "band": "deterministic",
+        "label": "Interpretazione deterministica",
+        "rows": 0,
+        "i": 2
+      },
+      {
+        "kind": "odm_band",
+        "band": "inference",
+        "label": "INFERENZA IA",
+        "rows": 1,
+        "i": 3
+      },
+      {
+        "kind": "odm_band",
+        "band": "observed",
+        "label": "Fatti osservati",
+        "rows": 1,
+        "i": 4
+      },
+      {
+        "kind": "odm_band",
+        "band": "missing_stale",
+        "label": "Dati mancanti o non correnti",
+        "rows": 2,
+        "i": 5
+      },
+      {
+        "kind": "odm_band",
+        "band": "deterministic",
+        "label": "Interpretazione deterministica",
+        "rows": 0,
+        "i": 6
+      },
+      {
+        "kind": "odm_band",
+        "band": "inference",
+        "label": "INFERENZA IA",
+        "rows": 1,
+        "i": 7
+      },
+      {
+        "kind": "odm_band",
+        "band": "observed",
+        "label": "Fatti osservati",
+        "rows": 1,
+        "i": 8
+      },
+      {
+        "kind": "odm_band",
+        "band": "missing_stale",
+        "label": "Dati mancanti o non correnti",
+        "rows": 2,
+        "i": 9
+      },
+      {
+        "kind": "odm_band",
+        "band": "deterministic",
+        "label": "Interpretazione deterministica",
+        "rows": 0,
+        "i": 10
+      },
+      {
+        "kind": "odm_band",
+        "band": "inference",
+        "label": "INFERENZA IA",
+        "rows": 1,
+        "i": 11
+      },
+      {
+        "kind": "odm_band",
+        "band": "observed",
+        "label": "Fatti osservati",
+        "rows": 1,
+        "i": 12
+      },
+      {
+        "kind": "odm_band",
+        "band": "missing_stale",
+        "label": "Dati mancanti o non correnti",
+        "rows": 2,
+        "i": 13
+      },
+      {
+        "kind": "odm_band",
+        "band": "deterministic",
+        "label": "Interpretazione deterministica",
+        "rows": 0,
+        "i": 14
+      },
+      {
+        "kind": "odm_band",
+        "band": "inference",
+        "label": "INFERENZA IA",
+        "rows": 1,
+        "i": 15
+      },
+      {
+        "kind": "odm_band",
+        "band": "observed",
+        "label": "Fatti osservati",
+        "rows": 1,
+        "i": 16
+      },
+      {
+        "kind": "odm_band",
+        "band": "missing_stale",
+        "label": "Dati mancanti o non correnti",
+        "rows": 2,
+        "i": 17
+      },
+      {
+        "kind": "odm_band",
+        "band": "deterministic",
+        "label": "Interpretazione deterministica",
+        "rows": 0,
+        "i": 18
+      },
+      {
+        "kind": "odm_band",
+        "band": "inference",
+        "label": "INFERENZA IA",
+        "rows": 1,
+        "i": 19
+      },
+      {
+        "kind": "odm_band",
+        "band": "observed",
+        "label": "Fatti osservati",
+        "rows": 1,
+        "i": 20
+      },
+      {
+        "kind": "odm_band",
+        "band": "missing_stale",
+        "label": "Dati mancanti o non correnti",
+        "rows": 2,
+        "i": 21
+      },
+      {
+        "kind": "odm_band",
+        "band": "deterministic",
+        "label": "Interpretazione deterministica",
+        "rows": 0,
+        "i": 22
+      },
+      {
+        "kind": "odm_band",
+        "band": "inference",
+        "label": "INFERENZA IA",
+        "rows": 1,
+        "i": 23
+      },
+      {
+        "kind": "odm_band",
+        "band": "observed",
+        "label": "Fatti osservati",
+        "rows": 1,
+        "i": 24
+      },
+      {
+        "kind": "odm_band",
+        "band": "missing_stale",
+        "label": "Dati mancanti o non correnti",
+        "rows": 2,
+        "i": 25
+      },
+      {
+        "kind": "odm_band",
+        "band": "deterministic",
+        "label": "Interpretazione deterministica",
+        "rows": 0,
+        "i": 26
+      },
+      {
+        "kind": "odm_band",
+        "band": "inference",
+        "label": "INFERENZA IA",
+        "rows": 1,
+        "i": 27
+      },
+      {
+        "kind": "odm_band",
+        "band": "observed",
+        "label": "Fatti osservati",
+        "rows": 1,
+        "i": 28
+      },
+      {
+        "kind": "odm_band",
+        "band": "missing_stale",
+        "label": "Dati mancanti o non correnti",
+        "rows": 2,
+        "i": 29
+      },
+      {
+        "kind": "odm_band",
+        "band": "deterministic",
+        "label": "Interpretazione deterministica",
+        "rows": 0,
+        "i": 30
+      },
+      {
+        "kind": "odm_band",
+        "band": "inference",
+        "label": "INFERENZA IA",
+        "rows": 1,
+        "i": 31
+      },
+      {
+        "kind": "odm_band",
+        "band": "observed",
+        "label": "Fatti osservati",
+        "rows": 1,
+        "i": 32
+      },
+      {
+        "kind": "odm_band",
+        "band": "missing_stale",
+        "label": "Dati mancanti o non correnti",
+        "rows": 2,
+        "i": 33
+      },
+      {
+        "kind": "odm_band",
+        "band": "deterministic",
+        "label": "Interpretazione deterministica",
+        "rows": 0,
+        "i": 34
+      },
+      {
+        "kind": "odm_band",
+        "band": "inference",
+        "label": "INFERENZA IA",
+        "rows": 1,
+        "i": 35
+      }
+    ],
+    "come_potrebbe_fallire": "selettori incompleti sottostimano"
+  },
+  "dossier": {
+    "len_asserted": 0,
+    "items": [],
+    "dossier_path": "/dossier/83"
+  },
+  "verdict": {
+    "admin_conflicts_reachable": true,
+    "admin_conflicts_status": 200,
+    "vocab_exists_for_superseded_distinct_from_I1_I2": false,
+    "missing_stale_ambiguous": true,
+    "missing_stale_note": "Etichetta «Dati mancanti o non correnti» (matrix missing_stale) raggruppa assenza, bassa correntezza e possibili fatti non current senza distinguere: superseded vs TTL-scaduto vs I3 conflitto. Non è un vocabolo FactAssertion.state=historical.",
+    "violations": [
+      {
+        "where": "/oggi matrice banda missing_stale",
+        "severity": "media — confusione lessicale non perdita dati",
+        "issue": "«non correnti» non dichiara quale delle tre cause (superseded / TTL / conflitto)",
+        "distinguishes_superseded_vs_ttl_vs_conflict": false
+      }
+    ],
+    "gate_M": "D_JUSTIFIED_VOCAB_ONLY",
+    "markers_present": {
+      "superseded_or_historical_word": false,
+      "ttl_or_scaduto_word": false,
+      "conflitto_word": false
+    }
+  },
+  "vocab_scan_notes": {
+    "missing_stale_label": "Dati mancanti o non correnti (oggiDecisionMatrix.js)",
+    "I1": "fatto vs inferenza",
+    "I2": "cinque condizioni ignoto (O21)"
+  },
+  "come_potrebbe_fallire": "DOM audit non vede fatti historical se non renderizzati"
+}
