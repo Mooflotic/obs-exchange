@@ -1,0 +1,10 @@
+{
+  "report": "obs-o21.md",
+  "commit_pinned": "9780b36489cedbc2cfdac0eba1c8b61dc2cfd9c3",
+  "url": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/9780b36489cedbc2cfdac0eba1c8b61dc2cfd9c3/obs-o21.md",
+  "curl_http": 200,
+  "local_sha256": "6053a779c8835050527ff73e67ea2fe166558ee941cbafb6f17c195d334e7f1e",
+  "raw_sha256": "6053a779c8835050527ff73e67ea2fe166558ee941cbafb6f17c195d334e7f1e",
+  "wc_l_header": 2487,
+  "match": true
+}
