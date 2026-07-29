@@ -1,0 +1,1034 @@
+# obs-o13dfix-colore.diff.txt
+# Tema D3/D4 O13D-FIX: canvas/Topology/Toggle → token; allowlist motivata;
+# campi freschezza/limiti su FDB/behaviour/egress; FERMO viola AI/AP (no --ai/--ap).
+#
+diff --git a/observatory/api/app/services/behaviour.py b/observatory/api/app/services/behaviour.py
+index 796d478..ddedea2 100644
+--- a/observatory/api/app/services/behaviour.py
++++ b/observatory/api/app/services/behaviour.py
+@@ -582,6 +582,15 @@ def structural_character_changes(
+                         {"kind": kind, "value": p.value} for p in peers[:8]
+                     ],
+                     "association": r.association,
++                    "cause": (
++                        f"Nuovo fingerprint Zeek kind={kind} rispetto ai prior "
++                        f"({len(peers)} osservati). Evidenza comportamentale, non identità."
++                    ),
++                    "limits": [
++                        "Cambio fingerprint ≠ cambio di proprietario o malware.",
++                        "Associazione MAC↔soggetto può essere imperfecta (I2).",
++                        "Nessuna azione automatica di scrittura o blocco.",
++                    ],
+                     "freshness": fr,
+                     "defense_priority_id": "conflitto_identita",
+                     "o11_marker": "obs-o11-character",
+@@ -695,6 +704,16 @@ def group_unknown_evidence_card(members: list[dict[str, Any]]) -> dict[str, Any]
+         "members": members_sorted,
+         "expandable": True,
+         "asset_id": first.get("asset_id"),
++        "cause": (
++            f"{len(members_sorted)} soggetti non riconosciuti (o solo-L2) con evidenze Zeek "
++            "(JA4/DHCP). Una voce di gruppo, non N card P1."
++        ),
++        "limits": [
++            "Evidenze Zeek non assegnano un nome: proposta automatica assente.",
++            "Ignoto ≠ minaccia; priorità igiene (P6), non P1 attivo.",
++            "Nessuna scrittura autonoma — solo assegnazione manuale reversibile.",
++        ],
++        "freshness": first.get("freshness") or {"state": "derived", "label": "da evidenze membri"},
+         "defense_priority_id": "ignoto_con_evidenze_zeek",
+         "o11_marker": "obs-o11fix-unknown-group",
+         "actions": [
+diff --git a/observatory/api/app/services/egress.py b/observatory/api/app/services/egress.py
+index 90e5c09..d054cdb 100644
+--- a/observatory/api/app/services/egress.py
++++ b/observatory/api/app/services/egress.py
+@@ -42,6 +42,7 @@ BASELINE_SCOPE = "_baseline"
+ BASELINE_DEDUP = "meta|baseline|o13c"
+ O13C_MARKER = "obs-o13c"
+ O13CFIX_MARKER = "obs-o13c-fix"
++O13D_MARKER = "obs-o13d"
+ 
+ DEFENSE_PRIORITY_ID = "ignoto_con_evidenze_zeek"  # P6 — both ext and int cards
+ 
+@@ -285,6 +286,14 @@ def invalidate_premature_baseline(db: Session, *, reason: str | None = None) ->
+     # Annotate, do not erase previous ready_at value.
+     ev["reason"] = msg
+     ev["o13cfix_marker"] = O13CFIX_MARKER
++    # O13D C1 — premature protection: suppress N5 until B2 close auto-lifts.
++    ev["novelty_suppression_active"] = True
++    ev["novelty_suppression_reason"] = "premature_baseline_protection"
++    ev["novelty_suppression_since"] = now.isoformat() + "Z"
++    ev["signals_armed"] = False
++    ev["novelty_auto_enabled"] = False
++    ev["manual_suppress"] = False
++    ev["o13d_marker"] = O13D_MARKER
+     row.evidence = ev
+     row.last_seen = now
+     db.flush()
+@@ -396,6 +405,12 @@ def baseline_status(db: Session, *, now: datetime | None = None) -> dict[str, An
+     ev = dict(row.evidence or {})
+     ready = bool(ev.get("baseline_ready"))
+     readiness = evaluate_baseline_readiness(db, now=now)
++    since = ev.get("novelty_suppression_since")
++    age_sec = None
++    if since:
++        st = _parse_ts(since)
++        if st is not None:
++            age_sec = max(0.0, (now - st).total_seconds())
+     return {
+         "status": "ready" if ready else "in_costruzione",
+         "baseline_ready": ready,
+@@ -406,18 +421,237 @@ def baseline_status(db: Session, *, now: datetime | None = None) -> dict[str, An
+         "reason": ev.get("reason") or "",
+         "o13c_marker": O13C_MARKER,
+         "o13cfix_marker": O13CFIX_MARKER,
++        "o13d_marker": O13D_MARKER,
+         "cycle_seen": ev.get("cycle_seen"),
+         "cycle_created": ev.get("cycle_created"),
+         "cycle_deferred": ev.get("cycle_deferred"),
+         "cycle_novelty_new": ev.get("cycle_novelty_new"),
+         "readiness": readiness,
++        "novelty_suppression": {
++            "active": bool(ev.get("novelty_suppression_active")),
++            "reason": ev.get("novelty_suppression_reason"),
++            "since": since,
++            "age_sec": age_sec,
++            "lifted_at": ev.get("novelty_suppression_lifted_at"),
++            "lift_reason": ev.get("novelty_suppression_lift_reason"),
++            "manual_suppress": bool(ev.get("manual_suppress")),
++            "signals_armed": bool(ev.get("signals_armed")),
++            "novelty_auto_enabled": bool(ev.get("novelty_auto_enabled")),
++            "distinct_from": ["cieca", "disabilitata"],
++        },
+         "novelty_signals_note": (
+-            "emissione N5 gated da EGRESS_NOVELTY_SIGNALS_ENABLED "
+-            "(distinto da EGRESS_INGEST_ENABLED)"
++            "emissione N5 gated da resolve_novelty_emission "
++            "(signals_armed / manual_suppress; distinto da EGRESS_INGEST_ENABLED)"
+         ),
+     }
+ 
+ 
++def _persist_baseline_evidence(db: Session, ev: dict[str, Any]) -> None:
++    row = ensure_baseline_meta(db)
++    row.evidence = ev
++    row.last_seen = utcnow()
++    db.flush()
++
++
++def resolve_novelty_emission(
++    db: Session,
++    settings: Any | None = None,
++    *,
++    now: datetime | None = None,
++) -> dict[str, Any]:
++    """O13D C1 — decide if N5 novelty cards may emit.
++
++    allowed iff baseline_ready and signals_armed and not manual_suppress.
++    On B2 close, lift sets signals_armed + novelty_auto_enabled so env=false
++    from B1 protection does not immediately re-suppress; after auto shield is
++    cleared (env goes true once), env=false ⇒ visible manual_suppress.
++    """
++    now = now or utcnow()
++    row = ensure_baseline_meta(db)
++    ev = dict(row.evidence or {})
++    ready = bool(ev.get("baseline_ready"))
++    env_on = bool(
++        getattr(settings, "egress_novelty_signals_enabled", False) if settings is not None else False
++    )
++    suppression = {
++        "active": bool(ev.get("novelty_suppression_active")),
++        "reason": ev.get("novelty_suppression_reason"),
++        "since": ev.get("novelty_suppression_since"),
++        "manual_suppress": bool(ev.get("manual_suppress")),
++        "signals_armed": bool(ev.get("signals_armed")),
++        "novelty_auto_enabled": bool(ev.get("novelty_auto_enabled")),
++        "distinct_from": ["cieca", "disabilitata"],
++    }
++
++    if not ready:
++        return {
++            "allowed": False,
++            "state": "baseline_in_costruzione",
++            "suppression": suppression,
++            "o13d_marker": O13D_MARKER,
++        }
++
++    # Premature protection still active (should have been lifted on close).
++    if ev.get("novelty_suppression_active") and ev.get("novelty_suppression_reason") == (
++        "premature_baseline_protection"
++    ):
++        since = ev.get("novelty_suppression_since")
++        st = _parse_ts(since)
++        age = max(0.0, (now - st).total_seconds()) if st else None
++        suppression["age_sec"] = age
++        return {
++            "allowed": False,
++            "state": "novelty_suppressed",
++            "suppression": suppression,
++            "o13d_marker": O13D_MARKER,
++        }
++
++    if ev.get("manual_suppress") or (
++        ev.get("novelty_suppression_active")
++        and ev.get("novelty_suppression_reason") == "manual"
++    ):
++        # Env true clears manual.
++        if env_on:
++            ev["manual_suppress"] = False
++            ev["novelty_suppression_active"] = False
++            if ev.get("novelty_suppression_reason") == "manual":
++                ev["novelty_suppression_reason"] = None
++            ev["signals_armed"] = True
++            ev["novelty_auto_enabled"] = False
++            _persist_baseline_evidence(db, ev)
++            suppression = {
++                "active": False,
++                "reason": None,
++                "since": None,
++                "manual_suppress": False,
++                "signals_armed": True,
++                "novelty_auto_enabled": False,
++                "distinct_from": ["cieca", "disabilitata"],
++            }
++            return {
++                "allowed": True,
++                "state": "novelty_allowed",
++                "suppression": suppression,
++                "o13d_marker": O13D_MARKER,
++            }
++        suppression["active"] = True
++        suppression["reason"] = "manual"
++        suppression["manual_suppress"] = True
++        return {
++            "allowed": False,
++            "state": "novelty_suppressed_manual",
++            "suppression": suppression,
++            "o13d_marker": O13D_MARKER,
++        }
++
++    signals_armed = bool(ev.get("signals_armed"))
++    auto = bool(ev.get("novelty_auto_enabled"))
++
++    if not signals_armed:
++        # Legacy / forged ready without arm: follow env only.
++        if not env_on:
++            return {
++                "allowed": False,
++                "state": "novelty_suppressed_manual",
++                "suppression": {
++                    **suppression,
++                    "active": True,
++                    "reason": "manual",
++                    "manual_suppress": True,
++                    "signals_armed": False,
++                },
++                "o13d_marker": O13D_MARKER,
++            }
++        ev["signals_armed"] = True
++        ev["novelty_auto_enabled"] = False
++        _persist_baseline_evidence(db, ev)
++        return {
++            "allowed": True,
++            "state": "novelty_allowed",
++            "suppression": {**suppression, "signals_armed": True, "active": False},
++            "o13d_marker": O13D_MARKER,
++        }
++
++    # Armed. Auto shield from B2 lift: allow even if env still false (B1 residue).
++    if auto:
++        if env_on:
++            # Michele turned env on → drop auto shield; future env=false is manual.
++            ev["novelty_auto_enabled"] = False
++            ev["manual_suppress"] = False
++            ev["novelty_suppression_active"] = False
++            _persist_baseline_evidence(db, ev)
++        return {
++            "allowed": True,
++            "state": "novelty_allowed",
++            "suppression": {
++                **suppression,
++                "active": False,
++                "novelty_auto_enabled": bool(ev.get("novelty_auto_enabled")),
++                "signals_armed": True,
++            },
++            "o13d_marker": O13D_MARKER,
++        }
++
++    # Armed, no auto shield: env drives manual suppress.
++    if not env_on:
++        since = now.isoformat() + "Z"
++        ev["manual_suppress"] = True
++        ev["novelty_suppression_active"] = True
++        ev["novelty_suppression_reason"] = "manual"
++        ev["novelty_suppression_since"] = since
++        ev["o13d_marker"] = O13D_MARKER
++        _persist_baseline_evidence(db, ev)
++        return {
++            "allowed": False,
++            "state": "novelty_suppressed_manual",
++            "suppression": {
++                "active": True,
++                "reason": "manual",
++                "since": since,
++                "manual_suppress": True,
++                "signals_armed": True,
++                "novelty_auto_enabled": False,
++                "distinct_from": ["cieca", "disabilitata"],
++            },
++            "o13d_marker": O13D_MARKER,
++        }
++
++    ev["manual_suppress"] = False
++    if ev.get("novelty_suppression_active") and ev.get("novelty_suppression_reason") == "manual":
++        ev["novelty_suppression_active"] = False
++        ev["novelty_suppression_reason"] = None
++    _persist_baseline_evidence(db, ev)
++    return {
++        "allowed": True,
++        "state": "novelty_allowed",
++        "suppression": {
++            "active": False,
++            "reason": None,
++            "since": None,
++            "manual_suppress": False,
++            "signals_armed": True,
++            "novelty_auto_enabled": False,
++            "distinct_from": ["cieca", "disabilitata"],
++        },
++        "o13d_marker": O13D_MARKER,
++    }
++
++
++def _lift_novelty_on_baseline_close(ev: dict[str, Any], readiness: dict[str, Any], now: datetime) -> None:
++    """O13D C1 (i) — auto-lift premature suppression when B2 closes to ready."""
++    ev["novelty_suppression_active"] = False
++    ev["novelty_suppression_lifted_at"] = now.isoformat() + "Z"
++    ev["novelty_suppression_lift_reason"] = "baseline_closed_b2"
++    ev["novelty_suppression_lift_criteria"] = readiness
++    ev["signals_armed"] = True
++    ev["novelty_auto_enabled"] = True
++    ev["manual_suppress"] = False
++    if ev.get("novelty_suppression_reason") == "premature_baseline_protection":
++        ev["novelty_suppression_reason_was"] = "premature_baseline_protection"
++        ev["novelty_suppression_reason"] = None
++    ev["o13d_marker"] = O13D_MARKER
++
++
+ def _record_cycle_novelty(db: Session, created: int, *, now: datetime) -> None:
+     """Accumulate novelty_new per UTC day (creates in this cycle count as new tuples)."""
+     row = ensure_baseline_meta(db)
+@@ -470,6 +704,7 @@ def maybe_close_baseline_after_cycle(
+             f"serie novità>={MIN_NOVELTY_SERIES_DAYS} giorni UTC completi"
+         )
+         ev["readiness_snapshot"] = readiness
++        _lift_novelty_on_baseline_close(ev, readiness, now)
+         row.evidence = ev
+         row.last_seen = now
+         db.flush()
+@@ -502,6 +737,7 @@ def mark_baseline_ready(db: Session, *, user_id: int | None = None, reason: str
+     ev["marked_ready_by"] = user_id
+     ev["marked_ready_reason"] = reason or "azione esplicita con criteri B2 soddisfatti"
+     ev["o13cfix_marker"] = O13CFIX_MARKER
++    _lift_novelty_on_baseline_close(ev, readiness, now)
+     row.evidence = ev
+     row.last_seen = now
+     db.flush()
+@@ -916,21 +1152,24 @@ def novelty_egress_cards(
+     db: Session,
+     *,
+     now: datetime | None = None,
+-    novelty_signals_enabled: bool = False,
++    novelty_signals_enabled: bool | None = None,
++    settings: Any | None = None,
+ ) -> list[dict[str, Any]]:
+-    """Structural novelty. Suspended unless novelty_signals_enabled AND baseline_ready."""
++    """Structural novelty. Gated by resolve_novelty_emission (O13D).
++
++    ``novelty_signals_enabled`` kept for O13C tests: when explicitly False/True and
++    settings is None, wraps a synthetic settings object.
++    """
+     now = now or utcnow()
+-    bl = baseline_status(db, now=now)
+-    if not novelty_signals_enabled:
+-        return []
+-    if not bl["baseline_ready"]:
++    if settings is None and novelty_signals_enabled is not None:
++        settings = type("S", (), {"egress_novelty_signals_enabled": bool(novelty_signals_enabled)})()
++    emission = resolve_novelty_emission(db, settings, now=now)
++    if not emission["allowed"]:
+         return []
++    bl = baseline_status(db, now=now)
+     ready_at = _parse_ts(bl.get("baseline_ready_at"))
+     if ready_at is None:
+         return []
+-    # Never emit against a premature ready_at that was invalidated.
+-    if bl.get("premature_baseline_ready_at_was") and not bl["baseline_ready"]:
+-        return []
+ 
+     rows = list(
+         db.scalars(
+@@ -963,6 +1202,19 @@ def novelty_egress_cards(
+                 "Grana relazione (senza porta/proto). "
+                 "Costo accettato: possibile lateral-move non distinto per porta."
+             )
++        limits = (
++            [
++                "Grana relazione: non distingue porta/proto (lateral-move a grana relazione).",
++                "Peer unresolved: identità L3 del peer non determinata.",
++                "Nessuna attribuzione autonoma di intento o malware.",
++            ]
++            if r.scope == "int"
++            else [
++                "Destinazione esterna nuova rispetto alla baseline: non implica malevolenza.",
++                "DNS/SNI possono mancare — IP senza nome non è inventato.",
++                "Nessuna azione automatica di blocco o scrittura.",
++            ]
++        )
+         cards.append(
+             {
+                 "uid": uid,
+@@ -981,9 +1233,15 @@ def novelty_egress_cards(
+                 "peer_unresolved": bool(r.peer_unresolved),
+                 "association": r.association,
+                 "note": note,
++                "cause": (
++                    f"Prima osservazione egress scope={r.scope} dopo baseline ready "
++                    f"(first_seen={r.first_seen.isoformat() + 'Z' if r.first_seen else '—'})."
++                ),
++                "limits": limits,
+                 "freshness": freshness_for_observed_at(r.last_seen, now=now),
+                 "defense_priority_id": DEFENSE_PRIORITY_ID,
+                 "o13c_marker": O13C_MARKER,
++                "o13d_marker": O13D_MARKER,
+                 "actions": [
+                     {
+                         "id": "open_dossier",
+@@ -1026,11 +1284,62 @@ def list_invalid_baseline_emissions(db: Session) -> list[dict[str, Any]]:
+                 "marked": True,
+                 "recoverable": True,
+                 "o13cfix_marker": O13CFIX_MARKER,
++                "o13d_marker": O13D_MARKER,
+             }
+         )
+     return out
+ 
+ 
++def unmark_invalid_emission(db: Session, observation_id: int) -> dict[str, Any]:
++    """O13D R6 — ripesca one id: clear emitted_on_invalid_baseline mark."""
++    row = db.get(EgressObservation, int(observation_id))
++    if row is None:
++        return {"ok": False, "error": "not_found", "id": observation_id}
++    ev = dict(row.evidence or {})
++    if not ev.get("emitted_on_invalid_baseline"):
++        return {
++            "ok": True,
++            "id": int(row.id),
++            "changed": False,
++            "marked": False,
++            "o13d_marker": O13D_MARKER,
++        }
++    ev["emitted_on_invalid_baseline"] = False
++    ev["unmarked_at"] = utcnow().isoformat() + "Z"
++    ev["unmark_reason"] = "r6_ripesca"
++    ev["o13d_marker"] = O13D_MARKER
++    # Keep invalid_baseline_ready_at for audit.
++    row.evidence = ev
++    db.flush()
++    return {
++        "ok": True,
++        "id": int(row.id),
++        "changed": True,
++        "marked": False,
++        "o13d_marker": O13D_MARKER,
++    }
++
++
++def remark_invalid_emission(db: Session, observation_id: int) -> dict[str, Any]:
++    """Re-apply emitted_on_invalid_baseline mark (undo ripesca)."""
++    row = db.get(EgressObservation, int(observation_id))
++    if row is None:
++        return {"ok": False, "error": "not_found", "id": observation_id}
++    ev = dict(row.evidence or {})
++    ev["emitted_on_invalid_baseline"] = True
++    ev["remarked_at"] = utcnow().isoformat() + "Z"
++    ev["o13d_marker"] = O13D_MARKER
++    row.evidence = ev
++    db.flush()
++    return {
++        "ok": True,
++        "id": int(row.id),
++        "changed": True,
++        "marked": True,
++        "o13d_marker": O13D_MARKER,
++    }
++
++
+ def build_egress_signals(
+     db: Session,
+     *,
+@@ -1040,9 +1349,8 @@ def build_egress_signals(
+     now = now or utcnow()
+     ensure_baseline_meta(db)
+     bl = baseline_status(db, now=now)
+-    novelty_on = False
+-    if settings is not None:
+-        novelty_on = bool(getattr(settings, "egress_novelty_signals_enabled", False))
++    emission = resolve_novelty_emission(db, settings, now=now)
++    novelty_on = bool(emission["allowed"])
+     acked = {
+         s.uid
+         for s in db.scalars(
+@@ -1054,19 +1362,28 @@ def build_egress_signals(
+     }
+     cards = [
+         c
+-        for c in novelty_egress_cards(
+-            db, now=now, novelty_signals_enabled=novelty_on
+-        )
++        for c in novelty_egress_cards(db, now=now, settings=settings)
+         if c["uid"] not in acked
+     ]
+     invalid = list_invalid_baseline_emissions(db)
+     open_, reason = evaluate_egress_breaker(db)
+     note_parts: list[str] = []
+-    if not novelty_on:
++    state = emission.get("state")
++    if state == "novelty_suppressed_manual":
+         note_parts.append(
+-            "Segnali N5 sospesi (EGRESS_NOVELTY_SIGNALS_ENABLED=false); "
+-            "ingest egress indipendente e attivo se EGRESS_INGEST_ENABLED."
++            "Segnali N5 in soppressione manuale (visibile): "
++            "EGRESS_NOVELTY_SIGNALS_ENABLED=false dopo armamento; "
++            "ingest egress indipendente se EGRESS_INGEST_ENABLED."
+         )
++    elif state == "novelty_suppressed":
++        supp = emission.get("suppression") or {}
++        note_parts.append(
++            f"Segnali N5 soppressi (protezione baseline prematura"
++            f"{', da ' + str(supp.get('since')) if supp.get('since') else ''}); "
++            "distinto da cieca/disabilitata."
++        )
++    elif not novelty_on and state == "baseline_in_costruzione":
++        pass  # readiness note below
+     if not bl["baseline_ready"]:
+         rd = bl.get("readiness") or {}
+         miss = rd.get("missing") or {}
+@@ -1089,18 +1406,25 @@ def build_egress_signals(
+             f"{len(invalid)} emissioni su baseline non valida: marcate, "
+             "ispezionabili e ripescabili (non cancellate)."
+         )
++    env_flag = bool(
++        getattr(settings, "egress_novelty_signals_enabled", False) if settings is not None else False
++    )
+     return {
+         "cards": cards,
+         "invalid_baseline_emissions": invalid,
+         "invalid_baseline_emissions_count": len(invalid),
+         "baseline": bl,
++        "novelty_emission": emission,
++        "novelty_suppression": emission.get("suppression"),
+         "novelty_signals_enabled": novelty_on,
++        "novelty_signals_env": env_flag,
+         "breaker_open": open_,
+         "breaker_reason": reason,
+         "table": table_stats(db),
+         "note": " ".join(note_parts) if note_parts else None,
+         "o13c_marker": O13C_MARKER,
+         "o13cfix_marker": O13CFIX_MARKER,
++        "o13d_marker": O13D_MARKER,
+         "defense_priority_id": DEFENSE_PRIORITY_ID,
+     }
+ 
+diff --git a/observatory/web/src/components/MatrixRain.vue b/observatory/web/src/components/MatrixRain.vue
+index bc08765..6980e3d 100644
+--- a/observatory/web/src/components/MatrixRain.vue
++++ b/observatory/web/src/components/MatrixRain.vue
+@@ -19,6 +19,29 @@ onMounted(() => {
+   let last = 0;
+   // ~12 fps: pioggia lenta come nel film, non a 60fps
+   const frameMs = 85;
++  // O13D-FIX D3: canvas fillStyle da token CSS (--ok / --bg-0); no literal palette
++  const cs = getComputedStyle(document.documentElement);
++  const okRaw = cs.getPropertyValue("--ok").trim();
++  const bgRaw = cs.getPropertyValue("--bg-0").trim();
++  if (!okRaw || !bgRaw) return;
++  const hexRgb = (raw) => {
++    const h = raw.replace("#", "").trim();
++    const full = h.length === 3 ? [...h].map((c) => c + c).join("") : h;
++    if (full.length < 6) return null;
++    return [
++      parseInt(full.slice(0, 2), 16),
++      parseInt(full.slice(2, 4), 16),
++      parseInt(full.slice(4, 6), 16),
++    ];
++  };
++  const okRgb = hexRgb(okRaw);
++  const bgRgb = hexRgb(bgRaw);
++  if (!okRgb || !bgRgb) return;
++  const [okR, okG, okB] = okRgb;
++  const [bgR, bgG, bgB] = bgRgb;
++  const fadeFill = `rgba(${bgR}, ${bgG}, ${bgB}, 0.045)`;
++  const headFill = `rgba(${okR}, ${okG}, ${okB}, 0.7)`;
++  const bodyFill = `rgba(${okR}, ${okG}, ${okB}, 0.28)`;
+ 
+   const resize = () => {
+     width = canvas.width = window.innerWidth;
+@@ -35,18 +58,18 @@ onMounted(() => {
+     if (t - last < frameMs) return;
+     last = t;
+ 
+-    // Trails lunghi / fade lento
+-    ctx.fillStyle = "rgba(5, 8, 5, 0.045)";
++    // Trails lunghi / fade lento (token --bg-0 / --ok)
++    ctx.fillStyle = fadeFill;
+     ctx.fillRect(0, 0, width, height);
+     ctx.font = `${fontSize}px monospace`;
+ 
+     for (let i = 0; i < drops.length; i++) {
+       const ch = chars[Math.floor(Math.random() * chars.length)];
+       const y = drops[i] * fontSize;
+-      // testa più chiara, corpo più soft
+-      ctx.fillStyle = "rgba(180, 255, 200, 0.7)";
++      // testa più chiara, corpo più soft — verde semantico da --ok
++      ctx.fillStyle = headFill;
+       ctx.fillText(ch, i * fontSize, y);
+-      ctx.fillStyle = "rgba(61, 255, 138, 0.28)";
++      ctx.fillStyle = bodyFill;
+       if (drops[i] > 1) {
+         ctx.fillText(
+           chars[Math.floor(Math.random() * chars.length)],
+diff --git a/observatory/web/src/components/ToggleSwitch.vue b/observatory/web/src/components/ToggleSwitch.vue
+index e11c847..95e5f7d 100644
+--- a/observatory/web/src/components/ToggleSwitch.vue
++++ b/observatory/web/src/components/ToggleSwitch.vue
+@@ -55,7 +55,7 @@ function toggle() {
+   padding: 0.4rem 0.55rem;
+   color: var(--text);
+   text-align: left;
+-  background: rgba(8, 16, 11, 0.82);
++  background: color-mix(in srgb, var(--bg-0) 82%, transparent);
+   border-color: var(--line);
+   box-shadow: none;
+   -webkit-appearance: none;
+@@ -63,7 +63,7 @@ function toggle() {
+ }
+ .toggle-switch:hover:not(:disabled) { border-color: var(--accent-dim); }
+ .toggle-switch:focus-visible {
+-  outline: 3px solid #8affb4;
++  outline: 3px solid var(--ok);
+   outline-offset: 2px;
+ }
+ .toggle-track {
+@@ -71,9 +71,9 @@ function toggle() {
+   flex: 0 0 44px;
+   width: 44px;
+   height: 24px;
+-  border: 1px solid #36513f;
++  border: 1px solid color-mix(in srgb, var(--ok) 35%, var(--border));
+   border-radius: 999px;
+-  background: #101913;
++  background: var(--bg-1);
+   transition: border-color 0.15s ease, background 0.15s ease;
+ }
+ .toggle-thumb {
+@@ -83,17 +83,17 @@ function toggle() {
+   width: 18px;
+   height: 18px;
+   border-radius: 50%;
+-  background: #789182;
++  background: var(--muted);
+   transition: transform 0.15s ease, background 0.15s ease;
+ }
+ .is-on .toggle-track {
+   border-color: var(--accent-dim);
+-  background: rgba(61, 255, 138, 0.14);
++  background: color-mix(in srgb, var(--ok) 14%, transparent);
+ }
+ .is-on .toggle-thumb {
+   background: var(--accent);
+   transform: translateX(20px);
+-  box-shadow: 0 0 7px rgba(61, 255, 138, 0.28);
++  box-shadow: 0 0 7px color-mix(in srgb, var(--ok) 28%, transparent);
+ }
+ .toggle-copy { display: grid; gap: 0.05rem; min-width: 0; }
+ .toggle-label { font-size: 0.875rem; line-height: 1.45; font-weight: 600; }
+diff --git a/observatory/web/src/components/TopologyBranch.vue b/observatory/web/src/components/TopologyBranch.vue
+index a6616b2..9b14808 100644
+--- a/observatory/web/src/components/TopologyBranch.vue
++++ b/observatory/web/src/components/TopologyBranch.vue
+@@ -126,8 +126,8 @@ function show(event, text) {
+   left: 50%;
+   width: 2px;
+   height: 1.35rem;
+-  background: #3d9b62;
+-  box-shadow: 0 0 5px rgba(61, 255, 138, 0.28);
++  background: var(--ok);
++  box-shadow: 0 0 5px color-mix(in srgb, var(--ok) 28%, transparent);
+ }
+ .tree-children::after {
+   content: "";
+@@ -136,8 +136,8 @@ function show(event, text) {
+   right: 8%;
+   left: 8%;
+   height: 2px;
+-  background: #3d9b62;
+-  box-shadow: 0 0 5px rgba(61, 255, 138, 0.2);
++  background: var(--ok);
++  box-shadow: 0 0 5px color-mix(in srgb, var(--ok) 20%, transparent);
+ }
+ .tree-children:has(> .tree-item:only-child)::after {
+   display: none;
+@@ -149,7 +149,7 @@ function show(event, text) {
+   left: 50%;
+   width: 2px;
+   height: 1.35rem;
+-  background: #3d9b62;
++  background: var(--ok);
+ }
+ .tree-item-ap > .tree-children {
+   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+@@ -167,9 +167,9 @@ function show(event, text) {
+   min-width: 0;
+   min-height: 32px;
+   padding: 0.28rem 0.48rem;
+-  border: 1px solid #2a4634;
++  border: 1px solid var(--border);
+   border-radius: 7px;
+-  background: #0f1a13;
++  background: var(--bg-1);
+   transition: 0.15s ease;
+ }
+ .network-node strong {
+@@ -179,7 +179,8 @@ function show(event, text) {
+   white-space: nowrap;
+ }
+ .network-node.switch { border-color: var(--accent-dim); }
+-.network-node.gateway { border-color: #5aa6d9; }
++.network-node.gateway { border-color: var(--accent); }
++/* AP purple: nessun token --ap/--ai in palette — residual dichiarato (D3 FERMO) */
+ .network-node.ap { border-color: #9b82e8; }
+ .network-node.opaque { border-style: dashed; }
+ .network-node.offline { filter: saturate(0.55); }
+@@ -187,7 +188,7 @@ function show(event, text) {
+ .network-node.clickable:hover { border-color: var(--accent); }
+ .network-node.on-path {
+   border-color: var(--accent);
+-  box-shadow: 0 0 0 2px rgba(61, 255, 138, 0.3);
++  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 30%, transparent);
+ }
+ .network-node.dimmed { opacity: 0.55; }
+ .node-icon {
+@@ -205,7 +206,7 @@ function show(event, text) {
+   height: 0.4rem;
+   border-radius: 50%;
+   background: var(--accent);
+-  box-shadow: 0 0 5px rgba(61, 255, 138, 0.5);
++  box-shadow: 0 0 5px color-mix(in srgb, var(--ok) 50%, transparent);
+ }
+ .status-dot.offline {
+   background: var(--warn);
+@@ -216,7 +217,7 @@ function show(event, text) {
+   max-width: min(180px, 100%);
+   margin-bottom: 0.22rem;
+   overflow: hidden;
+-  color: #9dceb0;
++  color: var(--muted);
+   font: 0.61rem var(--mono);
+   text-overflow: ellipsis;
+   white-space: nowrap;
+diff --git a/observatory/web/src/oggiProblems.js b/observatory/web/src/oggiProblems.js
+index 865cba5..bbda3ef 100644
+--- a/observatory/web/src/oggiProblems.js
++++ b/observatory/web/src/oggiProblems.js
+@@ -362,6 +362,20 @@ export function fdbDefenseFields(card) {
+         : "Nessun errore poll registrato.") +
+       (card?.last_fdb_at ? ` Ultimo last_fdb_at: ${card.last_fdb_at}.` : " last_fdb_at assente.");
+   }
++  const limitsBySignal = {
++    "S-A":
++      "Non sappiamo se il MAC è un ospite legittimo, un nuovo apparato o churn LAA; " +
++      "il binding IP può arrivare dopo (≠ dispositivo assente).",
++    "S-B":
++      "Non sappiamo se lo spostamento è fisico, roaming Wi‑Fi o artefatto LAA; " +
++      "ruolo_porta non_determinato riduce la certezza.",
++    "S-C":
++      "Non conosciamo l'identità L3: solo presenza FDB senza IP corrente; " +
++      "DHCP ritardato ≠ dispositivo senza rete.",
++    "S-D":
++      "Sorgente cieca/non fresca: non possiamo sapere lo stato delle porte " +
++      "(≠ porta misurata vuota, ≠ dispositivo assente). Ultimo errore poll se presente.",
++  };
+   return {
+     signal,
+     priority,
+@@ -379,6 +393,13 @@ export function fdbDefenseFields(card) {
+       : card?.ruolo_porta === "non_determinato"
+         ? "ruolo_porta non_determinato · priorità ridotta"
+         : "fatto FDB (source=fdb)",
++    limits: card?.limits || limitsBySignal[signal] || "Limiti non dichiarati per questo segnale.",
++    freshness: (() => {
++      if (card?.observed_at) return String(card.observed_at);
++      if (card?.last_fdb_at) return String(card.last_fdb_at);
++      if (card?.age_hours != null) return `età ~${card.age_hours} h`;
++      return "freschezza non dichiarata";
++    })(),
+     baseline_at: baseline,
+     inference: card?.inference || null,
+     mac: card?.mac || "",
+diff --git a/observatory/web/src/views/Oggi.vue b/observatory/web/src/views/Oggi.vue
+index 028b084..9e4b79f 100644
+--- a/observatory/web/src/views/Oggi.vue
++++ b/observatory/web/src/views/Oggi.vue
+@@ -1151,6 +1151,8 @@ onUnmounted(() => {
+                   <div><dt>Regola</dt><dd>{{ card.defense_priority?.rule }}</dd></div>
+                   <div v-if="card.defense_priority?.role_uncertain"><dt>Nota</dt><dd>ruolo_porta non_determinato · priorità ridotta</dd></div>
+                   <div><dt>Causa ed evidenza</dt><dd>{{ fdbFields(card).cause }}</dd></div>
++                  <div><dt>Freschezza</dt><dd>{{ fdbFields(card).freshness }}</dd></div>
++                  <div><dt>Cosa non possiamo sapere</dt><dd>{{ fdbFields(card).limits }}</dd></div>
+                   <div><dt>Impatto</dt><dd>{{ fdbFields(card).impact }}</dd></div>
+                   <div><dt>Azione raccomandata</dt><dd>{{ fdbFields(card).action }}</dd></div>
+                   <div><dt>Certezza</dt><dd>{{ fdbFields(card).certainty }}</dd></div>
+@@ -1357,6 +1359,25 @@ onUnmounted(() => {
+                     <dt>Regola</dt>
+                     <dd>{{ card.defense_priority?.rule }}</dd>
+                   </div>
++                  <div>
++                    <dt>Causa ed evidenza</dt>
++                    <dd>{{ card.cause || card.body || card.title }}</dd>
++                  </div>
++                  <div>
++                    <dt>Freschezza</dt>
++                    <dd>{{ card.freshness?.label || card.freshness?.state || card.freshness || "—" }}</dd>
++                  </div>
++                  <div>
++                    <dt>Cosa non possiamo sapere</dt>
++                    <dd>
++                      <template v-if="Array.isArray(card.limits) && card.limits.length">
++                        {{ card.limits.join(" · ") }}
++                      </template>
++                      <template v-else>
++                        Evidenza Zeek ≠ identità certa; nessuna azione automatica.
++                      </template>
++                    </dd>
++                  </div>
+                 </dl>
+               </div>
+               <template #value>
+@@ -1416,6 +1437,14 @@ onUnmounted(() => {
+             <span v-if="egressSignals.novelty_signals_enabled === false">
+               · novità N5 sospesa (ingest indipendente)
+             </span>
++            <span
++              v-if="egressSignals.novelty_suppression?.active || egressSignals.novelty_emission?.state === 'novelty_suppressed_manual'"
++              data-o13d="novelty-suppression"
++            >
++              · soppressione novità:
++              {{ egressSignals.novelty_emission?.state || egressSignals.novelty_suppression?.reason || "attiva" }}
++              (≠ cieca/disabilitata)
++            </span>
+             <span v-if="(egressSignals.invalid_baseline_emissions_count || 0) > 0">
+               · {{ egressSignals.invalid_baseline_emissions_count }} emissioni su baseline non valida
+               (marcate, ripescabili)
+@@ -1461,6 +1490,25 @@ onUnmounted(() => {
+                     <dt>Regola</dt>
+                     <dd>{{ card.defense_priority?.rule }}</dd>
+                   </div>
++                  <div>
++                    <dt>Causa ed evidenza</dt>
++                    <dd>{{ card.cause || card.body || card.title }}</dd>
++                  </div>
++                  <div>
++                    <dt>Freschezza</dt>
++                    <dd>{{ card.freshness?.label || card.freshness?.state || card.freshness || "—" }}</dd>
++                  </div>
++                  <div>
++                    <dt>Cosa non possiamo sapere</dt>
++                    <dd>
++                      <template v-if="Array.isArray(card.limits) && card.limits.length">
++                        {{ card.limits.join(" · ") }}
++                      </template>
++                      <template v-else>
++                        Novità rispetto alla baseline ≠ giudizio di rischio; nessuna azione automatica.
++                      </template>
++                    </dd>
++                  </div>
+                   <div v-if="card.scope === 'int'">
+                     <dt>Grana</dt>
+                     <dd>
+diff --git a/observatory/web/src/views/Topology.vue b/observatory/web/src/views/Topology.vue
+index 96ea383..9dcc9a1 100644
+--- a/observatory/web/src/views/Topology.vue
++++ b/observatory/web/src/views/Topology.vue
+@@ -698,9 +698,9 @@ onUnmounted(() => {
+   border: 0;
+   border-radius: 0;
+   background:
+-    linear-gradient(rgba(61, 255, 138, 0.03) 1px, transparent 1px) 0 0 / 28px 28px,
+-    linear-gradient(90deg, rgba(61, 255, 138, 0.03) 1px, transparent 1px) 0 0 / 28px 28px,
+-    #07110c;
++    linear-gradient(color-mix(in srgb, var(--ok) 3%, transparent) 1px, transparent 1px) 0 0 / 28px 28px,
++    linear-gradient(90deg, color-mix(in srgb, var(--ok) 3%, transparent) 1px, transparent 1px) 0 0 / 28px 28px,
++    var(--bg-0);
+   scrollbar-gutter: stable;
+   -webkit-overflow-scrolling: touch;
+ }
+@@ -784,7 +784,7 @@ onUnmounted(() => {
+   top: 0;
+   bottom: 0;
+   width: 196px;
+-  border-left: 1px solid rgba(61, 255, 138, 0.07);
++  border-left: 1px solid color-mix(in srgb, var(--ok) 7%, transparent);
+   pointer-events: none;
+ }
+ .depth-column span {
+@@ -792,8 +792,8 @@ onUnmounted(() => {
+   top: 0;
+   display: block;
+   padding: 16px 0 8px 8px;
+-  color: #79a889;
+-  background: linear-gradient(180deg, #07110c 65%, transparent);
++  color: var(--muted);
++  background: linear-gradient(180deg, var(--bg-0) 65%, transparent);
+   font: 11px/16px var(--mono);
+   letter-spacing: 0.08em;
+   text-transform: uppercase;
+@@ -808,13 +808,13 @@ onUnmounted(() => {
+ }
+ .topology-edges path {
+   fill: none;
+-  stroke: #318c54;
++  stroke: var(--ok);
+   stroke-width: 1.5;
+   vector-effect: non-scaling-stroke;
+ }
+ .topology-edges text {
+-  fill: #a6d8b7;
+-  stroke: #07110c;
++  fill: color-mix(in srgb, var(--ok) 55%, var(--text-1));
++  stroke: var(--bg-0);
+   stroke-width: 4px;
+   paint-order: stroke;
+   font: 11px/14px var(--mono);
+@@ -828,39 +828,40 @@ onUnmounted(() => {
+   gap: 8px;
+   min-height: 0;
+   padding: 8px 10px;
+-  border: 1px solid #2a4634;
++  border: 1px solid var(--border);
+   border-radius: 9px;
+-  background: #0f1a13;
+-  box-shadow: 0 5px 16px rgba(0, 0, 0, 0.28);
++  background: var(--bg-1);
++  box-shadow: 0 5px 16px color-mix(in srgb, var(--bg-0) 55%, transparent);
+   transition: border-color 0.15s ease, box-shadow 0.15s ease;
+ }
+ .network-node.router {
+-  border-color: #5aa6d9;
+-  background: linear-gradient(135deg, #10222d, #0f1a13);
+-  box-shadow: 0 0 20px rgba(90, 166, 217, 0.1);
++  border-color: var(--accent);
++  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 18%, var(--bg-1)), var(--bg-1));
++  box-shadow: 0 0 20px color-mix(in srgb, var(--accent) 10%, transparent);
+ }
+ .network-node.switch {
+   border-color: var(--accent-dim);
+-  background: linear-gradient(135deg, #10271a, #0f1a13);
++  background: linear-gradient(135deg, color-mix(in srgb, var(--ok) 12%, var(--bg-1)), var(--bg-1));
+ }
++/* AP/group purple: nessun token ruolo-AP — residual dichiarato (D3 FERMO) */
+ .network-node.ap { border-color: #9b82e8; }
+ .network-node.group {
+   border-color: #775fbd;
+   border-style: dashed;
+   background: #131323;
+ }
+-.network-node.endpoint { background: #0b140e; }
++.network-node.endpoint { background: color-mix(in srgb, var(--ok) 6%, var(--bg-0)); }
+ .network-node.opaque { border-style: dashed; }
+ .network-node.offline { filter: saturate(0.55); }
+ .network-node.clickable { cursor: pointer; }
+ .network-node.clickable:hover {
+   z-index: 3;
+   border-color: var(--accent);
+-  box-shadow: 0 0 16px rgba(61, 255, 138, 0.18);
++  box-shadow: 0 0 16px color-mix(in srgb, var(--ok) 18%, transparent);
+ }
+ .network-node.on-path {
+   border-color: var(--accent);
+-  box-shadow: 0 0 0 2px rgba(61, 255, 138, 0.3), 0 0 20px rgba(61, 255, 138, 0.2);
++  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 30%, transparent), 0 0 20px color-mix(in srgb, var(--ok) 20%, transparent);
+ }
+ .network-node.dimmed { opacity: 0.58; }
+ .node-copy {
+@@ -896,7 +897,7 @@ onUnmounted(() => {
+   height: 7px;
+   border-radius: 50%;
+   background: var(--accent);
+-  box-shadow: 0 0 6px rgba(61, 255, 138, 0.55);
++  box-shadow: 0 0 6px color-mix(in srgb, var(--ok) 55%, transparent);
+ }
+ .status-dot.offline {
+   background: var(--warn);
+@@ -913,7 +914,7 @@ onUnmounted(() => {
+   font: 0.6rem var(--mono);
+ }
+ .confidence.certo { color: var(--accent); }
+-.confidence.probabile { color: #e6c35c; }
++.confidence.probabile { color: var(--attn); }
+ .confidence.sconosciuto { color: var(--muted); }
+ :global(.topology-tooltip) {
+   position: fixed;
+@@ -923,8 +924,8 @@ onUnmounted(() => {
+   border: 1px solid var(--accent-dim);
+   border-radius: 8px;
+   color: var(--text);
+-  background: #101a14;
+-  box-shadow: 0 12px 35px rgba(0, 0, 0, 0.45);
++  background: var(--bg-1);
++  box-shadow: 0 12px 35px color-mix(in srgb, var(--bg-0) 55%, transparent);
+   font: 0.72rem/1.5 var(--mono);
+   white-space: pre-line;
+   pointer-events: none;
+@@ -932,16 +933,16 @@ onUnmounted(() => {
+ .unresolved-zone {
+   margin-top: 1rem;
+   padding: 0.55rem 0.7rem;
+-  border: 1px dashed #6f6240;
++  border: 1px dashed color-mix(in srgb, var(--attn) 45%, var(--border));
+   border-radius: 10px;
+-  background: rgba(230, 195, 92, 0.04);
++  background: color-mix(in srgb, var(--attn) 4%, transparent);
+ }
+ .hidden-zone {
+   margin-top: 0.8rem;
+   padding: 0.75rem 0.9rem;
+-  border: 1px dashed #6f6240;
++  border: 1px dashed color-mix(in srgb, var(--attn) 45%, var(--border));
+   border-radius: 10px;
+-  background: rgba(230, 195, 92, 0.035);
++  background: color-mix(in srgb, var(--attn) 3.5%, transparent);
+ }
+ .hidden-zone summary {
+   cursor: pointer;
+@@ -976,7 +977,7 @@ onUnmounted(() => {
+   min-height: 0;
+   padding: 0.3rem 0.45rem;
+   border-color: var(--line);
+-  background: #0b100c;
++  background: var(--bg-0);
+   font-size: 0.72rem;
+ }
+ .compact-grid .unresolved-device > span { display: none; }
+@@ -987,8 +988,8 @@ onUnmounted(() => {
+   gap: 0.1rem 0.45rem;
+   text-align: left;
+   color: var(--text);
+-  border-color: #6f6240;
+-  background: #12170f;
++  border-color: color-mix(in srgb, var(--attn) 45%, var(--border));
++  background: color-mix(in srgb, var(--attn) 6%, var(--bg-1));
+ }
+ .unresolved-device span { grid-row: 1 / 4; }
+ .unresolved-device small { color: var(--muted); }
