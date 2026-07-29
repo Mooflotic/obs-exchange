@@ -1,0 +1,193 @@
+# wc-l=192
+# obs-o11fix-associazione.diff.txt
+# Tema: G5 valid_from / truncated → uncertain; G6 MAC deterministico; Q3–Q5
+
+--- /tmp/o11-ip_association.py	2026-07-29 03:15:21
++++ observatory/api/app/facts/ip_association.py	2026-07-29 03:12:16
+@@ -1,4 +1,4 @@
+-"""O11 B1 — IP↔MAC association at observation time via the fact store.
++"""O11 B1 / O11-FIX G5–G6 — IP↔MAC association at observation time via facts.
+ 
+ Lives under ``api/app/facts/`` so currency is never read outside the resolver
+ boundary. Callers outside this package must use these helpers, not raw
+@@ -9,11 +9,9 @@
+ 
+ from dataclasses import dataclass
+ from datetime import datetime
+-from typing import Any
+ 
+-from sqlalchemy import and_, or_, select
++from sqlalchemy import func, select
+ from sqlalchemy.orm import Session
+-from sqlalchemy import func
+ 
+ from app.models import Asset, FactAssertion, Interface, utcnow
+ 
+@@ -24,7 +22,7 @@
+ class IpMacAssociation:
+     """Result of resolving an IP at a point in time (I2: uncertain declared)."""
+ 
+-    status: str  # certain | uncertain | unresolved
++    status: str  # certain | uncertain | unresolved | mac_direct
+     ip: str
+     mac: str = ""
+     interface_id: int | None = None
+@@ -40,25 +38,45 @@
+ 
+ 
+ def _covers(fa: FactAssertion, at: datetime) -> bool:
+-    """True if the assertion's validity window covers ``at`` (naive UTC)."""
++    """True if the assertion's validity window covers ``at`` (naive UTC).
++
++    O11-FIX G5: ``valid_from is None`` does **not** mean «valid forever» —
++    it means unknown start → caller must treat as uncertain (I2).
++    """
+     vf = fa.valid_from
+     vt = fa.valid_to
+-    if vf is not None and at < vf:
++    if vf is None:
++        # Unknown start: still check valid_to upper bound only for "covers" window
++        # membership; certainty is decided separately via validity_known().
++        if vt is not None and at >= vt:
++            return False
++        return True
++    if at < vf:
+         return False
+     if vt is not None and at >= vt:
+         return False
+     return True
+ 
+ 
++def _validity_start_known(fa: FactAssertion) -> bool:
++    """False when start is unknown or explicitly truncated (W3 backfill absent)."""
++    if fa.valid_from is None:
++        return False
++    if bool(getattr(fa, "valid_from_truncated", False)):
++        return False
++    return True
++
++
+ def associate_ip_at(
+     db: Session, ip: str, observed_at: datetime | None = None
+ ) -> IpMacAssociation:
+     """Map IP → MAC/asset using iface_ip facts current (or covering) at ``observed_at``.
+ 
+-    - ``certain``: a ``state=current`` iface_ip fact covers the timestamp.
+-    - ``uncertain``: only superseded/historical/stale facts cover it, or the
+-      binding existed but was not current at observation time.
+-    - ``unresolved``: no iface_ip fact for this IP at all.
++    - ``certain``: ``state=current`` covers ``at`` AND validity start is known
++      (``valid_from`` set and not truncated).
++    - ``uncertain``: covers but start unknown/truncated, or only non-current facts,
++      or window miss.
++    - ``unresolved``: no iface_ip fact for this IP.
+     """
+     ip = (ip or "").strip()
+     at = observed_at or utcnow()
+@@ -111,20 +129,34 @@
+         )
+ 
+     if current_covering:
++        fa = current_covering[0]
++        if not _validity_start_known(fa):
++            reason = (
++                "inizio validità non noto / troncato"
++                if fa.valid_from is None
++                else "inizio validità troncato (valid_from_truncated)"
++            )
++            return _pack(fa, "uncertain", reason)
+         return _pack(
+-            current_covering[0],
++            fa,
+             "certain",
+             "fatto asset.iface_ip current copre observed_at",
+         )
+ 
+     if covering:
++        fa = covering[0]
++        if not _validity_start_known(fa):
++            return _pack(
++                fa,
++                "uncertain",
++                "inizio validità non noto / troncato",
++            )
+         return _pack(
+-            covering[0],
++            fa,
+             "uncertain",
+-            f"fatto asset.iface_ip state={covering[0].state} copre observed_at ma non current",
++            f"fatto asset.iface_ip state={fa.state} copre observed_at ma non current",
+         )
+ 
+-    # Fact exists but validity window does not cover observed_at.
+     return _pack(
+         rows[0],
+         "uncertain",
+@@ -133,23 +165,59 @@
+ 
+ 
+ def associate_mac_direct(db: Session, mac: str) -> IpMacAssociation:
+-    """MAC taken from Zeek DHCP/JA4D log — no IP join required."""
++    """MAC from Zeek DHCP/JA4D — deterministic multi-interface rule (G6).
++
++    Criterion: all matching interfaces ordered by ``id ASC``.
++    - 0 matches → mac_direct without asset (inventory miss).
++    - 1 match → mac_direct certain binding.
++    - ≥2 matches → **uncertain** (collision declared, no silent pick). Uses the
++      lowest ``id`` only for display fields; status remains uncertain.
++    """
+     m = _norm_mac(mac)
+     if not m:
+         return IpMacAssociation(status="unresolved", ip="", reason="mac assente")
+-    iface = db.scalar(select(Interface).where(Interface.mac == m))
+-    if iface is None:
+-        iface = db.scalar(
+-            select(Interface).where(func.upper(Interface.mac) == m)
+-        )
+-    if iface is None:
++    matches = list(
++        db.scalars(
++            select(Interface)
++            .where(func.upper(Interface.mac) == m)
++            .order_by(Interface.id.asc())
++        ).all()
++    )
++    return association_from_mac_matches(db, m, matches)
++
++
++def association_from_mac_matches(
++    db: Session, mac: str, matches: list[Interface]
++) -> IpMacAssociation:
++    """Pure collision rule for G6 / Q5 (schema may UNIQUE-forbid duplicates)."""
++    m = _norm_mac(mac)
++    if not matches:
+         return IpMacAssociation(
+             status="mac_direct",
+             ip="",
+             mac=m,
+             reason="MAC da log Zeek; interfaccia non in inventario",
+         )
+-    asset = db.get(Asset, int(iface.asset_id))
++    ordered = sorted(matches, key=lambda i: int(i.id or 0))
++    if len(ordered) > 1:
++        iface = ordered[0]
++        asset = db.get(Asset, int(iface.asset_id)) if iface.asset_id else None
++        chassis_id = int(asset.chassis_id) if asset and asset.chassis_id else None
++        ids = ",".join(str(i.id) for i in ordered)
++        return IpMacAssociation(
++            status="uncertain",
++            ip="",
++            mac=m,
++            interface_id=int(iface.id),
++            asset_id=int(iface.asset_id),
++            chassis_id=chassis_id,
++            reason=(
++                f"MAC su {len(ordered)} interfacce (id [{ids}]) — "
++                "collisione; associazione incerta (criterio: id ASC solo per display)"
++            ),
++        )
++    iface = ordered[0]
++    asset = db.get(Asset, int(iface.asset_id)) if iface.asset_id else None
+     chassis_id = int(asset.chassis_id) if asset and asset.chassis_id else None
+     return IpMacAssociation(
+         status="mac_direct",
