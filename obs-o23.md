@@ -1,4 +1,4 @@
-wc_l: 577
+wc_l: 579
 # OBS-O23 — Blocco 0 + OBS-MAPPA-DISCLOSURE — STOP (gate M)
 Data report: 2026-07-30
 Auth: session mint TTL 180s, token non pubblicato.
@@ -558,11 +558,13 @@ Non eseguiti (nessun D, nessun deploy). Gate M ha fermato l'ondata prima di D.
 ## 9. Hash commit e push CONFERMATI
 
 ```
-O23 STOP (misura+report): 54add8d080d11d47f46728f7da88a5936a5379e2
-HEAD tip: 8ed633e555da0ae5ca6edb7984b5862f8265dc06
+O23 STOP misura+report: 54add8d080d11d47f46728f7da88a5936a5379e2
+HEAD/origin verificato read-only pre-§9: 9a0758e4a7730f6f7cc2d6e2546cc8409c1e5720
+  git rev-parse HEAD == origin/feature/obs-currency == 9a0758e4a7730f6f7cc2d6e2546cc8409c1e5720
 base O22: 986b8e0eb6278832c5590d67f6bece4abc92a004
-M sha256: 7c1e25df5066797be943a8c852563bf03dfa752494d220f84353643c2afda331
-gate_M: STOP_NO_D (18/30 FDB, ratio 0.6 @1280)
+M sha256 JSON repo: 7c1e25df5066797be943a8c852563bf03dfa752494d220f84353643c2afda331
+gate_M: STOP_NO_D 18/30 FDB ratio 0.6 @1280
+HEAD/origin al momento di questo allineamento tip: 65375c9aa6231c95f0b8f1e48bd20f0f1fdd222e
 push: CONFERMATO su feature/obs-currency
 vietati: main/merge/tag/force/rewrite — non usati
 ```
