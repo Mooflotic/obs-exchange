@@ -1,0 +1,2411 @@
+# OBS-O13C-FIX baseline — B2 criteria, invalidate, mark refuse, tests
+# Files: egress.py (baseline/readiness), config, routers/egress, tests, VERSION/CHANGELOG/KNOWN_DEBT, obs-o13c errata
+
+diff --git a/observatory/api/app/services/egress.py b/observatory/api/app/services/egress.py
+new file mode 100644
+--- /dev/null
++++ b/observatory/api/app/services/egress.py (excerpt B1/B2/B3/novelty)
++BASELINE_DEDUP = "meta|baseline|o13c"
++O13C_MARKER = "obs-o13c"
++O13CFIX_MARKER = "obs-o13c-fix"
++
++DEFENSE_PRIORITY_ID = "ignoto_con_evidenze_zeek"  # P6 — both ext and int cards
++
++# B2 — copertura temporale minima (giorni interi UTC di osservazione continua).
++# Fonte O13B M1: finestra misurata = 3 giorni; asintoto non stimabile; 72% tuple
++# vivono un solo giorno; novità ext ancora 841/giorno al terzo giorno.
++# Non è un asintoto: è il minimo sotto il quale «ready» è vietato.
++MIN_BASELINE_COVERAGE_DAYS = 3  # fonte: O13B M1 copertura reale misurata
++
++# B2 — stabilizzazione: almeno N giorni UTC completi con novelty_new registrato.
++# Stesso N della copertura minima (serie D1..D3 di O13B); non una soglia sul tasso.
++MIN_NOVELTY_SERIES_DAYS = 3  # fonte: O13B M1 curva a 3 punti (asintoto non stimabile)
++
++
++
++def ensure_baseline_meta(db: Session, *, started_at: datetime | None = None) -> EgressObservation:
++    row = db.scalar(
++        select(EgressObservation).where(EgressObservation.dedup_key == BASELINE_DEDUP)
++    )
++    if row:
++        return row
++    at = started_at or utcnow()
++    row = EgressObservation(
++        dedup_key=BASELINE_DEDUP,
++        scope=BASELINE_SCOPE,
++        association="mac_direct",
++        sensor_id=SENSOR_ID,
++        first_seen=at,
++        last_seen=at,
++        observation_count=1,
++        evidence={
++            "baseline_status": "in_costruzione",
++            "baseline_ready": False,
++            "reason": (
++                "O13C-FIX: baseline in costruzione finché copertura temporale "
++                f">={MIN_BASELINE_COVERAGE_DAYS}d (fonte O13B M1) e serie novità "
++                f">={MIN_NOVELTY_SERIES_DAYS} giorni UTC completi. "
++                "Vietato chiudere su deferred==0."
++            ),
++            "o13c_marker": O13C_MARKER,
++            "o13cfix_marker": O13CFIX_MARKER,
++            "novelty_by_day": {},
++        },
++    )
++    db.add(row)
++    db.flush()
++    return row
++
++
++
++def invalidate_premature_baseline(db: Session, *, reason: str | None = None) -> dict[str, Any]:
++    """B1 — annotate previous ready_at; reopen in_costruzione. Never delete history."""
++    row = ensure_baseline_meta(db)
++    ev = dict(row.evidence or {})
++    now = utcnow()
++    was_at = ev.get("baseline_ready_at")
++    if was_at and not ev.get("premature_baseline_ready_at_was"):
++        ev["premature_baseline_ready_at_was"] = was_at
++    ev["premature_baseline_ready"] = True
++    ev["premature_invalidated_at"] = now.isoformat() + "Z"
++    msg = reason or (
++        "chiusura prematura su finestra di ~1 h, corretta in O13C-FIX"
++    )
++    ev["premature_invalidation_reason"] = msg
++    ev["baseline_ready"] = False
++    ev["baseline_status"] = "in_costruzione"
++    # Annotate, do not erase previous ready_at value.
++    ev["reason"] = msg
++    ev["o13cfix_marker"] = O13CFIX_MARKER
++    row.evidence = ev
++    row.last_seen = now
++    db.flush()
++    return baseline_status(db)
++
++
++
++def reopen_baseline_after_rollback(db: Session, *, reason: str = "") -> dict[str, Any]:
++    """B3 — after data wipe, never become ready by absence of history."""
++    row = ensure_baseline_meta(db)
++    ev = dict(row.evidence or {})
++    now = utcnow()
++    ev["baseline_ready"] = False
++    ev["baseline_status"] = "in_costruzione"
++    ev["novelty_by_day"] = {}
++    ev["reason"] = reason or (
++        "O13C-FIX B3: rollback — baseline riaperta in costruzione "
++        "(mai pronta per assenza di storia)"
++    )
++    ev["rollback_reopened_at"] = now.isoformat() + "Z"
++    ev["o13cfix_marker"] = O13CFIX_MARKER
++    row.evidence = ev
++    row.last_seen = now
++    # Preserve first_seen if present; if meta was recreated, first_seen is now.
++    db.flush()
++    return baseline_status(db)
++
++
++def _coverage_days_elapsed(started_at: datetime | None, now: datetime) -> float:
++    if started_at is None:
++        return 0.0
++    return max(0.0, (now - started_at).total_seconds() / 86400.0)
++
++
++def _complete_utc_days_with_data(db: Session, started_at: datetime | None, now: datetime) -> list[str]:
++    """UTC calendar days (YYYY-MM-DD) fully elapsed since start that have ≥1 non-meta row."""
++    if started_at is None:
++        return []
++    start_day = started_at.date()
++    today = now.date()
++    # Complete days = strictly before today.
++    days: list[str] = []
++    d = start_day
++    from datetime import timedelta
++
++    while d < today:
++        day_start = datetime(d.year, d.month, d.day)
++        day_end = day_start + timedelta(days=1)
++        n = db.scalar(
++            select(func.count())
++            .select_from(EgressObservation)
++            .where(
++                EgressObservation.scope.in_(["ext", "int"]),
++                EgressObservation.first_seen >= day_start,
++                EgressObservation.first_seen < day_end,
++            )
++        ) or 0
++        if int(n) > 0:
++            days.append(d.isoformat())
++        d = d + timedelta(days=1)
++    return days
++
++
++
++def evaluate_baseline_readiness(
++    db: Session, *, now: datetime | None = None
++) -> dict[str, Any]:
++    """B2 — measured criteria. Never uses deferred==0. Can and must say «non pronta»."""
++    now = now or utcnow()
++    row = ensure_baseline_meta(db)
++    ev = dict(row.evidence or {})
++    started = row.first_seen
++    coverage_days = _coverage_days_elapsed(started, now)
++    complete_days = _complete_utc_days_with_data(db, started, now)
++    novelty_by_day = dict(ev.get("novelty_by_day") or {})
++    # Stabilization series: complete UTC days that have a recorded novelty_new count.
++    series_days = sorted(k for k in novelty_by_day.keys() if k in set(complete_days) or k < now.date().isoformat())
++    # Prefer intersection with complete days that actually have store activity.
++    series_in_window = [d for d in complete_days if d in novelty_by_day]
++    coverage_ok = coverage_days >= float(MIN_BASELINE_COVERAGE_DAYS)
++    series_ok = len(series_in_window) >= MIN_NOVELTY_SERIES_DAYS
++    # Hard veto: window shorter than minimum coverage → never ready (even if series forged).
++    ready = bool(coverage_ok and series_ok)
++    missing = {
++        "coverage_days_needed": MIN_BASELINE_COVERAGE_DAYS,
++        "coverage_days_have": round(coverage_days, 4),
++        "coverage_days_remaining": max(0.0, MIN_BASELINE_COVERAGE_DAYS - coverage_days),
++        "novelty_series_needed": MIN_NOVELTY_SERIES_DAYS,
++        "novelty_series_have": len(series_in_window),
++        "novelty_series_remaining": max(0, MIN_NOVELTY_SERIES_DAYS - len(series_in_window)),
++        "complete_utc_days_with_rows": complete_days,
++        "novelty_by_day": {k: novelty_by_day[k] for k in series_in_window},
++    }
++    return {
++        "ready": ready,
++        "coverage_ok": coverage_ok,
++        "series_ok": series_ok,
++        "coverage_days": round(coverage_days, 4),
++        "min_coverage_days": MIN_BASELINE_COVERAGE_DAYS,
++        "min_coverage_source": "O13B M1: 3 giorni misurati; asintoto non stimabile",
++        "min_series_days": MIN_NOVELTY_SERIES_DAYS,
++        "min_series_source": "O13B M1 curva novità a 3 punti (non soglia sul tasso)",
++        "missing": missing,
++        "forbidden_criterion": "deferred==0",
++    }
++
++
++
++def baseline_status(db: Session, *, now: datetime | None = None) -> dict[str, Any]:
++    now = now or utcnow()
++    row = ensure_baseline_meta(db)
++    ev = dict(row.evidence or {})
++    ready = bool(ev.get("baseline_ready"))
++    readiness = evaluate_baseline_readiness(db, now=now)
++    return {
++        "status": "ready" if ready else "in_costruzione",
++        "baseline_ready": ready,
++        "baseline_started_at": (row.first_seen.isoformat() + "Z") if row.first_seen else None,
++        "baseline_ready_at": ev.get("baseline_ready_at"),
++        "premature_baseline_ready_at_was": ev.get("premature_baseline_ready_at_was"),
++        "premature_invalidated_at": ev.get("premature_invalidated_at"),
++        "reason": ev.get("reason") or "",
++        "o13c_marker": O13C_MARKER,
++        "o13cfix_marker": O13CFIX_MARKER,
++        "cycle_seen": ev.get("cycle_seen"),
++        "cycle_created": ev.get("cycle_created"),
++        "cycle_deferred": ev.get("cycle_deferred"),
++        "cycle_novelty_new": ev.get("cycle_novelty_new"),
++        "readiness": readiness,
++        "novelty_signals_note": (
++            "emissione N5 gated da EGRESS_NOVELTY_SIGNALS_ENABLED "
++            "(distinto da EGRESS_INGEST_ENABLED)"
++        ),
++    }
++
++
++def _record_cycle_novelty(db: Session, created: int, *, now: datetime) -> None:
++    """Accumulate novelty_new per UTC day (creates in this cycle count as new tuples)."""
++    row = ensure_baseline_meta(db)
++    ev = dict(row.evidence or {})
++    day = now.date().isoformat()
++    by_day = dict(ev.get("novelty_by_day") or {})
++    entry = dict(by_day.get(day) or {"novelty_new": 0, "cycles": 0})
++    entry["novelty_new"] = int(entry.get("novelty_new") or 0) + int(created or 0)
++    entry["cycles"] = int(entry.get("cycles") or 0) + 1
++    by_day[day] = entry
++    ev["novelty_by_day"] = by_day
++    ev["cycle_novelty_new"] = int(created or 0)
++    row.evidence = ev
++    db.flush()
++
++
++
++def maybe_close_baseline_after_cycle(
++    db: Session, deferred_count: int, *, cycle_stats: dict | None = None
++) -> dict[str, Any]:
++    """Update cycle counters + novelty series; close ONLY via B2 measured criteria.
++
++    ``deferred_count`` is recorded for visibility (N3) but NEVER used to close.
++    """
++    now = utcnow()
++    row = ensure_baseline_meta(db)
++    ev = dict(row.evidence or {})
++    created = int((cycle_stats or {}).get("created") or 0)
++    if cycle_stats:
++        ev["cycle_seen"] = cycle_stats.get("seen_distinct")
++        ev["cycle_created"] = cycle_stats.get("created")
++        ev["cycle_deferred"] = deferred_count
++        row.evidence = ev
++        row.last_seen = now
++        db.flush()
++        _record_cycle_novelty(db, created, now=now)
++        row = ensure_baseline_meta(db)
++        ev = dict(row.evidence or {})
++
++    if ev.get("baseline_ready"):
++        db.flush()
++        return baseline_status(db, now=now)
++
++    readiness = evaluate_baseline_readiness(db, now=now)
++    if readiness["ready"]:
++        ev["baseline_ready"] = True
++        ev["baseline_status"] = "ready"
++        ev["baseline_ready_at"] = now.isoformat() + "Z"
++        ev["reason"] = (
++            f"O13C-FIX B2: copertura>={MIN_BASELINE_COVERAGE_DAYS}d e "
++            f"serie novità>={MIN_NOVELTY_SERIES_DAYS} giorni UTC completi"
++        )
++        ev["readiness_snapshot"] = readiness
++        row.evidence = ev
++        row.last_seen = now
++        db.flush()
++    else:
++        ev["baseline_ready"] = False
++        ev["baseline_status"] = "in_costruzione"
++        ev["readiness_snapshot"] = readiness
++        row.evidence = ev
++        db.flush()
++    return baseline_status(db, now=now)
++
++
++
++def mark_baseline_ready(db: Session, *, user_id: int | None = None, reason: str = "") -> dict[str, Any]:
++    """Explicit ready ONLY if B2 criteria already satisfied — else refuse (I2)."""
++    readiness = evaluate_baseline_readiness(db)
++    if not readiness["ready"]:
++        bl = baseline_status(db)
++        bl["refused"] = True
++        bl["refuse_reason"] = (
++            "O13C-FIX: mark_baseline_ready rifiutato — criteri B2 non soddisfatti"
++        )
++        bl["readiness"] = readiness
++        return bl
++    row = ensure_baseline_meta(db)
++    ev = dict(row.evidence or {})
++    now = utcnow()
++    ev["baseline_ready"] = True
++    ev["baseline_status"] = "ready"
++    ev["baseline_ready_at"] = now.isoformat() + "Z"
++    ev["marked_ready_by"] = user_id
++    ev["marked_ready_reason"] = reason or "azione esplicita con criteri B2 soddisfatti"
++    ev["o13cfix_marker"] = O13CFIX_MARKER
++    row.evidence = ev
++    row.last_seen = now
++    db.flush()
++    return baseline_status(db, now=now)
++
++
++
++def novelty_egress_cards(
++    db: Session,
++    *,
++    now: datetime | None = None,
++    novelty_signals_enabled: bool = False,
++) -> list[dict[str, Any]]:
++    """Structural novelty. Suspended unless novelty_signals_enabled AND baseline_ready."""
++    now = now or utcnow()
++    bl = baseline_status(db, now=now)
++    if not novelty_signals_enabled:
++        return []
++    if not bl["baseline_ready"]:
++        return []
++    ready_at = _parse_ts(bl.get("baseline_ready_at"))
++    if ready_at is None:
++        return []
++    # Never emit against a premature ready_at that was invalidated.
++    if bl.get("premature_baseline_ready_at_was") and not bl["baseline_ready"]:
++        return []
++
++    rows = list(
++        db.scalars(
++            select(EgressObservation).where(EgressObservation.scope.in_(["ext", "int"]))
++        ).all()
++    )
++    cards: list[dict[str, Any]] = []
++    for r in rows:
++        # Skip rows marked as emitted on invalid baseline (inspectable separately).
++        ev = dict(r.evidence or {})
++        if ev.get("emitted_on_invalid_baseline"):
++            continue
++        # Structural only: first_seen after baseline_ready_at (no numeric threshold).
++        if not r.first_seen or r.first_seen < ready_at:
++            continue
++        stype = r.subject_type or ""
++        sid = int(r.subject_id) if r.subject_id is not None else 0
++        label = _label_subject(db, stype, sid, r.asset_id)
++        kind = "egress_new_ext" if r.scope == "ext" else "egress_new_int"
++        uid_raw = f"eg:{r.scope}:{r.dedup_key}"
++        uid = "eg:" + hashlib.sha256(uid_raw.encode()).hexdigest()[:30]
++        title = (
++            f"nuova destinazione esterna · {label}"
++            if r.scope == "ext"
++            else f"nuova relazione interna · {label}"
++        )
++        note = None
++        if r.scope == "int":
++            note = (
++                "Grana relazione (senza porta/proto). "
++                "Costo accettato: possibile lateral-move non distinto per porta."
++            )
++        cards.append(
++            {
++                "uid": uid,
++                "signal": "E-N",
++                "kind": kind,
++                "title": title,
++                "subject_type": stype,
++                "subject_id": sid or None,
++                "asset_id": r.asset_id,
++                "label": label,
++                "scope": r.scope,
++                "dst_ip": r.dst_ip or None,
++                "dport": r.dport,
++                "proto": r.proto or None,
++                "peer_ip": r.peer_ip or None,
++                "peer_unresolved": bool(r.peer_unresolved),
++                "association": r.association,
++                "note": note,
++                "freshness": freshness_for_observed_at(r.last_seen, now=now),
++                "defense_priority_id": DEFENSE_PRIORITY_ID,
++                "o13c_marker": O13C_MARKER,
++                "actions": [
++                    {
++                        "id": "open_dossier",
++                        "label": "Apri Dossier",
++                        "href": f"/dossier/{r.asset_id}" if r.asset_id else "/dossier",
++                        "reversible": True,
++                    },
++                    {
++                        "id": "acknowledge",
++                        "label": "Riconosci / archivia segnale",
++                        "requires_confirm": True,
++                        "reversible": True,
++                    },
++                ],
++            }
++        )
++    return cards
++
++
++
++def list_invalid_baseline_emissions(db: Session) -> list[dict[str, Any]]:
++    """B1/Q5 — cards/rows marked emitted_on_invalid_baseline: inspectable, not deleted."""
++    rows = list(
++        db.scalars(
++            select(EgressObservation).where(EgressObservation.scope.in_(["ext", "int"]))
++        ).all()
++    )
++    out: list[dict[str, Any]] = []
++    for r in rows:
++        ev = dict(r.evidence or {})
++        if not ev.get("emitted_on_invalid_baseline"):
++            continue
++        out.append(
++            {
++                "id": int(r.id),
++                "subject_type": r.subject_type or "",
++                "subject_id": r.subject_id,
++                "scope": r.scope,
++                "first_seen": r.first_seen.isoformat() + "Z" if r.first_seen else None,
++                "invalid_baseline_ready_at": ev.get("invalid_baseline_ready_at"),
++                "marked": True,
++                "recoverable": True,
++                "o13cfix_marker": O13CFIX_MARKER,
++            }
++        )
++    return out
++
++
++
++def build_egress_signals(
++    db: Session,
++    *,
++    now: datetime | None = None,
++    settings: Any | None = None,
++) -> dict[str, Any]:
++    now = now or utcnow()
++    ensure_baseline_meta(db)
++    bl = baseline_status(db, now=now)
++    novelty_on = False
++    if settings is not None:
++        novelty_on = bool(getattr(settings, "egress_novelty_signals_enabled", False))
++    acked = {
++        s.uid
++        for s in db.scalars(
++            select(Suggestion).where(
++                Suggestion.source == "egress",
++                Suggestion.status.in_(["approved", "rejected"]),
++            )
++        ).all()
++    }
++    cards = [
++        c
++        for c in novelty_egress_cards(
++            db, now=now, novelty_signals_enabled=novelty_on
++        )
++        if c["uid"] not in acked
++    ]
++    invalid = list_invalid_baseline_emissions(db)
++    open_, reason = evaluate_egress_breaker(db)
++    note_parts: list[str] = []
++    if not novelty_on:
++        note_parts.append(
++            "Segnali N5 sospesi (EGRESS_NOVELTY_SIGNALS_ENABLED=false); "
++            "ingest egress indipendente e attivo se EGRESS_INGEST_ENABLED."
++        )
++    if not bl["baseline_ready"]:
++        rd = bl.get("readiness") or {}
++        miss = rd.get("missing") or {}
++        note_parts.append(
++            f"Baseline egress in costruzione dal {bl.get('baseline_started_at')}: "
++            f"copertura {rd.get('coverage_days')}d / {rd.get('min_coverage_days')}d "
++            f"(mancano {miss.get('coverage_days_remaining')}d); "
++            f"serie novità {miss.get('novelty_series_have')}/{rd.get('min_series_days')} "
++            f"(fonte: {rd.get('min_coverage_source')}). "
++            "Nessun segnale N5 finché non pronta."
++        )
++        if bl.get("cycle_seen") is not None:
++            note_parts.append(
++                f"Ultimo ciclo: seen={bl.get('cycle_seen')} "
++                f"created={bl.get('cycle_created')} deferred={bl.get('cycle_deferred')} "
++                f"novelty_new={bl.get('cycle_novelty_new')}."
++            )
++    if invalid:
++        note_parts.append(
++            f"{len(invalid)} emissioni su baseline non valida: marcate, "
++            "ispezionabili e ripescabili (non cancellate)."
++        )
++    return {
++        "cards": cards,
++        "invalid_baseline_emissions": invalid,
++        "invalid_baseline_emissions_count": len(invalid),
++        "baseline": bl,
++        "novelty_signals_enabled": novelty_on,
++        "breaker_open": open_,
++        "breaker_reason": reason,
++        "table": table_stats(db),
++        "note": " ".join(note_parts) if note_parts else None,
++        "o13c_marker": O13C_MARKER,
++        "o13cfix_marker": O13CFIX_MARKER,
++        "defense_priority_id": DEFENSE_PRIORITY_ID,
++    }
++
++
++
+
+diff --git a/observatory/api/app/config.py b/observatory/api/app/config.py
+index c796e50..1d235ae 100644
+--- a/observatory/api/app/config.py
++++ b/observatory/api/app/config.py
+@@ -99,6 +99,8 @@ class Settings(BaseSettings):
+     learning_period_days: int = 14
+     learning_period_cycles: int = 50
+     drift_shadow_mode: bool = True
++    # W2: parallel fact_assertion writers (no consumers). Hot kill switch — no redeploy.
++    fact_shadow_writers_enabled: bool = True
+     notifications_enabled: bool = False
+     notification_webhook_url: str = ""
+     notification_telegram_bot_token: str = ""
+@@ -110,6 +112,20 @@ class Settings(BaseSettings):
+     experimental_flow_detectors: bool = False
+     flow_observation_retention_days: int = 30
+     zeek_log_dir: str = "/data/zeek"
++    # O12 — mirror collector flags/cadenze (same env names) for coverage classifier.
++    zeek_provider_enabled: bool = False
++    zeek_provider_interval_sec: int = 300
++    zeek_behavior_enabled: bool = True
++    zeek_behavior_interval_sec: int = 300
++    # O13C hybrid egress — default false; arm with EGRESS_INGEST_ENABLED=true on NAS.
++    egress_ingest_enabled: bool = False
++    egress_ingest_interval_sec: int = 300
++    # O13C-FIX B1: novelty cards kill switch — distinct from ingest.
++    egress_novelty_signals_enabled: bool = False
++    topology_poll_interval_sec: int = 60
++    internet_probe_interval_sec: int = 60
++    snmp_nas_poll_interval_sec: int = 60
++    # O11-FIX G4: zeek_behavior_evidence TTL = obs_ttl_raw_days (stesso vocabolario).
+     ui_flap_collapse_min: int = 6
+     # Bootstrap backup policy: auto (only on changes) | always | never
+     bootstrap_backup: str = "auto"
+
+diff --git a/observatory/api/app/routers/egress.py b/observatory/api/app/routers/egress.py
+new file mode 100644
+--- /dev/null
++++ b/observatory/api/app/routers/egress.py
++"""O13C — egress signals API (Oggi cards). No new top-level hub."""
++
++from __future__ import annotations
++
++from fastapi import APIRouter, Depends, Request
++from pydantic import BaseModel
++from sqlalchemy.orm import Session
++
++from app.auth import check_csrf, require_user
++from app.config import Settings, get_settings
++from app.db import get_db
++from app.models import User
++from app.services.egress import (
++    acknowledge_egress_signal,
++    baseline_status,
++    build_egress_signals,
++    list_invalid_baseline_emissions,
++    mark_baseline_ready,
++)
++
++router = APIRouter(prefix="/api/egress", tags=["egress"])
++
++
++class AckBody(BaseModel):
++    uid: str
++    action: str = "acknowledge"
++    reason: str = ""
++
++
++class BaselineReadyBody(BaseModel):
++    reason: str = ""
++
++
++@router.get("/signals")
++def get_signals(
++    db: Session = Depends(get_db),
++    user: User = Depends(require_user),
++    settings: Settings = Depends(get_settings),
++):
++    return build_egress_signals(db, settings=settings)
++
++
++@router.get("/baseline")
++def get_baseline(db: Session = Depends(get_db), user: User = Depends(require_user)):
++    return baseline_status(db)
++
++
++@router.get("/invalid-baseline-emissions")
++def get_invalid_emissions(db: Session = Depends(get_db), user: User = Depends(require_user)):
++    """Q5 — emissioni su baseline non valida: marcate, ispezionabili, ripescabili."""
++    rows = list_invalid_baseline_emissions(db)
++    return {
++        "count": len(rows),
++        "items": rows,
++        "o13cfix_marker": "obs-o13c-fix",
++    }
++
++
++@router.get("/cycle-stats")
++def get_cycle_stats(db: Session = Depends(get_db), user: User = Depends(require_user)):
++    """Last cycle counters stored on baseline meta (also embedded in /signals)."""
++    bl = baseline_status(db)
++    return {
++        "baseline": bl,
++        "cycle_seen": bl.get("cycle_seen"),
++        "cycle_created": bl.get("cycle_created"),
++        "cycle_deferred": bl.get("cycle_deferred"),
++        "o13c_marker": "obs-o13c",
++        "o13cfix_marker": "obs-o13c-fix",
++    }
++
++
++@router.post("/baseline/ready")
++def post_baseline_ready(
++    body: BaselineReadyBody,
++    request: Request,
++    db: Session = Depends(get_db),
++    user: User = Depends(require_user),
++    settings: Settings = Depends(get_settings),
++):
++    """Explicit ready only if B2 criteria satisfied; otherwise refused."""
++    check_csrf(request, settings)
++    out = mark_baseline_ready(db, user_id=user.id, reason=body.reason)
++    if out.get("refused"):
++        return {"ok": False, **out}
++    db.commit()
++    return {"ok": True, **out}
++
++
++@router.post("/ack")
++def post_ack(
++    body: AckBody,
++    request: Request,
++    db: Session = Depends(get_db),
++    user: User = Depends(require_user),
++    settings: Settings = Depends(get_settings),
++):
++    check_csrf(request, settings)
++    row = acknowledge_egress_signal(
++        db,
++        uid=body.uid,
++        action=body.action,
++        reason=body.reason,
++        user_id=user.id,
++    )
++    db.commit()
++    return {"ok": True, "uid": row.uid, "status": row.status, "kind": row.kind}
+
+diff --git a/observatory/tests/test_o13cfix_baseline.py b/observatory/tests/test_o13cfix_baseline.py
+new file mode 100644
+--- /dev/null
++++ b/observatory/tests/test_o13cfix_baseline.py
++"""O13C-FIX — baseline closure criteria, novelty switch, rollback reopen."""
++
++from __future__ import annotations
++
++import sys
++import uuid
++from datetime import datetime, timedelta
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++from sqlalchemy import create_engine, func, select
++from sqlalchemy.orm import sessionmaker
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
++
++from app.config import get_settings
++from app.db import Base
++from app.models import Asset, EgressObservation, FactAssertion, Interface, IpAddress
++from app.services.egress import (
++    MIN_BASELINE_COVERAGE_DAYS,
++    MIN_NOVELTY_SERIES_DAYS,
++    baseline_status,
++    build_egress_signals,
++    ensure_baseline_meta,
++    evaluate_baseline_readiness,
++    ingest_egress_batch,
++    invalidate_premature_baseline,
++    list_invalid_baseline_emissions,
++    mark_baseline_ready,
++    maybe_close_baseline_after_cycle,
++    novelty_egress_cards,
++    reopen_baseline_after_rollback,
++)
++
++
++@pytest.fixture()
++def db(tmp_path, monkeypatch):
++    db_path = tmp_path / "o13cfix.db"
++    monkeypatch.setenv("SQLITE_PATH", str(db_path))
++    get_settings.cache_clear()
++    engine = create_engine(f"sqlite:///{db_path}")
++    Base.metadata.create_all(engine)
++    Session = sessionmaker(bind=engine)
++    session = Session()
++    yield session
++    session.close()
++    get_settings.cache_clear()
++
++
++def _settings(*, ingest=True, novelty=False):
++    return SimpleNamespace(
++        egress_ingest_enabled=ingest,
++        egress_novelty_signals_enabled=novelty,
++    )
++
++
++def _asset_ip(db, *, mac="AA:BB:CC:DD:EE:10", ip="192.0.2.10"):
++    a = Asset(uid=str(uuid.uuid4()), name="t", status="noto", category="media")
++    db.add(a)
++    db.flush()
++    iface = Interface(asset_id=a.id, mac=mac, is_primary=True)
++    db.add(iface)
++    db.flush()
++    db.add(IpAddress(interface_id=iface.id, ip=ip, is_current=True, source="test"))
++    past = datetime.utcnow() - timedelta(days=30)
++    db.add(
++        FactAssertion(
++            subject_type="interface",
++            subject_id=iface.id,
++            fact_key="asset.iface_ip",
++            excl_key=f"asset.iface_ip:{iface.id}",
++            value_norm=ip,
++            value_json={},
++            source="test",
++            authority=80,
++            confidence=0.9,
++            observed_at=past,
++            last_seen_at=past,
++            valid_from=past,
++            valid_to=None,
++            state="current",
++        )
++    )
++    db.flush()
++    return a
++
++
++def _non_meta_count(db) -> int:
++    n = db.scalar(
++        select(func.count())
++        .select_from(EgressObservation)
++        .where(EgressObservation.scope != "_baseline")
++    )
++    return int(n or 0)
++
++
++def test_q2_short_window_not_ready_even_with_deferred_zero(db):
++    """Controllo negativo: finestra corta + deferred=0 → non pronta."""
++    _asset_ip(db)
++    db.commit()
++    stats = ingest_egress_batch(
++        db,
++        [
++            {
++                "src_ip": "192.0.2.10",
++                "dst_ip": "203.0.113.1",
++                "dport": 443,
++                "proto": "tcp",
++                "observed_at": datetime.utcnow().isoformat() + "Z",
++            }
++        ],
++        _settings(ingest=True),
++    )
++    db.commit()
++    assert stats["deferred"] == 0
++    assert stats["created"] >= 1
++    bl = baseline_status(db)
++    assert bl["baseline_ready"] is False
++    assert bl["status"] == "in_costruzione"
++    rd = evaluate_baseline_readiness(db)
++    assert rd["ready"] is False
++    assert rd["coverage_ok"] is False
++    assert rd["forbidden_criterion"] == "deferred==0"
++    assert rd["coverage_days"] < MIN_BASELINE_COVERAGE_DAYS
++
++
++def test_q3_ready_only_when_both_criteria_met(db):
++    """Entrambe le condizioni: copertura >=3d e serie novità >=3 giorni completi."""
++    _asset_ip(db)
++    db.commit()
++    row = ensure_baseline_meta(db)
++    row.first_seen = datetime.utcnow() - timedelta(days=MIN_BASELINE_COVERAGE_DAYS + 1)
++    ev = dict(row.evidence or {})
++    today = datetime.utcnow().date()
++    days = [(today - timedelta(days=i)).isoformat() for i in range(1, 4)]
++    days = list(reversed(days))
++    ev["novelty_by_day"] = {
++        days[0]: {"novelty_new": 100, "cycles": 1},
++        days[1]: {"novelty_new": 90, "cycles": 1},
++        days[2]: {"novelty_new": 80, "cycles": 1},
++    }
++    row.evidence = ev
++    db.flush()
++    for i, day in enumerate(days):
++        y, m, d = map(int, day.split("-"))
++        ts = datetime(y, m, d, 12, 0, 0)
++        db.add(
++            EgressObservation(
++                dedup_key=f"seed-{day}",
++                scope="ext",
++                subject_type="asset",
++                subject_id=1,
++                dst_ip="203.0.113.9",
++                dport=443 + i,
++                proto="tcp",
++                association="certain",
++                first_seen=ts,
++                last_seen=ts,
++                observation_count=1,
++                evidence={"seed": True},
++            )
++        )
++    db.commit()
++    rd = evaluate_baseline_readiness(db)
++    assert rd["coverage_ok"] is True
++    assert rd["series_ok"] is True
++    assert rd["ready"] is True
++    bl = maybe_close_baseline_after_cycle(db, 0, cycle_stats={"seen_distinct": 1, "created": 0})
++    db.commit()
++    assert bl["baseline_ready"] is True
++
++
++def test_q4_no_n5_while_in_costruzione_ingest_grows(db):
++    _asset_ip(db)
++    db.commit()
++    before = _non_meta_count(db)
++    ingest_egress_batch(
++        db,
++        [
++            {
++                "src_ip": "192.0.2.10",
++                "dst_ip": "203.0.113.2",
++                "dport": 80,
++                "proto": "tcp",
++                "observed_at": datetime.utcnow().isoformat() + "Z",
++            }
++        ],
++        _settings(ingest=True, novelty=True),
++    )
++    db.commit()
++    after = _non_meta_count(db)
++    assert after > before
++    sig = build_egress_signals(db, settings=_settings(ingest=True, novelty=True))
++    assert sig["baseline"]["baseline_ready"] is False
++    assert sig["cards"] == []
++
++
++def test_q7_novelty_switch_off_ingest_on(db):
++    _asset_ip(db)
++    db.commit()
++    row = ensure_baseline_meta(db)
++    row.first_seen = datetime.utcnow() - timedelta(days=10)
++    ev = dict(row.evidence or {})
++    ev["baseline_ready"] = True
++    ev["baseline_status"] = "ready"
++    ev["baseline_ready_at"] = (datetime.utcnow() - timedelta(days=1)).isoformat() + "Z"
++    row.evidence = ev
++    db.flush()
++    db.add(
++        EgressObservation(
++            dedup_key="nov-1",
++            scope="ext",
++            subject_type="asset",
++            subject_id=1,
++            dst_ip="203.0.113.3",
++            dport=443,
++            proto="tcp",
++            association="certain",
++            first_seen=datetime.utcnow(),
++            last_seen=datetime.utcnow(),
++            observation_count=1,
++            evidence={},
++        )
++    )
++    db.commit()
++    assert novelty_egress_cards(db, novelty_signals_enabled=False) == []
++    assert len(novelty_egress_cards(db, novelty_signals_enabled=True)) >= 1
++    s = ingest_egress_batch(
++        db,
++        [
++            {
++                "src_ip": "192.0.2.10",
++                "dst_ip": "203.0.113.8",
++                "dport": 22,
++                "proto": "tcp",
++                "observed_at": datetime.utcnow().isoformat() + "Z",
++            }
++        ],
++        _settings(ingest=True, novelty=False),
++    )
++    assert s.get("skipped_disabled", 0) == 0
++    assert s["created"] + s["refreshed"] >= 1
++
++
++def test_q5_invalid_emissions_marked_not_deleted(db):
++    _asset_ip(db)
++    db.commit()
++    db.add(
++        EgressObservation(
++            dedup_key="bad-1",
++            scope="ext",
++            subject_type="asset",
++            subject_id=1,
++            dst_ip="203.0.113.7",
++            dport=443,
++            proto="tcp",
++            association="certain",
++            first_seen=datetime.utcnow(),
++            last_seen=datetime.utcnow(),
++            observation_count=1,
++            evidence={
++                "emitted_on_invalid_baseline": True,
++                "invalid_baseline_ready_at": "2026-07-29T09:59:03.948740Z",
++            },
++        )
++    )
++    db.commit()
++    items = list_invalid_baseline_emissions(db)
++    assert len(items) == 1
++    assert items[0]["marked"] is True
++    assert items[0]["recoverable"] is True
++    assert items[0]["id"] is not None
++    assert db.get(EgressObservation, items[0]["id"]) is not None
++
++
++def test_q6_rollback_reopens_in_costruzione(db):
++    row = ensure_baseline_meta(db)
++    ev = dict(row.evidence or {})
++    ev["baseline_ready"] = True
++    ev["baseline_status"] = "ready"
++    ev["baseline_ready_at"] = datetime.utcnow().isoformat() + "Z"
++    row.evidence = ev
++    db.flush()
++    for r in db.scalars(
++        select(EgressObservation).where(EgressObservation.scope != "_baseline")
++    ).all():
++        db.delete(r)
++    db.flush()
++    bl = reopen_baseline_after_rollback(db, reason="test rollback")
++    db.commit()
++    assert bl["baseline_ready"] is False
++    assert bl["status"] == "in_costruzione"
++    meta = ensure_baseline_meta(db)
++    assert meta.dedup_key == "meta|baseline|o13c"
++
++
++def test_b1_invalidate_annotates_previous_ready_at(db):
++    row = ensure_baseline_meta(db)
++    was = "2026-07-29T09:59:03.948740Z"
++    ev = dict(row.evidence or {})
++    ev["baseline_ready"] = True
++    ev["baseline_ready_at"] = was
++    row.evidence = ev
++    db.flush()
++    bl = invalidate_premature_baseline(db)
++    db.commit()
++    assert bl["baseline_ready"] is False
++    assert bl["premature_baseline_ready_at_was"] == was
++    row2 = ensure_baseline_meta(db)
++    ev2 = dict(row2.evidence or {})
++    assert ev2.get("baseline_ready_at") == was or ev2.get("premature_baseline_ready_at_was") == was
++    assert "O13C-FIX" in (ev2.get("reason") or "") or "prematura" in (ev2.get("reason") or "")
++
++
++def test_mark_ready_refused_when_criteria_unmet(db):
++    ensure_baseline_meta(db)
++    db.commit()
++    out = mark_baseline_ready(db, reason="should refuse")
++    assert out.get("refused") is True
++    assert out["baseline_ready"] is False
++
++
++def test_constants_sourced_from_o13b():
++    assert MIN_BASELINE_COVERAGE_DAYS == 3
++    assert MIN_NOVELTY_SERIES_DAYS == 3
+
+diff --git a/observatory/tests/test_o13c_egress.py b/observatory/tests/test_o13c_egress.py
+new file mode 100644
+--- /dev/null
++++ b/observatory/tests/test_o13c_egress.py
++"""O13C — hybrid egress grain (cap, breaker, baseline, association, signals)."""
++
++from __future__ import annotations
++
++import sys
++import uuid
++from datetime import datetime, timedelta
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++from sqlalchemy import create_engine, func, select
++from sqlalchemy.orm import sessionmaker
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
++
++from app.config import get_settings
++from app.db import Base
++from app.facts.ip_association import associate_ip_at
++from app.models import Asset, EgressObservation, FactAssertion, Interface, IpAddress
++from app.services import egress as egress_mod
++from app.services.egress import (
++    DEFENSE_PRIORITY_ID,
++    build_egress_signals,
++    classify_scope,
++    dedup_key_ext,
++    dedup_key_int,
++    ensure_baseline_meta,
++    ingest_egress_batch,
++    mark_baseline_ready,
++    novelty_egress_cards,
++    prepare_candidate,
++)
++
++
++@pytest.fixture()
++def db(tmp_path, monkeypatch):
++    db_path = tmp_path / "o13c.db"
++    monkeypatch.setenv("SQLITE_PATH", str(db_path))
++    get_settings.cache_clear()
++    engine = create_engine(f"sqlite:///{db_path}")
++    Base.metadata.create_all(engine)
++    Session = sessionmaker(bind=engine)
++    session = Session()
++    yield session
++    session.close()
++    get_settings.cache_clear()
++
++
++def _settings(enabled: bool = True, *, novelty: bool = False):
++    return SimpleNamespace(
++        egress_ingest_enabled=enabled,
++        egress_novelty_signals_enabled=novelty,
++    )
++
++
++def _asset_ip(db, *, mac: str, ip: str, name: str = "Host", valid_from=True):
++    a = Asset(uid=str(uuid.uuid4()), name=name, status="noto", category="media")
++    db.add(a)
++    db.flush()
++    iface = Interface(asset_id=a.id, mac=mac, is_primary=True)
++    db.add(iface)
++    db.flush()
++    db.add(
++        IpAddress(interface_id=iface.id, ip=ip, is_current=True, source="fritz")
++    )
++    past = datetime.utcnow() - timedelta(hours=1)
++    fa = FactAssertion(
++        subject_type="interface",
++        subject_id=iface.id,
++        fact_key="asset.iface_ip",
++        excl_key=f"asset.iface_ip:{iface.id}",
++        value_norm=ip,
++        value_json={},
++        source="fritz",
++        authority=80,
++        confidence=0.9,
++        observed_at=past,
++        last_seen_at=past,
++        valid_from=past - timedelta(days=1) if valid_from else None,
++        valid_to=None,
++        state="current",
++    )
++    db.add(fa)
++    db.flush()
++    return a, iface
++
++
++def test_kill_switch_disabled_skips(db):
++    stats = ingest_egress_batch(
++        db,
++        [
++            {
++                "src_ip": "192.0.2.10",
++                "dst_ip": "203.0.113.1",
++                "dport": 443,
++                "proto": "tcp",
++                "observed_at": datetime.utcnow().isoformat() + "Z",
++            }
++        ],
++        _settings(False),
++    )
++    assert stats["skipped_disabled"] == 1
++    assert stats["created"] == 0
++    assert stats["deferred"] == 0
++    n = db.scalar(
++        select(func.count())
++        .select_from(EgressObservation)
++        .where(EgressObservation.scope != "_baseline")
++    )
++    assert int(n or 0) == 0
++
++
++def test_ext_grain_has_port_int_grain_no_port(db):
++    a, _ = _asset_ip(db, mac="AA:BB:CC:DD:EE:01", ip="192.0.2.10")
++    db.commit()
++    ext_key = dedup_key_ext("asset", a.id, "203.0.113.50", 443, "tcp", src_ip="192.0.2.10")
++    ext_key2 = dedup_key_ext("asset", a.id, "203.0.113.50", 80, "tcp", src_ip="192.0.2.10")
++    assert ext_key != ext_key2  # port in ext grain
++    b, _ = _asset_ip(db, mac="AA:BB:CC:DD:EE:02", ip="192.0.2.20", name="Peer")
++    db.commit()
++    k1 = dedup_key_int("asset", a.id, "asset", b.id, src_ip="192.0.2.10", peer_ip="192.0.2.20")
++    k2 = dedup_key_int("asset", a.id, "asset", b.id, src_ip="192.0.2.10", peer_ip="192.0.2.20")
++    assert k1 == k2
++    assert classify_scope("203.0.113.1") == "ext"
++    assert classify_scope("192.0.2.1") == "ext"  # TEST-NET ≠ RFC1918
++    assert classify_scope("10.0.0.5") == "int"
++    assert classify_scope("192.168.1.5") == "int"
++
++    stats = ingest_egress_batch(
++        db,
++        [
++            {
++                "src_ip": "192.0.2.10",
++                "dst_ip": "203.0.113.50",
++                "dport": 443,
++                "proto": "tcp",
++                "observed_at": datetime.utcnow().isoformat() + "Z",
++            },
++            {
++                "src_ip": "192.0.2.10",
++                "dst_ip": "10.0.0.5",
++                "dport": 445,
++                "proto": "tcp",
++                "observed_at": datetime.utcnow().isoformat() + "Z",
++            },
++        ],
++        _settings(True),
++    )
++    db.commit()
++    assert stats["created"] >= 1
++    ext = db.scalar(
++        select(EgressObservation).where(EgressObservation.scope == "ext")
++    )
++    assert ext is not None
++    assert ext.dport == 443
++    assert ext.proto == "tcp"
++    internal = db.scalar(
++        select(EgressObservation).where(EgressObservation.scope == "int")
++    )
++    assert internal is not None
++    assert internal.dport is None
++    assert internal.proto == ""
++    assert internal.peer_ip == "10.0.0.5"
++
++
++def test_p3_peer_unresolved_keeps_peer_ip(db):
++    _asset_ip(db, mac="AA:BB:CC:DD:EE:01", ip="192.0.2.10")
++    db.commit()
++    # Peer RFC1918 with no inventory → unresolved, keep peer_ip
++    cand = prepare_candidate(
++        db,
++        {
++            "src_ip": "192.0.2.10",
++            "dst_ip": "10.0.0.99",
++            "dport": 22,
++            "proto": "tcp",
++            "observed_at": datetime.utcnow().isoformat() + "Z",
++        },
++    )
++    assert cand is not None
++    assert cand["scope"] == "int"
++    assert cand["peer_unresolved"] is True
++    assert cand["peer_ip"] == "10.0.0.99"
++    assert cand["peer_subject_type"] == ""
++    assert cand["peer_subject_id"] is None
++
++
++def test_p4_valid_from_null_uncertain(db):
++    """valid_from null/truncated → uncertain (I2). Prefer truncated: colonna NOT NULL in SQLite."""
++    a, iface = _asset_ip(db, mac="AA:BB:CC:DD:EE:01", ip="192.0.2.10")
++    db.commit()
++    fa = db.scalar(
++        select(FactAssertion).where(
++            FactAssertion.fact_key == "asset.iface_ip",
++            FactAssertion.value_norm == "192.0.2.10",
++        )
++    )
++    assert fa is not None
++    fa.valid_from_truncated = True
++    db.flush()
++    assoc = associate_ip_at(db, "192.0.2.10", datetime.utcnow())
++    assert assoc.status == "uncertain"
++    cand = prepare_candidate(
++        db,
++        {
++            "src_ip": "192.0.2.10",
++            "dst_ip": "203.0.113.8",
++            "dport": 443,
++            "proto": "tcp",
++            "observed_at": datetime.utcnow().isoformat() + "Z",
++        },
++    )
++    assert cand["association"] == "uncertain"
++    _ = (a, iface)
++
++
++def test_p6_cap_defers_without_loss(db, monkeypatch):
++    """Cap defers creates; refresh still works; deferred counted; second ingest creates."""
++    monkeypatch.setattr(egress_mod, "DAILY_CREATE_CAP", 1)
++    a, _ = _asset_ip(db, mac="AA:BB:CC:DD:EE:01", ip="192.0.2.10")
++    db.commit()
++    now = datetime.utcnow()
++    s1 = ingest_egress_batch(
++        db,
++        [
++            {
++                "src_ip": "192.0.2.10",
++                "dst_ip": "203.0.113.1",
++                "dport": 443,
++                "proto": "tcp",
++                "observed_at": now.isoformat() + "Z",
++            },
++            {
++                "src_ip": "192.0.2.10",
++                "dst_ip": "203.0.113.2",
++                "dport": 443,
++                "proto": "tcp",
++                "observed_at": (now + timedelta(seconds=1)).isoformat() + "Z",
++            },
++        ],
++        _settings(True),
++    )
++    db.commit()
++    assert s1["created"] == 1
++    assert s1["deferred"] == 1
++    assert s1["deferred"] != s1.get("skipped_breaker", 0)
++    # Refresh path still works under cap
++    s2 = ingest_egress_batch(
++        db,
++        [
++            {
++                "src_ip": "192.0.2.10",
++                "dst_ip": "203.0.113.1",
++                "dport": 443,
++                "proto": "tcp",
++                "observed_at": (now + timedelta(minutes=1)).isoformat() + "Z",
++            }
++        ],
++        _settings(True),
++    )
++    db.commit()
++    assert s2["refreshed"] >= 1
++    assert s2["created"] == 0
++    # Raise cap → deferred tuple can create
++    monkeypatch.setattr(egress_mod, "DAILY_CREATE_CAP", 100)
++    s3 = ingest_egress_batch(
++        db,
++        [
++            {
++                "src_ip": "192.0.2.10",
++                "dst_ip": "203.0.113.2",
++                "dport": 443,
++                "proto": "tcp",
++                "observed_at": (now + timedelta(minutes=2)).isoformat() + "Z",
++            }
++        ],
++        _settings(True),
++    )
++    db.commit()
++    assert s3["created"] == 1
++    assert s3["deferred"] == 0
++    _ = a
++
++
++def test_p7_breaker_stops_write(db, monkeypatch):
++    _asset_ip(db, mac="AA:BB:CC:DD:EE:01", ip="192.0.2.10")
++    db.commit()
++    before = db.scalar(
++        select(func.count())
++        .select_from(EgressObservation)
++        .where(EgressObservation.scope != "_baseline")
++    ) or 0
++
++    def _open(_db):
++        return True, "forced open for test"
++
++    monkeypatch.setattr(egress_mod, "evaluate_egress_breaker", _open)
++    stats = ingest_egress_batch(
++        db,
++        [
++            {
++                "src_ip": "192.0.2.10",
++                "dst_ip": "203.0.113.9",
++                "dport": 443,
++                "proto": "tcp",
++                "observed_at": datetime.utcnow().isoformat() + "Z",
++            }
++        ],
++        _settings(True),
++    )
++    db.commit()
++    assert stats["skipped_breaker"] >= 1
++    assert stats["created"] == 0
++    after = db.scalar(
++        select(func.count())
++        .select_from(EgressObservation)
++        .where(EgressObservation.scope != "_baseline")
++    ) or 0
++    assert int(after) == int(before)
++
++
++def test_p5_no_novelty_while_baseline_in_costruzione(db):
++    """Finestra corta → in_costruzione; anche con novelty=True nessuna card N5."""
++    _asset_ip(db, mac="AA:BB:CC:DD:EE:01", ip="192.0.2.10")
++    db.commit()
++    ingest_egress_batch(
++        db,
++        [
++            {
++                "src_ip": "192.0.2.10",
++                "dst_ip": "203.0.113.3",
++                "dport": 443,
++                "proto": "tcp",
++                "observed_at": datetime.utcnow().isoformat() + "Z",
++            }
++        ],
++        _settings(True, novelty=True),
++    )
++    db.commit()
++    sig = build_egress_signals(db, settings=_settings(True, novelty=True))
++    assert sig["baseline"]["baseline_ready"] is False
++    assert sig["baseline"]["status"] == "in_costruzione"
++    assert sig["cards"] == []
++    assert sig["note"]
++
++
++def test_p10_after_baseline_ready_emits_signal(db):
++    """mark_baseline_ready rifiutato su finestra corta; meta ready simulata + novelty on → cards."""
++    a, _ = _asset_ip(db, mac="AA:BB:CC:DD:EE:01", ip="192.0.2.10")
++    db.commit()
++    ingest_egress_batch(
++        db,
++        [
++            {
++                "src_ip": "192.0.2.10",
++                "dst_ip": "203.0.113.4",
++                "dport": 443,
++                "proto": "tcp",
++                "observed_at": (datetime.utcnow() - timedelta(minutes=5)).isoformat() + "Z",
++            }
++        ],
++        _settings(True),
++    )
++    db.commit()
++    refused = mark_baseline_ready(db, reason="test short window")
++    assert refused.get("refused") is True
++    assert refused["baseline_ready"] is False
++
++    # Simulate B2 ready in meta (criteria already satisfied in production path).
++    row = ensure_baseline_meta(db)
++    ready_at = datetime.utcnow() - timedelta(hours=1)
++    row.first_seen = ready_at - timedelta(days=4)
++    ev = dict(row.evidence or {})
++    ev["baseline_ready"] = True
++    ev["baseline_status"] = "ready"
++    ev["baseline_ready_at"] = ready_at.isoformat() + "Z"
++    row.evidence = ev
++    db.flush()
++
++    # New tuple after ready
++    ingest_egress_batch(
++        db,
++        [
++            {
++                "src_ip": "192.0.2.10",
++                "dst_ip": "203.0.113.5",
++                "dport": 8443,
++                "proto": "tcp",
++                "observed_at": datetime.utcnow().isoformat() + "Z",
++            }
++        ],
++        _settings(True),
++    )
++    db.commit()
++    sig_on = build_egress_signals(db, settings=_settings(True, novelty=True))
++    kinds = {c["kind"] for c in sig_on["cards"]}
++    assert "egress_new_ext" in kinds
++    for c in sig_on["cards"]:
++        assert c["defense_priority_id"] == DEFENSE_PRIORITY_ID
++    sig_off = build_egress_signals(db, settings=_settings(True, novelty=False))
++    assert sig_off["cards"] == []
++    _ = a
++
++
++def test_priority_consistency_p6_both_scopes(db):
++    """Same defense_priority_id for ext and int cards (web maps both to P6)."""
++    a, _ = _asset_ip(db, mac="AA:BB:CC:DD:EE:01", ip="192.0.2.10")
++    _asset_ip(db, mac="AA:BB:CC:DD:EE:03", ip="10.0.0.50", name="LanPeer")
++    db.commit()
++    # Force ready meta — do not call mark_baseline_ready (refuses short window).
++    row = ensure_baseline_meta(db)
++    ready_at = datetime.utcnow() - timedelta(hours=2)
++    row.first_seen = ready_at - timedelta(days=4)
++    ev = dict(row.evidence or {})
++    ev["baseline_ready"] = True
++    ev["baseline_status"] = "ready"
++    ev["baseline_ready_at"] = ready_at.isoformat() + "Z"
++    row.evidence = ev
++    db.flush()
++    db.add(
++        EgressObservation(
++            dedup_key="prio-ext",
++            scope="ext",
++            subject_type="asset",
++            subject_id=a.id,
++            asset_id=a.id,
++            dst_ip="203.0.113.6",
++            dport=443,
++            proto="tcp",
++            association="certain",
++            first_seen=datetime.utcnow(),
++            last_seen=datetime.utcnow(),
++            observation_count=1,
++            evidence={},
++        )
++    )
++    db.add(
++        EgressObservation(
++            dedup_key="prio-int",
++            scope="int",
++            subject_type="asset",
++            subject_id=a.id,
++            asset_id=a.id,
++            peer_ip="10.0.0.50",
++            association="certain",
++            first_seen=datetime.utcnow(),
++            last_seen=datetime.utcnow(),
++            observation_count=1,
++            evidence={},
++        )
++    )
++    db.commit()
++    cards = novelty_egress_cards(db, novelty_signals_enabled=True)
++    assert cards
++    scopes = {c["scope"] for c in cards}
++    assert "ext" in scopes and "int" in scopes
++    for c in cards:
++        assert c["defense_priority_id"] == DEFENSE_PRIORITY_ID
++    assert DEFENSE_PRIORITY_ID == "ignoto_con_evidenze_zeek"
+
+diff --git a/observatory/VERSION b/observatory/VERSION
+index a548662..c43d78c 100644
+--- a/observatory/VERSION
++++ b/observatory/VERSION
+@@ -1 +1 @@
+-0.10.43
++0.10.80
+
+diff --git a/observatory/CHANGELOG.md b/observatory/CHANGELOG.md
+index 677f6ee..1b622df 100644
+--- a/observatory/CHANGELOG.md
++++ b/observatory/CHANGELOG.md
+@@ -1,8 +1,304 @@
+ # Changelog
+ 
++## 0.10.80 — OBS-EGRESS O13C-FIX: baseline prematura, criteri B2, switch novità
++
++- **B1:** baseline prematura invalidata (annotata, non cancellata); emissioni N5 su ready falso marcate `emitted_on_invalid_baseline` (246 in prod), ripescabili.
++- **B2:** chiusura solo con copertura ≥3d + serie novità ≥3 giorni UTC completi (fonte O13B M1); vietato `deferred==0`.
++- **B3:** rollback riapre `in_costruzione` (mai pronta per assenza di storia).
++- Switch `EGRESS_NOVELTY_SIGNALS_ENABLED` distinto da ingest; default false. Oggi mostra readiness mancante + conteggio emissioni invalide.
++- Marker bundle `obs-o13c-fix-marker`; endpoint `/api/egress/invalid-baseline-emissions`.
++
++
++## 0.10.79 — OBS-EGRESS O13C: hybrid grain (ext host+port / int relazione)
++
++- **Grano:** `ext` = (subject, dst_ip, dport, proto); `int` = (subject, peer_subject) senza porta/proto.
++- **Cap ≠ breaker:** cap 2000 create/giorno (defer, non drop); breaker 20k/2k/50MiB (stop create).
++- **Baseline:** `in_costruzione` finché un ciclo chiude con `deferred==0` → auto ready; nessun segnale novità prima.
++- Collector `zeek-egress` + `EGRESS_INGEST_ENABLED` (default false); **non** riattiva `FLOW_INGEST` / `flow_observations`.
++- Oggi E-N (P6), Dossier Cosa fa + inferenza destinazioni; coverage `zeek_egress`; retention `obs_ttl_raw_days`.
++
++
++## 0.10.78 — OBS-COVERAGE O12-FIX: gate, attic oneshot, P7, SensorRun Zeek
++
++- **K1/K2:** violazione reale `_o11fix_postcheck.py` (non «temporanea»): archivio recuperabile + `mv` in `_attic/`; gate `VIOLAZIONI: 0`; `DEBT-ONESHOT-SCRIPT-RESIDUE`.
++- **K3:** P7 = `igiene_nome` dichiarato in legenda UI P1–P7 (allineamento modulo↔copy).
++- **K4:** esiti ciclo `zeek_behavior` / `zeek_conn_flow` / `zeek_intel` / `zeek_dhcp_names` → `SensorRun`; card C-S mostra errore reale o «ultimo errore non registrato».
++- **K5:** diagnosi `SNMP_NAS_*` (ABSENT in `.env` corrente; caduta con evento 25–27/07) → annotata in `DEBT-ENV-NO-INTEGRITY-CHECK`; nessuna riattivazione.
++
++
++## 0.10.77 — OBS-COVERAGE O12: nessuna sorgente muore in silenzio
++
++- **C1–C3:** censimento sorgenti enumerato + modello `coperta_fresca|coperta_vecchia|cieca|disabilitata|cadenza_non_nota`; segnali persi derivati dalle spec.
++- **C4:** card Oggi C-S (cieca/vecchia, P4 `sorgente_non_disponibile`) e C-D (disabilitata, informativa P7); pannello Impianto riusa FRESHNESS/VisualBadge.
++- **C5:** test negativo R4 (card appare/sparisce) + R3 disabilitata senza allarme.
++- **C6:** `flow_observations` classificata (no riattivazione — O13); accertamento flag in report.
++- Debiti: lezione contatore `archived_*` vs `db.delete`; `DEBT-BI-P6-VISIBILITY`.
++
++
++## 0.10.76 — OBS-BEHAVIOUR O11-FIX: kill switch, retention, validità, B-I
++
++- **F8:** rimossa mutazione boot non dichiarata (`reconcile_chassis_name_proposal_suppression`); soft-archive w4a ispezionabile/ripescabile; `DEBT-UNDECLARED-BOOT-MUTATION`.
++- **G1–G3:** `ZEEK_BEHAVIOR_ENABLED` + intervallo proprio; docstring cold-start onesta; rotazione log con inode + conteggio.
++- **G4:** retention `zeek_behavior_evidence` = `obs_ttl_raw_days` (7).
++- **G5–G6:** `certain` vietato su `valid_from` nullo/troncato; MAC multi-interfaccia → incerto deterministico; display B-I su `src_mac` evidenza.
++- **G7:** B-I raggruppate; priorità `ignoto_con_evidenze_zeek` (P6) distinta da non-riconosciuto attivo (P1).
++
++
++## 0.10.75 — OBS-BEHAVIOUR O11: evidenze Zeek, Cosa fa, cambio di carattere
++
++- **A:** censimento sonda SPAN viva (ssl/dhcp/ja4d); JA4 non era in SQLite — ingest nuovo.
++- **B:** `zeek_behavior_evidence` + correlazione IP↔MAC via `facts/ip_association` (incerta se non current).
++- **C:** Dossier «Cosa fa» + blocco INFERENZA IA degradato (nessun motore); baseline in costruzione; card Oggi B-C/B-I.
++- Collector: job `zeek-behavior` indipendente da `FLOW_INGEST` / `zeek_provider_enabled`.
++- Debito registrato: `DEBT-OGGI-MOBILE-DENSITY` (nessun lavoro densità in O11).
++
++
++## 0.10.74 — OBS-UX O10: vocabolario visivo, densità mobile, leggibilità
++
++- **W0:** O9-FIX confermata nel CSS servito (timeline min-width:0, md-body overflow-x, table max-content).
++- **W1:** `visualVocab.js` + `VisualBadge` — provenance/freschezza/P1–P6/riconoscimento/slot; fix #4 dossier e #8 ReadySlot.
++- **W2:** densità @390 — Oggi legenda/coda collassabili; Timeline già-letti; Plant copertura FDB; height full-page misurate.
++- **W3/W5:** contrasto AA (--text-2 per muted/meta); Salva sticky (`col-action`); fixture test findings (K4 live vuoto).
++- Diff tematici: vocabolario · densità · leggibilità.
++
++
++
++## 0.10.73 — OBS-UX O9-FIX: audit 11 rotte, overflow timeline/runbook
++
++- **Y2/Y4:** catture verificate 1280/768/390 sulle 11 rotte mancanti + dossier solo-L2/noto.
++- **(a) timeline@390:** card eventi non espandono più il documento (`min-width:0` / contain nowrap).
++- **(a) runbook@768/390:** tabelle markdown in scrollport locale (`.md-body { overflow-x: auto }`).
++- Diff: `obs-o9fix-rotto.diff.txt`. Y0/Y1 annotazioni; (b)(c)(d)(e) → O10.
++
++
++## 0.10.72 — OBS-UX O9: harness screenshot, priorità FDB, overflow, avviso churn
++
++- **X1:** diagnosi O8 (PNG tutti 768×); harness CDP `Emulation`+`Page.captureScreenshot`+`o9_png_assert.py` (deviceScaleFactor=1).
++- **X2:** S-C=`fdb_l2_only`→P1 (non P3); S-A→P2, S-B→P3, S-D→P4; test invariante superfici.
++- **X3:** confirm pre-scrittura nome chassis (`DEBT-CHASSIS-SUBJECT-ID-CHURN`); FA 251 intatto.
++- **Layout:** mitiga `DEBT-OGGI-LAYOUT-OVERFLOW` (scroll documento).
++- Diff: fase0 · mappa · ui.
++
++
++## 0.10.71 — OBS-OGGI O8: orfano chassis, conservazione, rumore, priorità difensiva
++
++- **F0:** censimento fatti `subject_type=chassis` (FA 251 orfano); `orphaned_manual_name_facts` in payload chassis; DEBT diagnostica corretta + `DEBT-CHASSIS-SUBJECT-ID-CHURN`. Nessun ri-puntamento.
++- **Q1–Q4:** `queueConservationCheck` a tre superfici + `suppressed_noop` + N6; `held_name_is_manual`; chiude `DEBT-OGGI-QUEUE-SURFACES`.
++- **R1–R3 / P1–P4:** soppressioni strutturali ispezionabili/ripesabili; priorità per conseguenza difensiva + legenda; segnali S-A…S-D non soppressi.
++- Diff: conservazione · rumore · priorità.
++
++## 0.10.70 — OBS-DOSSIER O7: il Dossier risponde (sei domande)
++
++- **D1:** rimossi dump/sezioni grezze dal percorso decisionale; registro di rimozione in `obs-o7.md`.
++- **D2–D6:** `GET /api/assets/{id}/dossier` — Cos'è / Dove / Da quando / Cosa fa / È atteso? / Azioni; storia FDB senza eventi O4 defect (nota + DEBT); freschezza O2/O5; INFERENZA IA offline; blue-team solo-L2.
++- Diff tematici: backend · vista. Debito annotato: `DEBT-DB-SIZE-OBSERVED` (nessun lavoro DB).
++
++## 0.10.69 — OBS-308 O6: punto cieco GS308EP operativo
++
++- **F0:** V1 delta 135→132 = supersession `left_port` (atteso); V2 copy S-A senza «mai visto».
++- **P1–P2:** attestazione strutturale (FDB MAC 308 a monte) + insieme «dietro il 308» (fonte fdb, porta esatta non determinabile).
++- **P3–P5:** assegnazione manuale reversibile (`port.assigned_mac`), inferenza separata, punti ciechi in vista, I7 senza telemetria sul 308.
++- **P6–P7:** card Oggi «nuovo dietro il 308, porta ignota»; vista `/gs308` da Impianto/Dossier; ricerca «dietro il 308».
++
++## 0.10.68 — OBS-MAPPA O5: bonifica O4 + Impianto operativo
++
++- **F0:** marcatura 396 supersession spurie (`o4_defect_concurrent_presence_move`, no DELETE); baseline ricostruita distinta; UI conteggio scartati + `DEBT-O4-SPURIOUS-MOVES`.
++- **M2–M6:** Impianto consuma verità FDB (ruolo+regola, solo-L2, LAA, baseline quality, tre stati vuoti I2, link `link_to_port_id`, ricerca/filtri/azioni, INFERENZA offline).
++- Diff tematici: bonifica · hotfix supersession · mappa.
++
++## 0.10.67 — OBS-FDB O4: FDB come sensore difensivo
++
++- **O4.1–O4.2:** assertion `port.fdb_mac` via shadow (source=fdb, auth 60); baseline esplicita al primo populate porta; LAA = `randomized` (DEBT-PRIVACY-MAC-CHURN).
++- **O4.3:** `ruolo_porta` ∈ {accesso, uplink, non_determinato} solo evidenza strutturale (link / inclusione insiemi MAC) — mai soglia numerica.
++- **O4.4:** card Oggi S-A/S-B/S-C/S-D con azioni F-9; S-D distingue `sorgente_non_disponibile`.
++- **O4.5:** blocco INFERENZA offline (OUI/inventario); slot LLM `/ai` predisposto e disattivato.
++- Debiti: `DEBT-ENV-NO-INTEGRITY-CHECK`; precisazione data regressione in `obs-o3.md`.
++
++## 0.10.66 — OBS-FDB O2: diagnosi FDB + resa onesta copertura
++
++- **FASE 1:** SNMP v2c timeout su LGS328C/LGS310C (ICMP ok); causa (a)/(b) → ramo B; GS308EP limite strutturale.
++- **B1–B4:** stati porta `misurata_fresca`/`misurata_vecchia`/`non_coperta`; pannello Impianto; «non misurato» ≠ assente; move FDB stantio → priorità media.
++- Debiti: `DEBT-FDB-POLL-STALE` aggiornato; `DEBT-OGGI-QUEUE-SURFACES` registrato.
++
++## 0.10.65 — OBS-OGGI O1-FIX: provenienza onesta + conservazione coda
++
++- **T1 — `legacy_manual`:** `name_kind=fact` solo se `name_currency.state===fact`; member-held manual → `legacy_manual` (I1). Conflitto I3/`heldManual` invariati.
++- **T2 — conservazione coda:** `buildTriageRows` assorbe via `absorbedChassisAssetIds` (card reali); `queueConservationCheck` enumera `missing`/`duplicated`.
++- **T3 — test P1–P4** a forma di produzione. **T4 —** `split(/\s+/)`. Debiti `DEBT-CHASSIS-NAME-LEGACY-HELD`, `DEBT-OGGI-LAYOUT-OVERFLOW`.
++
++## 0.10.64 — OBS-OGGI O1: card chassis e adozione nome in Oggi
++
++- **O1.1 — una card per apparato multi-interfaccia in Oggi.** `buildChassisNameCards` + sezione «Apparati multi-interfaccia»: nome dal resolver (`GET /api/chassis` → `name_currency`), altrimenti inferenza etichettata, altrimenti «nome non noto» (I2). Membri (id, ruolo, IP) in elenco. Provenienza sempre visibile (I1).
++- **O1.2 — Adotta/Correggi sul soggetto chassis.** Azioni sulla card → `POST /api/chassis/{id}/rename|adopt-name`. UI risolve sempre al chassis: nessun 409 `chassis_subject_required` grezzo. Conflitto manuale vs proposta più debole → card conflitto (I3). F-9: priorità alta solo con azione.
++- **O1.3 — API:** `list_chassis_payload` espone `name_currency` via `resolver.current`. Membri multi-NIC assorbiti da `buildTriageRows` (niente card proposta per-NIC).
++- **OBS-CURRENCY sospeso** (non chiuso). Gate: currency PASS (1 temp); I6 vuoto. Deploy: `api` + `web`.
++
++## W8-fix — indurimento del presidio + esecuzione reale dei gate (NESSUN deploy, nessun bump)
++
++- **B1 gate indurito (`scripts/w8_currency_gate.py`).** Sentinelle: simbolo ORM `FactAssertion` **+** tabella grezza `fact_assertions` in chiamata SQL (`text/execute`, B1-i) **+** COMBO (fact-token + valore di stato quotato `'current'`, cattura `state='current'`/`filter_by(state="current")`). Allowlist per **(file, snippet, N)** con conteggio: N+1 = violazione, atteso vs osservato in output (B1-ii). Scope allargato a **`api/**` · `scripts/**` · `collector/**`** (B1-iii). `--selftest` (controllo negativo): corpus sintetico in dir temporanea → **3 violazioni attese (file 2,3,4) + 1 accounted → PASS (il gate sa fallire)**.
++- **Esito gate reale (repo):** **FAIL — 10 violazioni** tutte in tooling read-only (`scripts/wp_gate.py`, `scripts/wp_diagnose.py`) che legge `FactAssertion` per metriche di regime, rese visibili SOLO ora dall'allargamento scope. Per regola d'ondata **NON allowlistate**: classificate e **fermate per ruling** (vedi `obs-w8fix.md`).
++- **B2/B3 G8 eseguito e discriminante (`scripts/w8_g8_equivalence.py`).** Import-smoke (T4a: `subject_of` vive in `resolver.py`, import corretto), leg **os.guess** (resolver vs colonna derivata `Asset.os_guess` — store diverso, non tautologico), leg **endpoint** `GET /api/assets/{id}` opzionale (T4b), `--mutate-probe <id>` (T4d). Eseguito su DB sintetico: normale **DIVERGE=0 (PASS)**; `--mutate-probe` → **DIVERGE=1 esatto sull'id, FAIL**. Prova che G8 sa fallire.
++- **B4** AD rimisurato (finestra mobile 24h). **B5** corretta contraddizione: `resolver.history()` è **senza chiamanti**, nessun `?history=true` esiste → `DEBT-HISTORY-PATH-UNWIRED` (spec §12 + `obs-w8.md` corretti). **B6** JSON grezzo `/api/assets/2` e `/109`: «LGS328C» è il canonico del **chassis 23** (tenuto dall'asset **2**); l'asset **109** è membro con nome PROPRIO vuoto (F-5) e AI guess «Switch Centrale» — etichette corrette in `obs-w8.md`.
++- **Nessun tocco a `api/app/**` o `web/src/**`** ⇒ nessun deploy, VERSION resta **0.10.63**.
++
++## W8 — enforcement della correntezza (presidio; NESSUN deploy, nessun bump)
++
++- **W8.1 censimento esaustivo → 0 calcoli locali di correntezza da migrare (classe (a) vuota).** Grep su `api/` e `web/src/`: ogni punto che «decide qual è il valore adesso» è già dentro il resolver (`api/app/facts/`), oppure è (b) legittimo con criterio dichiarato — `ip_addresses.is_current` = elezione IP (F-15, non correntezza), colonne di stato derivate di `Asset` (F-7), evidenza grezza/oggetti di dominio (Event/ScanRun/SpeedTest/Finding/Suggestion/Snapshot/ActionRequest), FE che consuma la correntezza fornita dal server. Nessuna classe (a): la migrazione dei consumatori era già stata completata in W5/W6/W7.
++- **W8.3 gate permanente istituito:** `scripts/w8_currency_gate.py` — sentinella su ogni riga che nomina `FactAssertion` fuori da `api/app/facts/`; **fallisce** su accessi nuovi; allowlist per (file, snippet) con motivazione. Eseguito: **9 eccezioni giustificate, 0 violazioni (PASS)**. Da eseguire a ogni ondata futura insieme a I6. Documentato in `docs/obs-design-spec-025.md` §12 e `KNOWN_DEBT.md` (PRESIDIO-CURRENCY-GATE).
++- **W8.4 API corrente per default:** già così — `GET /api/assets` con `include_historical=false`/`all_proposals=false`, `resolver.history()` percorso storico sanzionato ma non cablato ad alcun endpoint. **0 contratti cambiati.** Verifica runtime (method A): `ips`/`ip_bindings` vuoti → «assente» (≠ zero); binding non-eletti/duplicati restano visibili (F-15). UI stale/superseded invariata da UX3 (nessun cambio, riferimento agli screenshot UX3).
++- **W8.5 G8:** `scripts/w8_g8_equivalence.py` (read-only) — equivalenza correntezza nome resolver↔presentazione; 0 migrazioni ⇒ 0 casi (c) per costruzione; probe da confermare a writer fermi sul NAS.
++- **Nessun cambio di codice runtime** ⇒ nessun deploy, VERSION resta 0.10.63. Presidio e doc sono artefatti di repo. Pre-condizioni W3 (IP) restano aperte: `DEBT-DOUBLE-CURRENT-IP`, `DEBT-IFACE-IP-CARDINALITY-ROLE`, `DEBT-LASTSEEN-DUAL-SEMANTICS`.
++
++## 0.10.63 — UX3 ondata 2: architettura superfici (D8 + confluenze)
++
++- **UX3.1.4 / D8 — Dashboard decisa con misura → «Panoramica» in navigazione.** Misura prod (2026-07-28): la Dashboard mostra ciò che nessun'altra vista mostra — stato calibrazione osservatorio (giorno N/14), **salute Internet** (capacità/traffico FRITZ!Box, speedtest NAS, prossimo test), copertura discovery, salute sensori, KPI device+monitor. **Utile e distinta** (opzione a): entra in nav come «Panoramica» (gruppo RADAR). Coerenza con F-9: `/` non è più la Dashboard ma **reindirizza a `/oggi`** (il cardine è la landing); la Dashboard vive su `/dashboard`.
++- **UX3.2 — architettura delle superfici (decisioni con dati reali).** `suggestions` → già **CONFLUITA** in Oggi (redirect `/suggestions`→`/oggi`; le 2 proposte pending compaiono in Oggi). `findings` → 0 elementi, 0 drift, in shadow: **tolta dalla nav primaria** (coda parallela vuota, F-9), ma **ancora raggiungibile** dalla Dashboard (ReadySlot + card «Findings shadow») e per URL — nessuna funzione irraggiungibile (UX3.2.4). Debito `DEBT-FINDINGS-OGGI-CONFLUENCE` registrato: confluenza autoritativa in Oggi rinviata a calibrazione/scoring (M4–M5). Le viste con domanda unica **TENGONO**: Oggi (cardine), Dossier (device), Inventario (elenco/ricerca), Impianto (porte/modifica), Topologia (dove), Monitor (salute), Timeline (cronologia), Azioni (scansioni/errori discovery), Panoramica (D8).
++- **Nessun dato grezzo rimosso perché non trovato di gravità operativa (UX3.3):** Dossier è strutturato e onesto (identità osservata con ignoti dichiarati, inferenza AI marcata con confidenza+evidenze, GS308EP con `.1.8` corrente/`.3.20` storico) — non un dump. Switch = tre superfici coerenti (Impianto=modifica, Topologia=dove, Monitor=salute), nessuna vista switch legacy autonoma. ReadySlot Dashboard dichiarano l'attesa (I2), non inventano: annotati in `DEBT-DASHBOARD-READY-SLOTS`.
++- **Test:** nessun nodo backend toccato; frontend `oggiTriage`, `oggiProblems`, `observatoryUx`, `portPresentation`, `topologyLayout` invariati verdi. F-1..F-14 rispettati; policy MAC↔IP consultiva (F-12); I5/F-8 immutati; favicon A (F-6).
++
++## 0.10.62 — UX3 ondata 1: mobile + Mappa usabili (D3, D4, D7)
++
++- **UX3.1.2 / D3 — navigazione mobile a comparsa:** sotto 800px la sidebar diventava una barra alta ~280px perché gli 11 link andavano a capo su più righe, spingendo il contenuto sotto la piega. Ora (`App.vue` + `matrix.css`) la barra mobile è compatta (brand + hamburger «☰ Menu» + utente/Esci); il menu si apre a comparsa a piena larghezza in colonna, con tocco comodo, e si chiude a ogni cambio rotta. Desktop invariato. Nessun tocco ad auth/ruoli (K10).
++- **UX3.1.3 / D4 — Impianto, troncamenti alla radice:** in `Plant.vue` più righe informative usavano `white-space:nowrap`+`overflow:hidden`+ellissi su testo che deve andare a capo (stessa **classe** di causa di D2, qui su testo semplice, non `DenseRow`). Punti condivisi enumerati e corretti: `.fdb-status` (banner copertura FDB — la **data dell'ultima misura non va mai troncata**, F-13: ora va a capo a ogni larghezza), `.switch-role`, `.port-foot .patch` (vanno a capo su mobile). 
++- **UX3.1.1 / D7 — Topologia usabile su mobile:** il grafo a coordinate assolute in un contenitore scroll è inutilizzabile sotto 800px (finestrella su una mappa grande). Sotto 800px il grafo è sostituito da una **lista gerarchica per livello** (Radice → Livello 1/2/3) che risponde alla stessa domanda («dove sta un apparato, a cosa è attaccato»): riusa i nodi già posizionati da `layoutTopology` e mostra per ciascun nodo nome canonico, IP/tipo e «↳ collegato a <padre>»; gli endpoint restano toccabili per isolarne il percorso. I controlli zoom (inerti senza grafo) sono nascosti su mobile. Nessun dato inventato.
++- **Test:** `topologyLayout`, `portPresentation`, `observatoryUx`, `oggiTriage`, `oggiProblems` (invariati, verdi). Favicon A immutata (F-6), I5/F-8 immutati, nessuna logica identità/currency nel frontend, policy MAC↔IP consultiva (F-12), FDB solo presentazione (F-13).
++
++## 0.10.61 — UX2 ondata 1b: Oggi non tronca su tablet (radice DenseRow)
++
++- **UX2.5 — Oggi, troncamento su tablet risolto alla radice:** su tablet (≈820px) i valori delle card («Causa ed evidenza», «Esito», …) erano **tagliati a metà parola**. Causa: lo slot primario di `DenseRow` porta lo stile generico `white-space:nowrap` + `overflow:hidden`, adatto a righe singole ma non al contenuto **multilinea** delle card di Oggi. Fix in `Oggi.vue`: dentro `.oggi` lo slot primario va a capo e resta visibile a **tutti** i breakpoint (non solo ≤640px). Nessun impatto su desktop (già largo) né sul resto delle viste che usano DenseRow.
++
++## 0.10.60 — UX2 ondata 1: onestà dei dati porta/telemetria + Oggi mobile
++
++- **UX2.2.4 / F-13 — copertura FDB dichiarata in UI (`DEBT-FDB-POLL-STALE`):** la copertura FDB è ferma (RO 2026-07-27: 46 porte, 38 con `last_fdb_at`, 0 fresche nelle 24h; più recente 2026-07-25 14:52). Nuovo helper puro `fdbCoverageStatus()` in `web/src/observatoryUx.js` (con test) calcola la freschezza dalla `last_fdb_at` di porta, **mai** dall'ora del poll fallito. Impianto (`Plant.vue`): banner «copertura FDB non aggiornata: ultima mappatura … (circa N h fa)» e badge per-switch corretto — prima `switchFreshness` spacciava `fdb_poll.at` (tentativo fallito, `ok:false`) come «dati al … (ok)». Solo presentazione: nessuna diagnosi/riavvio del polling (F-13).
++- **UX2.5 / I2 / I7 — Monitor: assente ≠ zero:** in «Switch · salute porte» (`Monitoring.vue`) traffico ed errori erano resi `0 b/s` / `0` per switch senza SNMP riuscito (GS308EP non interrogabile, LGS in timeout). Ora sono `—` (non disponibile) quando `snmp_poll.ok≠true`, e l'ultimo poll è marcato «non riuscito». Nessuna telemetria inventata.
++- **UX2.1 / UX2.5 — Oggi (il cardine) responsive su mobile:** le card di Oggi troncavano nome/MAC e non impilavano label/valore su schermi stretti (le azioni comprimevano il contenuto). Fix CSS scoped in `Oggi.vue`: sotto 640px la riga densa impila (azioni sotto, allineate a sinistra), i campi vanno a capo, nome/MAC non si troncano.
++- **Test:** `observatoryUx` (nuovo caso `fdbCoverageStatus` F-13), `oggiTriage`, `oggiProblems`, `portPresentation`, `topologyLayout` — 40 verdi. Favicon A immutata (F-6), I5/F-8 immutati, nessuna logica di identità/currency nel frontend (F-13 = presentazione di timestamp misurati), policy MAC↔IP resta consultiva (F-12).
++
++## 0.10.59 — W7-CLOSE: eccezione L2 da attributi misurati, ignoto≠falso, policy consultiva
++
++- **W7C.2 (K9/F-5) — eccezione L2-only NON dipende più da `Asset.name`:** `_l2_only_exception_class` (`inventory.py`) derivava la classe powerline/510E da `" ".join(asset.name, asset.category, asset.vendor)`. Dopo W4c.1 i membri di chassis hanno `Asset.name` **vuoto per progetto** (F-5): un powerline membro di chassis non sarebbe stato riconosciuto. Ora la classe è derivata da attributi **MISURATI** — `category`, `vendor`, l'**OUI vendor** di ogni interfaccia — e, quando serve un nome, dal **nome CANONICO risolto** (`presentation_name_for_asset`, chassis-scoped), mai dal nome grezzo del membro. Se nessun attributo misurato riconosce la classe, la classe è **ASSENTE (`None`, K3)**, non un match mancato spacciato per «non è powerline».
++- **W7C.3 (I2/K3) — input costanti del classifier risolti:** in `_mac_ip_policy_present` gli input `chassis_mgmt_ip` e `superseded_by_newer_binding` erano passati fissi (`None`, `False`). Il secondo **asseriva** un fatto non misurato («nessun binding più recente ha soppiantato»). Ora `superseded_by_newer_binding` è **tri-stato** (`bool | None`, default `None`=IGNOTO): solo un `True` **misurato** produce il verdetto `superseded`; `None` (ignoto) non viene mai coerciuto in un'asserzione. Il wire passa `None` (ignoto), non più `False`. `chassis_mgmt_ip` resta `None`=IGNOTO (non serve/non misurato qui, mai inventato).
++- **W7C.5 — policy PIENA CONSULTIVA (mai autoritativa):** nuovo `inventory.mac_ip_policy_consultation` (read-only) calcola il verdetto della policy completa (regole #1..#5) per ogni asset e lo espone come **divergenza diagnostica** accanto allo stato reale, con l'evidenza che tiene presente il device. Endpoint admin `GET /api/admin/mac-ip-policy-consultation` (sola lettura, ruolo operator). **Non scrive nulla e non guida `operational_state`/`trust_level`/`reliable`** (F-7): le regole #3/#5 restano **NON autoritative** (attivazione autoritativa rinviata e condizionata alla correzione delle regole che dissentono dalla realtà osservabile — `DEBT-MAC-IP-POLICY-WIRE` aperto). Mai esposto come stato del device in UI.
++- **Test:** `test_mac_ip_policy` (11, incl. tri-stato supersession) esercitato; nuovi nodi fixture/app W7C.2 verificati per import/sintassi (K4, non esercitati a runtime per contesa risorse NAS). F-7 intatto, I5/F-8 immutati, favicon A immutata (F-6).
++
++## 0.10.58 — W7 (deploy 1/2): T-a uplink→portal + wire mac_ip_policy additivo
++
++- **W7.3 T-a (DEBT-FDB-UPLINK-PORTAL):** `apply_fdb_observation` (`topology.py`) **ricalcolava** `interface.interface_role` per-porta prima della guardia portale, facendo un **downgrade `uplink→endpoint`** su un singolo hit FDB → poi attribuiva `portal_last_seen` a una porta uplink (presenza al posto sbagliato). Fix: un hit FDB per-porta NON declassa più un'interfaccia strutturale (`uplink`/`infra`); i downgrade restano di competenza del reclassify globale (`role_for_interface_global`). Test T-a verde, non indebolito. Il fix NON azzera retroattivamente `portal_last_seen`: nessun effetto su presence/structural al boot (misurato).
++- **W7.2 wire `mac_ip_policy` (deploy 1/2 — additivo, F-7 intatto):** il classifier `classify_mac_ip_presence` è ora collegato a `reconcile_asset_presence` come **solo segnale di PRESENZA** (`reliable`), limitato alle lacune che la logica esistente non copre: membro di chassis mantenuto presente dall'IP corrente di chassis (`present_l2_unaddressed`) ed eccezione powerline/510E (`l2_only_allowed`). Il wire **non forza mai `stale`/`superseded`** e non è un secondo autore di `operational_state`/`trust_level` (classify_asset resta l'unico deriver). `present_l2_unaddressed` è **dichiarato** dalla freschezza FDB misurata, mai dedotto dal solo IP di chassis. **Misura pre-deploy (read-only prod):** 0 hit `present_l2_unaddressed`/`l2_only_allowed` correnti ⇒ **0 cambi di `operational_state`** (wire inerte oggi, esercitato dai test unitari `test_w7_consumers` — K4).
++- **W7.2.3 split dichiarato:** la riclassificazione AMPIA della policy (regole #3/#5: `stale`/`superseded` che toglierebbero presenza a device correnti) ha blast-radius **alto (52/151 asset**, inclusi FritzBox router, powerline, Sky box) e tocca infrastruttura oggi `active` → **rinviata al deploy 2/2** (decisione di dominio su quali device attivi declassare: Michele). Non fatta qui per non introdurre regressioni (c) né violare «stale/superseded fuori dallo stato corrente».
++- **Test:** `test_w7_consumers` (5, wire additivo), `test_m2_discovery` (T-a) verdi; nodi presence/trust/scans nominati verdi (94). Gate I6 vuoto.
++
++## 0.10.57 — W6-REVIEW: rank ipp/snmp riportato al minimo non alterante di I5
++
++- **W6R.1 (DEBT-IPP-PRECEDENCE, correzione soglia non misurata):** W6 aveva collocato `ipp=88`/`snmp=87` **sopra** `dhcp=85`, alterando l'ordinamento dell'invariante di PRODOTTO I5 (`manual > ai > dhcp > fritz > oui`) per far passare due test — stessa classe di difetto della soglia inventata rimossa in W1.5-bis. L'UNICO vincolo MISURATO è `ipp > fritz` (test T-c, fixture fritz(0.9) vs ipp(0.96)); nessun test impone `ipp > dhcp` né alcun ordine per `snmp` (T-d e `test_printer_provider` asseriscono solo creazione/valore della proposta, mai `best_guess`). Rank riportato al minimo non alterante: **`ipp=snmp=81`** (tier «identità auto-dichiarata via management», sopra `fritz=80`, **sotto `dhcp=85`** → I5 intatto; tie ipp/snmp risolto da confidence). La posizione del tier vs `dhcp` è una decisione di dominio lasciata a Michele (STOP-5, K8), tenuta sotto dhcp.
++- **W6R.1.3 effetto misurato (read-only prod 0.10.56):** **0 proposte pending `ipp`/`snmp`**, **0 asset vinti** da `ipp`/`snmp`, **0 flip** di `best_guess` abbassando i rank → il fix è **comportamentalmente inerte** in produzione. Le 3 differenze `i5_reorder` (id 109/120/134) sono `ai` (rank 90, non toccato) e **restano**.
++- **W6R.2.1 `adopted_names_changed = 0` (misurato):** i 30 nomi adottati (`manual_overrides` include `name`) sono **identici** tra prod 0.10.56, backup pre-deploy W6 e nightly pre-W6 — nessun nome adottato ha cambiato valore.
++- **W6R.2.2 asset senza best guess:** 28 asset con `best_guess` vuoto; di questi 9 senza nome canonico (`presented=None`) → la UI dichiara l'assenza («Device senza nome» / MAC, I2), mai un placeholder spacciato per nome. Gli altri mostrano il nome dell'apparato (asset.name o canon chassis).
++- **Test:** nodi nominati Python verdi (T-c/T-d verdi con `ipp=snmp=81`); gate I6 `rg 'scoreSpecificity|specificity' api/` vuoto. Nessun test indebolito. Artefatti W6 e W5-bis ripubblicati con URL raw (curl 200).
++
++## 0.10.56 — W6: fingerprinting, inferenze AI, generazione proposte alla correntezza
++
++- **W6.1 correntezza dei consumatori (`suggest.best_guess`, `ai_naming._hostnames`, `fingerprint_facts` backfill hostname):** `best_guess` non filtrava lo stato delle `NameProposal` e sorfava proposte **rejected/superseded/archived** — in prod **51 asset** ricevevano come «best guess» un nome che l'utente aveva rifiutato o che era stato soppiantato. Ora i tre percorsi consumano SOLO proposte `pending`; le altre restano a DB (storia leggibile, `escludere ≠ cancellare`). Fatti `fact_assertions` in stato `superseded/historical` non erano consumati (i percorsi leggono `resolver.current` o `observations_raw`, mai gli stati non correnti) → per quel lato il fix è preventivo (misurato: 0).
++- **W6.2 DEBT-IPP-PRECEDENCE (T-c/T-d), gerarchia unica I5:** `best_guess` decideva la precedenza con un **secondo prospetto di pesi** (`SOURCE_WEIGHT`) non coincidente con I5. Rimosso: ora ordina per `authority_for` (registro I5) primario, `confidence` a parità. `ipp`/`snmp` hanno un rank **dichiarato esplicito** in `AUTHORITY_RANK` (ipp=88, snmp=87: identità auto-dichiarata dal device via management, sotto l'AI curata e sopra dhcp/fritz). Root-cause di T-c/T-d: `create_name_proposal` faceva `db.add` senza sincronizzare la relazione `asset.name_proposals` → le proposte create non erano visibili in-sessione; ora `append` alla relazione. T-c → `('Stampante Studio','ipp')`, T-d → proposta `snmp` presente. Test non indeboliti.
++- **W6.3 soppressione alla generazione (già conforme):** `should_suppress_proposal` sopprime per **provenienza + soggetto** (chassis-manual blocca sorgenti più deboli; dedup per valore), mai per specificità del nome (I6, K6). Gate `rg 'scoreSpecificity|specificity' api/` **vuoto**.
++- **W6.2/6.4 R-D:** un'inferenza AI resta marcata (`source=ai`, `status=pending`) e NON sovrascrive un valore `manual`; `ai` non entra come sorgente hostname fattuale nel payload LLM.
++- **W6.4 gate G6 (writer fermi, `now` ricalcolato):** `best_guess` PRE vs DEPLOYED, per id. Baseline pre-deploy `diff=0` (inline-old fedele). Post-deploy: **54 differenze, tutte (a)** — 51 `status_exclusion` (correntezza) + 3 `i5_reorder` (id 109/120/134: `ai` pending ora batte `oui`/`fritz` per I5). Zero (b), zero (c). Fingerprint/AI generation NON esercitati in prod (K4): filtro preventivo + AI = API a pagamento; copertura nei test unitari.
++- **W6.6 test (nodi nominati):** Python nominati verdi (incl. `test_w6_consumers` W6.6.1-6.4, T-c/T-d ora verdi) + 39 JS. Gate I6 vuoto.
++
++## 0.10.55 — W5-bis: chiusure prima di W6
++
++- **W5b.1 mapping livello→stato TOTALE (`trust.py` `_apply_level_meta`):** per ogni livello attivo (`known`/`confirmed_present`) `operational_state="active"` viene scritto SEMPRE. Prima, se `inventory_hidden_auto` era falso, `operational_state` restava invariato e `_build_trust_plan` (che confronta `operational_state`) marcava `structural` in perpetuo — stessa forma del difetto 109 dietro una condizione. L'auto-hide viene revocato; un nascondimento MANUALE resta rispettato ed esplicitamente escluso (non è `structural`: il piano confronta `operational_state`, non i flag di hide). Mapping reso totale, gate NON reso cieco (F-7: unico writer del campo).
++- **W5b.2 gate di regime = CONVERGENZA (`scripts/wp_gate.py` riscritto):** prima costruiva due piani `dry_run` sullo stesso stato con lo stesso `now` (verificava il determinismo, non la convergenza). Ora: piano → **apply** (in-sessione, mai committato, snapshot pre-op) → ricostruzione con `now` **ricalcolato** → `structural == []`. Precisazione aggiunta a `obs-wp.md` (non riscritta la storia).
++- **W5b.3 lista classe-(b) chiusa voce per voce:** copia ingest `wifi_associations.resolve_ap_asset` era rimasta su `is_current` dopo la migrazione W5 di `topology._resolve_ap_asset`; migrata al resolver contestuale `resolve_asset_by_ip_at(ap_ip, observed_at)`, tie → None → fall-through sul nome (I2). Chiamanti di `presentation_name_for_asset` verificati: nessuno annulla il None con `or ""`/placeholder come surrogato di nome canonico (i fallback sono display-di-ultima-istanza, dichiarati). G5 di W5 non ha esercitato il path `ap_ip` (0/62): copertura nei test unitari (dichiarato, non «verificato»).
++- **W5b.5 test (nodi nominati):** 176 nodi Python verdi + 39 JS verdi + nuovi W5b.1.5 (mapping totale, hide manuale preservato) e W5b.3 (ingest AP contestuale + tie). T-c/T-d (`test_printer_enrichment`, DEBT-IPP-PRECEDENCE) restano ROSSI: contratti W6, non addomesticati. Gate I6 `rg 'scoreSpecificity|specificity' api/` vuoto.
++
++## 0.10.54 — W5: consumatori dello stato corrente sul resolver
++
++- **W5.0/1 perimetro:** migrazione di LETTURA (nessuna scrittura su colonne Asset). Il nome canonico nelle viste migrate passa già dal resolver (`presentation_name_for_asset` → `current("chassis", …, "asset.name")`, fallback dichiarato I2 quando assente).
++- **W5 `_resolve_ap_asset` (DEBT-TOPO-IP-CONTEXTUAL):** il fallback per-IP non usa più `IpAddress.is_current` ma `resolve_asset_by_ip_at(ap_ip, observed_at)`: risolve l'AP che DETENEVA l'IP al momento dell'associazione, non chi lo detiene ora. Tie → None → fall-through all'euristica sul nome (I2, nessun proprietario indovinato).
++- **W5.1.3 (IP multi-valore):** `asset.iface_ip` ha `cardinality=single` (solo IP eletto); il resolver NON è fonte esclusiva per gli IP finché il ruolo non entra nella `excl_key` (pre-condizione W3, DEBT-IFACE-IP-CARDINALITY-ROLE). La UI continua a mostrare tutti gli IP reali (multi-IP non collassati).
++- **W5.2 gate G5 (writer fermi):** risoluzione AP `is_current` vs contestuale su 62 associazioni Wi-Fi → **0 differenze** (0 associazioni sul path `ap_ip`; tutte risolvono per `ap_asset_id`/`ap_mac`). Nessuna regressione: la migrazione è un fix latente, equivalenza-preservante sui dati correnti.
++- **W5.4 test:** `_resolve_ap_asset` contestuale + tie→fall-through (W5.4.6); chassis un nome canonico dal resolver (W5.4.5); fatto assente → None (W5.4.1); resolver stale/superseded esclusi dal corrente, storia leggibile (facts_resolver/shadow_w2).
++
++## 0.10.53 — W-P: presenza con un solo proprietario, stato derivato
++
++- **W-P.1 (misurato):** ipotesi A — Fritz VEDE l'asset 109 (`discovery.fritz.active=True` fresh, MAC `D8:EC:5E:CC:1C:01`). Il lift era legittimo; il difetto era che `classify_asset` non consumava l'evidenza fritz → riderivava `fritz_historical` ≠ stato memorizzato → `structural=1` permanente. Divergenti reali: solo 109.
++- **W-P.2:** l'evidenza si scrive, lo stato si deriva. `classify_asset` ora legge l'evidenza fritz-active fresca (`meta.discovery.fritz`, finestra staleness) e deriva `known` (autorità fritz I5 0.90, MAI `confirmed_present`). `lift_fritz_quarantine_on_active` non scrive più lo stato: registra l'evidenza e ri-esegue la derivazione unica. Mapping `livello→stato` estratto in `_apply_level_meta` (un solo writer, condiviso con `_apply_trust_plan`).
++- **W-P.3:** round-trip a writer fermi (due piani consecutivi `structural==[]`); fixture 109-like con/senza evidenza fritz; D.0.b (fresh→known, mai confirmed_present) + reversibilità; W-C invariata (inventory non solleva né smasha la quarantena). Gate I6 vuoto.
++- **fritz_historical NON assorbente:** un'evidenza fritz-active fresca solleva la quarantena via derivazione; scaduta l'evidenza il piano riporta a `fritz_historical`/`stale_unlocated` senza oscillare.
++- **DEBT-PRESENCE-SOURCE-OUTAGE:** migliorato (fritz vivo → `known`, non stale), ma NON chiuso: manca ancora la distinzione «sorgente non disponibile» vs «dispositivo assente» (richiede segnale di copertura sorgente). Resta APERTO.
++
++## 0.10.52 — W4d: census Asset.name, una scrittura rename, UX truth
++
++- **W4d.1:** censimento lettori `Asset.name`; `presentation_name_for_asset` su API display/porte/topologia/scan; lista (b) → input W5.
++- **W4d.2:** `adopt_name_on_chassis` / `mark_lgs310c_manual` → sola `apply_observation` (niente doppio shadow).
++- **W4d.3:** `obs-ux2.md` matrice «non verificato a runtime» + checklist Michele; LGS via API reali.
++- **W4d.4:** favicon opzione B (anello+hub, stessi token) pubblicata; attuale non sostituita.
++- **F0:** DEBT-FRITZ-TR064-CREDENTIALS chiuso (recreate collector).
++
++## 0.10.51 — F2: revisione UI/UX portale (presenza, Mappa, favicon)
++
++- **F2.0:** gruppo nav MAPPA = Inventario/Impianto/Topologia/…; mappa porte fisica = `/plant`.
++- **F2.1 Plant:** deep-link `?asset=`/`?asset_id=`; pallini SNMP nascosti se non supportati (GS308); limiti I2/I7 in Branch308.
++- **F2.2–3:** banner Fritz muto (Oggi/Dashboard/Inventario); `stale_unlocated` → «copertura sorgente non disponibile»; conflitti R-H nel flusso Oggi; dossier/inventario un nome chassis.
++- **F2.5:** favicon su token `--bg-0`/`--accent`/`--ok`; SVG+ICO+apple-touch; link versionati.
++- **Non toccato:** trust layer (DEBT-PRESENCE-SOURCE-OUTAGE); credenziali Fritz; W5 consumatori.
++
++## 0.10.50 — W4c: rename chassis un-canonico, bonifica una-tantum, boot pulito
++
++- **W4c.1:** `adopt_name_on_chassis` scrive solo `fact_assertions` (subject=chassis); i membri non vengono rinominati né marcati manual; triage sibling su `chassis_role===interface`.
++- **W4c.2:** bonifica `provenance_unreliable` con cutoff `2026-07-27T11:00:00Z`, fuori dal boot; script `scripts/unmark_post_cutoff_provenance.py`.
++- **W4c.3:** `mark_lgs310c_manual` rimosso dal bootstrap (helper one-shot).
++- **W4c.5:** aperto DEBT-PRESENCE-SOURCE-OUTAGE (Fritz muto ≠ device assente).
++
++## 0.10.49 — W4b: provenienza senza traduzione, anti-ballooning, rename chassis
++
++- **W4b.0.a:** shadow writers non traducono più le sorgenti; unknown → rifiuto + `unknown_source`; bonifica `provenance_unreliable` su nmap non ricostruibile.
++- **W4b.0.b:** divergenze ripetute (stesso excl_key/value/source) aggiornano `occurrences` invece di nuove righe.
++- **W4b.1:** LGS310C (asset 3 / chassis 24) marcato manual (provenienza); LGS328C resta `unknown_nonempty`; UI card dichiara l’apparato di appartenenza.
++- **W4b.2:** rename/adopt a soggetto chassis; member → 409 con chassis; conflict-review in Oggi; `asset.name` collegato agli shadow writers.
++- **W4b.3:** aperti DEBT-RH-BEFORE-REFRESH; `_table_bytes` non usa più la size del file DB; DEBT-FRITZ resta aperto (credenziali TR-064 assenti).
++
++## 0.10.48 — W4a: soggetto chassis e soppressione proposte a monte
++
++- **W4a:** NameProposal generate/soppresse per soggetto chassis (manual blocca autorità inferiore; dedup `(chassis, valore)`); risolvibilità calcolata; sibling come interfacce.
++- **W4a.0:** `facts/shadow.py` tracciato; DEBT-IFACE-IP-CARDINALITY-ROLE; DEBT-FRITZ-TR064-CREDENTIALS (STOP-5); `subject_ref_interface` rifiuta multi-NIC senza primary.
++- **Non toccato:** adopt/rename 409 (W4b); shadow `asset.name`.
++- Report: [`docs/obs-w4a.md`](docs/obs-w4a.md).
++
++## 0.10.47 — W2: shadow writers fact_assertion
++
++- **W2:** scritture parallele `asset.iface_ip` (soggetto=interfaccia, excl_key=`asset.iface_ip:{iface_id}`); nessun consumatore legge ancora.
++- **S1:** barriera + SAVEPOINT; kill switch `FACT_SHADOW_WRITERS_ENABLED`; circuit breaker (20k righe / 2k/giorno / 50 MiB).
++- **Non collegato:** `asset.name` (chassis → W4a/W4b). Observability: `GET /api/admin/facts/shadow-stats`.
++- Report: [`docs/obs-w2.md`](docs/obs-w2.md).
++
++## 0.10.46 — W-D-fix: discriminante multi-IP sul dedup
++
++- **X.2:** `entity_key` resta MAC-scoped; `compute_dedup_key` ripristina discriminante IP (`fact_discriminant_for`) — DEBT-TOPO-IP-CONTEXTUAL ripristinato.
++- **X.4:** lift Fritz → `known` (non `confirmed_present`); decisione in `on_fritz_active_evidence` (trust).
++- **Debiti:** DEBT-LASTSEEN-DUAL-SEMANTICS. W2 → **0.10.47**.
++- Report: [`docs/obs-wd-fix.md`](docs/obs-wd-fix.md).
++
++## 0.10.45 — W-D: sblocco gate W2 (T-b, T-e, T-f)
++
++- **T-b:** `entity_key_for` MAC-scoped quando MAC noto; IP-only provisional (`identity_provisional`) + DEBT-PROVISIONAL-IDENTITY-MERGE.
++- **T-e/T-f:** demotion IP chiude `last_seen=now` → `resolve_asset_by_ip_at` trova il detentore storico.
++- **D.0.b:** `lift_fritz_quarantine_on_active` (trust) — quarantena non assorbente; inventory resta bloccata.
++- **Debiti:** DEBT-DOUBLE-CURRENT-IP; Cassiopea ri-caratterizzata chassis (W4a/W4b); alembic unificato in DEBT-ALEMBIC-BASELINE-LEGACY-TABLE. W2 writers → **0.10.46** (poi **0.10.47** in W-D-fix).
++- Report: [`docs/obs-wd.md`](docs/obs-wd.md).
++
++## 0.10.44 — F1-bis: DEBT-RECONCILE-CHURN-1 + riqualifica gate F1
++
++- **W-C:** `inventory_may_set_operational_state` non solleva/smasha `trust_quarantine` (`fritz_historical`) — chiude DEBT-RECONCILE-CHURN-1 (classe, non asset 116). Test zero-iface obbligatorio.
++- **W-B.3:** script una-tantum `scripts/normalize_empty_manual_names.py` (asset 98/150 name manual vuoto → assenza; no bump).
++- **Debiti:** DEBT-IP-CURRENT-SCOPE-PER-ASSET (Cassiopea asset 6). W2 slitta a **0.10.45** (poi rinumerato → **0.10.46** in W-D).
++- Report: [`docs/obs-f1bis.md`](docs/obs-f1bis.md).
++
+ ## 0.10.43 — OBS-IDENTITY W1.5-bis gate closure
+ 
+-- **W1.5-bis:** rimossa soglia E3 inventata (`mac_count_threshold` solo se misurata); test limiti E5-physical (D.2); tool RO `obs_identity_linker_dryrun.py`. Nessun writer identity acceso. W2 shadow writers slitta a **0.10.44**. Debiti: DEBT-RECONCILE-CHURN-1 (asset 116), DEBT-E3-AVAILABLE-FALSE.
++- **W1.5-bis:** rimossa soglia E3 inventata (`mac_count_threshold` solo se misurata); test limiti E5-physical (D.2); tool RO `obs_identity_linker_dryrun.py`. Nessun writer identity acceso. W2 shadow writers slitta a **0.10.44** (poi rinumerato → **0.10.45** in F1-bis). Debiti: DEBT-RECONCILE-CHURN-1 (asset 116), DEBT-E3-AVAILABLE-FALSE.
++- **MAC↔IP (fixture):** classifier puro `mac_ip_policy.py` + 9 test contratto; **non** wired a reconcile/trust (DEBT-MAC-IP-POLICY-WIRE → W7).
+ 
+ ## 0.10.42 — W1.5 identity-evidence (deployata)
+ 
+
+diff --git a/observatory/docs/KNOWN_DEBT.md b/observatory/docs/KNOWN_DEBT.md
+index 3fe6739..80cc3fd 100644
+--- a/observatory/docs/KNOWN_DEBT.md
++++ b/observatory/docs/KNOWN_DEBT.md
+@@ -2,20 +2,307 @@
+ 
+ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite e fuori scope finché non riprese.
+ 
++## DEBT-UNDECLARED-BOOT-MUTATION
++
++- **Priorità:** alta (disciplina ondate) — aperto O11-FIX / 0.10.76.
++- **Cosa:** in O11 (`obs-o11-evidenze.diff.txt`) è entrata in `api/app/bootstrap.py` la chiamata a `reconcile_chassis_name_proposal_suppression`, che a ogni avvio API **cancella** (`db.delete`) proposte di nome (chiavi di ritorno `archived_a`/`archived_b` fuorvianti: non erano soft-archive). Fuori dallo scopo O11, assente dall'elenco file del report.
++- **Misura prod 0.10.75→0.10.76:** la funzione ha toccato **0** proposte (nessun id da enumerare). Nessuna ripesca necessaria per questa finestra.
++- **Risoluzione O11-FIX F8:** chiamata **rimossa** dal boot (non dichiarata come voluta). Soft-archive w4a residui: elenco ispezionabile + ripesca (coerente O8).
++- **Lezione:** una mutazione di dati a ogni avvio **non** entra in un'ondata di ingest senza comparire nell'elenco file del report.
++- **Lezione generale (O12):** un contatore o un campo che dichiara `archived_*` mentre esegue `db.delete` è un **difetto in sé**, indipendentemente dalle righe toccate; i nomi devono descrivere l'operazione reale.
++- **Vietato:** reintrodurre mutazioni boot silenziose; confondere `archived_*` con soft-archive senza ripesca.
++
++## DEBT-BI-P6-VISIBILITY
++
++- **Priorità:** bassa — registrato O12 / 0.10.77 (nessun lavoro in O12).
++- **Cosa:** le voci «ignoto con evidenze Zeek» (B-I raggruppate) stanno a P6, livello dell'igiene inventario. Scelta difendibile perché il caso urgente «non riconosciuto attivo» resta a P1, ma va verificato che vengano effettivamente guardate.
++- **Vietato:** alzarle a P1 senza nuova misura; mescolare a O12 coverage.
++
++## DEBT-OGGI-MOBILE-DENSITY
++
++- **Priorità:** media — registrato O11 / 0.10.75 (nessun lavoro in O11).
++- **Cosa:** in O10 la full-page di `/oggi` a 390 px è passata da 13680 a 13228 px (~3%), mentre Timeline scendeva del ~30%. La vista cardine resta un muro su mobile: l'obiettivo densità di W2 non è stato raggiunto dove contava di più.
++- **Vietato:** dichiararlo chiuso senza nuova misura scrollH a 390 px sotto un obiettivo esplicito; mescolarlo a O11 behaviour.
++
++## CANTIERE OBS-CURRENCY — SOSPESO (non chiuso)
++
++- **Stato:** sospeso all'avvio di OBS-OGGI O1 / 0.10.64. **Non riprendere** finché non riaperto esplicitamente.
++- **Residuo T7 mai eseguito in produzione:** G8 (`asset.name`, `os.guess`, `--mutate-probe`), `wp_gate` (convergenza, `needs_apply`, `T_backup`, structural, breaker, AD rimisurato), I6 sul NAS.
++- **Debiti aperti correlati:** `DEBT-PROD-SOURCE-DRIFT`, `DEBT-WPGATE-CURRENCY-COUNT-LOCAL`, `DEBT-G8-ENDPOINT-LEG-UNEXERCISED`, `DEBT-HISTORY-PATH-UNWIRED`.
++- **`scripts/_w4a_measure.py` sul NAS:** per direttiva di Michele **NON** va spostato, archiviato, cancellato né ulteriormente analizzato. Nessun controllo su quel file.
++- **Vietato:** riaprire T7/merge su main «di passaggio»; dichiarare OBS-CURRENCY chiuso.
++
++## DEBT-SCREENSHOT-HARNESS-FALSE-EVIDENCE
++
++- **Priorità:** documentale — aperto O9-FIX / 0.10.72→0.10.73.
++- **Cosa:** nelle ondate **O5, O6, O7, O8** è stata dichiarata una cattura «ai tre breakpoint» (1280/768/390) che **non è avvenuta**. Diagnosi X1 (O9): tutti i PNG O8 misurano **768×1756** (anche quelli etichettati 1280/390). Causa: `browser_take_screenshot` (MCP) cattura la superficie Electron fissa e ignora `Emulation.setDeviceMetricsOverride`. Lo stesso harness era in uso in O5–O7.
++- **Perché le ondate restano valide:** accettate su **dati** (enumerazioni JSON/DB, gate currency, invarianti I6, FA, breaker), non sulle immagini. Le immagini erano evidenza falsa di responsive, non prova dei risultati runtime.
++- **Stato harness:** corretto e verificato in O9 (`scripts/o9_capture_harness.md`: Emulation + `Page.captureScreenshot` + `deviceScaleFactor:1` + `o9_png_assert.py`). **Mai** `browser_take_screenshot` per i breakpoint.
++- **Vietato:** dichiarare «tre breakpoint» senza W×H reali distinti; cancellare le immagini O5–O8 (si annota, non si riscrive la storia).
++
++## DEBT-O13C-PREMATURE-BASELINE
++
++- **Priorità:** chiuso in O13C-FIX / 0.10.80 (criteri B2 + invalidate + switch novità).
++- **Cosa (O13C 0.10.79):** baseline chiusa ready nello stesso ciclo su `deferred_creates==0` dopo ~1 h di finestra (~30 175 conn vs ~631 194/giorno O13B, ratio ≈20.9) — scarto 821 vs 4292 dominante da corpus corto, non da collasso hybrid key.
++- **Effetto:** 246 emissioni potenziali su ready falso marcate `emitted_on_invalid_baseline` (non cancellate); novità N5 sospesa (`EGRESS_NOVELTY_SIGNALS_ENABLED=false`) mentre ingest resta on.
++- **Vietato:** riaprire ready su `deferred==0`; confondere switch novità con kill-switch ingest; cancellare le emissioni marcate.
++
++## DEBT-FLOW-VOLUME-OVER-BUDGET
++
++- **Priorità:** chiuso per path hybrid O13C (0.10.79) — grano ext/int + cap/defer; **non** alzati i tetti.
++- **Cosa (storico O13):** `conn.log` SPAN produce ≈ **631 194** righe/24 h; grano orario full `(src,dst,dport,proto)` fuori budget breaker 2 000/giorno.
++- **Effetto O13:** `FLOW_INGEST` **resta off** (E1e). Visibilità destinazioni sul path legacy `flow_observations` resta chiusa.
++- **O13C:** destinazioni via `egress_observations` (hybrid). Tabella `flow_observations` / modello `FlowObservation` **intatti come residuo legacy** — nessun migrate/delete; non riabilitare `FLOW_INGEST` / `ZEEK_PROVIDER` per questo debito.
++- **Vietato:** abilitare ingest flow «per vedere»; alzare i tetti senza ruling; confondere cap (defer) con breaker (stop).
++
++## DEBT-FLOW-OBSERVATIONS-LEGACY-RESIDUE
++
++- **Priorità:** bassa — annotato O13C / 0.10.79.
++- **Cosa:** `flow_observations` + ingest `/api/ingest/flows` restano nel codice/DB come storico; coverage li classifica come legacy; path di produzione è `egress_observations` / `zeek_egress`.
++- **Vietato:** purge/migrate della tabella in questa ondata; riattivare `FLOW_INGEST` senza decisione esplicita.
++
++## DEBT-DB-SIZE-OBSERVED
++
++- **Priorità:** da valutare — **NON aprire ora** (registrato O7 / 0.10.70; osservato già in O6).
++- **Cosa:** il file SQLite in produzione misura **~1805 MiB** mentre `fact_assertions` pesa ~0,31 MiB. Il volume sta altrove (verosimilmente `observations_raw` / TTL 7 giorni) — **solo osservazione**, nessuna diagnosi autorizzata in O7.
++- **Vietato in O7 e finché non ripreso:** boot/backup/manutenzione DB, vacuum, purge, cambio TTL, analisi `_w4a_measure.py`.
++- **Ripresa:** ondata dedicata esplicita di Michele.
++
++## DEBT-CHASSIS-NAME-LEGACY-HELD
++
++- **Priorità:** media — aperto O1-FIX / 0.10.65; **diagnosi corretta O8 / 0.10.71**.
++- **Cosa (originaria O1):** in produzione `name_currency` (resolver) è `absent` sui chassis vivi; la card d'apparato usa il layer legacy (`name_kind=legacy_manual` o `inference`).
++- **Correzione diagnostica (O8 — annotata, non cancellata):** la diagnosi «il fact store dei nomi chassis è vuoto, serve il backfill W3» è **errata**. Esiste almeno un fatto `asset.name` a soggetto chassis: **FA id 251**, valore `LGS310C`, source=`manual`, authority=100, state=`current`, `subject_id=24`. Il chassis 24 **non esiste più**; l'asset 3 (LGS310C) vive sul **chassis 32** (membri 3, 139, 143). I fatti non mancano: sono **mal indirizzati** (soggetto orfano). Vedi `DEBT-CHASSIS-SUBJECT-ID-CHURN`.
++- **Conseguenza:** `legacy_manual` sulla card del 32 è onesto rispetto al resolver su quel soggetto; FA 251 non deve essere usato come se fosse sul chassis corrente.
++- **Risoluzione prevista:** decisione di Michele sul ri-puntamento/adozione di FA 251 (area identità chassis — esclusiva). Il backfill W3 resta bloccato dalle pre-condizioni IP e **non** è la causa di questo orfano.
++- **Vietato:** dichiararlo risolto etichettando il legacy come «fatto»; ri-puntare/cancellare FA 251 senza decisione esplicita.
++
++## DEBT-CHASSIS-SUBJECT-ID-CHURN
++
++- **Priorità:** alta (pilastro soggetto canonico OBS-CURRENCY) — aperto O8 / 0.10.71.
++- **Causa radice (Z3):** in `api/app/services/chassis_grouping.py` → `reconcile_chassis_grouping`, i chassis sono chiavati sul **frozenset dei member_id**. Se il set di membership cambia, si crea una **riga `Chassis` nuova** (`Chassis(...); db.flush()` ~726–731) con **id nuovo**; i gruppi uscenti passano da `_dissolve_chassis` (`db.delete(chassis)`). **L'id chassis non è stabile** attraverso un ri-raggruppamento.
++- **Censimento Z1 (prod O8, enumerato):** un solo fatto a soggetto chassis — FA **251** (`asset.name`, subject=24, `LGS310C`, manual/100/current, created_at 2026-07-27T11:03:50). `chassis_exists=False` → **orfano**. Nessun altro `subject_type=chassis`.
++- **Z2:** chassis 24 assente (nessuna riga, nessun membro). Non c'è etichetta errata *viva* sul 24; il rischio è usare FA 251 come nome del chassis 32.
++- **Z4 protezione:** `FactAssertion` non ha FK verso `chassis` — dissolve **non** cancella FA 251. Nessun path di pulizia/dedup/adozione trovato che cancelli o riscriva `subject_id` di un fatto manuale orfano; il resolver non lascia sovrascrivere manuale (auth 100) da fonte più debole. **Vietato** introdurre ri-puntamento automatico.
++- **Vietato:** ri-puntare, riassegnare, adottare o cancellare fatti a soggetto chassis senza decisione di Michele; allargare l'allowlist currency per «aggiustare» letture fuori da `api/app/facts/`.
++
++## DEBT-OGGI-LAYOUT-OVERFLOW
++
++- **Priorità:** UX — aperto O1-FIX; **mitigato O9 / 0.10.72** (annotato, non cancellato).
++- **Cosa (O1):** screenshot full-page di `/oggi` bloccato da overflow di layout; sezione chassis mobile ≈366×6680 px.
++- **Causa radice (O9 X1):** `body { overflow: hidden }` + `.workspace { height:100%; overflow:auto }` — lo scroll vive nel main, non sul documento; `Page.captureScreenshot(captureBeyondViewport:true)` resta al viewport.
++- **Mitigazione O9:** documento scrollabile (`body` overflow-y auto; `.workspace` overflow visible; `.app-shell` min-height). Verificare topologia fullscreen e sticky sidebar.
++- **Residuo:** rifinitura densità chassis su mobile resta in ondata UX se ancora eccessiva.
++- **Vietato:** dichiarare «chiuso» senza prova full-page PNG più alto del viewport.
++
++## DEBT-HISTORY-PATH-UNWIRED
++
++- **Priorità:** bassa — aperto W8-fix / 0.10.63 (correzione contraddizione B5 della review W8).
++- **Cosa:** `resolver.history()` (`api/app/facts/resolver.py`) esiste ed è esportato (`app/facts/__init__.py`) ma è **senza chiamanti**: nessun router lo invoca e **nessun endpoint espone `?history=true`** (verificato: grep chiamanti + elenco route routers/ — solo `proposal_history`/`warning_history`/monitor history, estranei ai fatti). Il contratto «storico su richiesta esplicita» è **dichiarato ma non cablato**.
++- **Conseguenza:** l'API è corrente per default *perché* lo storico non è esposto (non per una scelta di gating). Non è una regressione: è codice previsto e inerte.
++- **Ripresa:** quando un consumatore avrà bisogno dello storico dei fatti, cablare `resolver.history()` a un endpoint con `?history=true` (default corrente). Fino ad allora resta inerte.
++- **Vietato:** dichiarare `?history=true` come funzionante finché non è cablato; rimuovere `resolver.history()` o riclassificarlo silenziosamente come morto (è la superficie sanzionata per lo storico).
++
++## DEBT-PROD-SOURCE-DRIFT
++
++- **Priorità:** media — aperto W8-T7 / 0.10.63.
++- **Cosa:** il sorgente in produzione (`/volume1/Docker/observatory`, NO git) **non ha alcun controllo di integrità** contro il repo. Il conteggio `file scansionati` del currency gate è un **proxy debole**: misura solo un netto e **ignora** `api/app/facts/**` (escluso dallo scan perché è la fonte protetta). Un resolver divergente sul NAS sarebbe invisibile al gate e invaliderebbe G8.
++- **Evidenza (W8-T7 ripresa):** enumerazione gate-equivalente 175 (repo) vs 176 (NAS); unica differenza di path `scripts/_w4a_measure.py` (solo NAS). Hash sha256 di **tutto** l'albero `.py` (facts incluso): tutti i file condivisi **identici**; solo l'extra NAS. La corsa precedente si era fermata correttamente sul netto 176≠175.
++- **Risoluzione prevista:** confronto sha256 dell'intero albero `.py` (procedura FASE B di W8-T7) come **passo standard** di ogni ondata che tocchi la produzione — non solo il conteggio del currency gate.
++- **Vietato:** considerarlo chiuso perché «i conteggi coincidono»; escludere dal gate un file di drift per path (convertirebbe un drift rilevato in un punto cieco permanente).
++
++## DEBT-WPGATE-CURRENCY-COUNT-LOCAL
++
++- **Priorità:** media — aperto W8-fix2 / 0.10.63.
++- **Cosa:** `scripts/wp_gate.py:103` esegue `COUNT(FactAssertion WHERE state=="current")` — una lettura di correntezza dei fatti **fuori dal resolver**.
++- **Perché è un secondo autore di correntezza:** il resolver applica TTL / `_maybe_stale` / R-E per decidere cosa è «corrente adesso»; un `state=="current"` grezzo in SQL **può divergere** dal corrente effettivo del resolver (es. righe scadute non ancora marcate stale). È una **seconda definizione di «corrente»** dentro lo strumento che certifica la produzione.
++- **Chi lo consuma:** il valore «FA current» stampato nella riga REGIME di `wp_gate` (baseline dei report d'ondata).
++- **Risoluzione prevista:** helper di conteggio corrente in `api/app/facts/` (es. `facts.count_current(...)`) che riusi il resolver; `wp_gate` lo chiama invece dello SQL grezzo. È una **micro-ondata runtime successiva** (tocca `api/app/facts/`), **non ora**.
++- **Stato nel gate:** sanato in `TEMPORARY_ALLOWLIST` di `w8_currency_gate.py` con `debt=DEBT-WPGATE-CURRENCY-COUNT-LOCAL` (stampato in testa all'output; l'esito è `PASS (con 1 eccezione temporanea)`).
++- **Vietato:** dichiararlo chiuso allowlistandolo in **permanenza**; introdurre altre letture `state=="current"` grezze fuori dal resolver.
++
++## DEBT-G8-ENDPOINT-LEG-UNEXERCISED
++
++- **Priorità:** bassa — aperto W8-fix2 / 0.10.63.
++- **Cosa:** la leg endpoint di G8 (`GET /api/assets/{id}`, superficie consumer reale) resta **SKIP** in produzione perché richiede `OBS_G8_TOKEN`, che è una **credenziale di sessione** (STOP legittimo: informazione/segreto che non va cablato nel gate).
++- **Conseguenza:** su produzione la discriminazione di G8 poggia sul **solo `--mutate-probe`**, dato che la leg `asset.name` interna è **tautologica** (T1: `presentation_name_for_asset` ripiega su `Asset.name` quando il fatto è assente) e la leg `os.guess` è prevista **vacua** (T5a: nessun os.guess fact corrente). Il controllo negativo è ora onesto (rimosso il caso speciale `MUTATE_SENTINEL`, aggiunta la pre-condizione R!=None).
++- **Ripresa:** esercitare la leg endpoint con un token fornito a runtime (non versionato), oppure con un client interno autenticato, per confrontare la correntezza del resolver con la superficie HTTP reale.
++- **Vietato:** dichiarare G8 «copertura completa» finché la leg endpoint non è esercitata; cablare `OBS_G8_TOKEN` nel repo o nel gate.
++
++## PRESIDIO-CURRENCY-GATE (presidio permanente, non debito)
++
++- **Natura:** presidio, non debito da chiudere — istituito W8 / 0.10.63; indurito W8-fix / W8-fix2.
++- **Cosa presidia:** la correntezza dei FATTI si legge SOLO dal resolver (`api/app/facts/`). Nessun altro consumatore può interrogare `FactAssertion` per decidere «qual è il valore adesso» (evidenza si scrive, stato si deriva — F-7).
++- **Come (versione consegnata):** `scripts/w8_currency_gate.py` — scope **`api/** · scripts/** · collector/****, esclusi `api/app/facts/**` (fonte protetta) e i due file d'ondata. **Tre sentinelle:** simbolo ORM `FactAssertion`; tabella `fact_assertions` dentro chiamata SQL (`text(`/`.execute(`/`.exec_driver_sql(`); COMBO fact-token + `'current'` quotato. Allowlist **per (file, snippet, N)** con conteggio (N+1 = violazione) + sezione **TEMPORANEA** `(file, snippet, N, debt)` con `debt` obbligatorio (voce senza debt → exit 1). Ha `--selftest`.
++- **Criterio del ruling (W8-fix2):** `api/app/facts/**` escluso perché è la fonte; **ogni altro consumatore, tooling compreso, si allowlista riga per riga** (come `admin.py`), MAI per path intero.
++- **Stato W8-fix2:** **0 violazioni · 17 eccezioni permanenti** (8 api + 9 tooling `wp_gate`/`wp_diagnose`) · **1 temporanea** (`DEBT-WPGATE-CURRENCY-COUNT-LOCAL`) → **PASS (con 1 eccezione temporanea)**. Selftest **PASS** (3 violazioni attese + config-check debt).
++- **Limitazione dichiarata (R6):** B1(i) è **MITIGATO, non chiuso** — una stringa SQL costruita su più righe e concatenata sfugge alle tre sentinelle. Non dichiarare «chiuso».
++- **Da eseguire:** a ogni ondata futura, con output completo, **insieme a I6**.
++- **Non presidiato (criterio dichiarato):** `ip_addresses.is_current` = elezione IP (F-15), non correntezza dei fatti (pre-condizioni W3: `DEBT-DOUBLE-CURRENT-IP`, `DEBT-IFACE-IP-CARDINALITY-ROLE`, `DEBT-LASTSEEN-DUAL-SEMANTICS`); colonne di stato derivate `Asset` (F-7); evidenza grezza/oggetti di dominio; `resolver.history()` (`DEBT-HISTORY-PATH-UNWIRED`).
++- **Equivalenza (G8):** `scripts/w8_g8_equivalence.py` — **read-only sulla TRANSAZIONE DB** (`db.rollback()`, nessun commit; file versionato). Confronta `asset.name` (resolver vs presentazione vs endpoint) e `os.guess` (resolver vs colonna `Asset.os_guess`): `DIVERGE=0` non-regressione. `--mutate-probe <id>` = controllo negativo (`DIVERGE=1` + FAIL).
++- **Doc:** [`docs/obs-design-spec-025.md`](obs-design-spec-025.md) §12 · [`docs/obs-w8.md`](obs-w8.md) · [`docs/obs-w8fix.md`](obs-w8fix.md) · [`docs/obs-w8fix2.md`](obs-w8fix2.md)
++- **Vietato:** allowlist con pattern generico o esclusione per path di un consumatore; leggere correntezza dei fatti fuori dal resolver; introdurre un secondo autore di stato (F-7).
++
++## DEBT-FINDINGS-OGGI-CONFLUENCE
++
++- **Priorità:** UX (architettura superfici) — aperto UX3 / 0.10.63
++- **Cosa:** la route `/findings` è una coda parallela a Oggi (F-9). Misura in prod (2026-07-28): `/api/findings`=0, `/api/drifts`=0 — la superficie è **vuota** ed è in **shadow** finché lo scoring non è calibrato (Dashboard: «Findings restano in shadow»). Per non frammentare la coda operativa, `/findings` è stata **tolta dalla nav primaria** in 0.10.63.
++- **Raggiungibilità (UX3.2.4 rispettato):** la route esiste ancora ed è raggiungibile dalla Dashboard (ReadySlot «Findings e severità → Apri Findings (shadow)» e card «Findings (shadow) → Apri») e per URL diretto. Nessuna funzione operativa resa irraggiungibile.
++- **Confluenza rinviata:** quando i findings compositi diventeranno autoritativi (scoring calibrato, M4–M5), i loro elementi devono diventare **problemi dentro Oggi** (F-9), non una vista separata. Condizione: calibrazione completata + severità calibrata.
++- **Vietato:** ricreare un hub findings separato da Oggi; esporre findings shadow come alert.
++
++## DEBT-DASHBOARD-READY-SLOTS
++
++- **Priorità:** UX (roadmap M3–M5) — annotato UX3 / 0.10.63
++- **Cosa:** la Dashboard (ora «Panoramica», in nav) mostra `ReadySlot` placeholder («Presenza», «Findings e severità», «Coda attenzione») che in calibrazione dichiarano onestamente «Disponibile dopo la calibrazione» (I2, nessun dato inventato). Non sono rumore da rimuovere: sono slot di roadmap con etichetta d'attesa.
++- **Ripresa:** riempimento a calibrazione conclusa (M3/M4/M5). Nessuna barra muta, nessun valore plausibile.
++- **Vietato:** riempirli con valori stimati prima della calibrazione.
++
+ ## DEBT-RECONCILE-CHURN-1
+ 
+-- **Priorità:** media (bootstrap regime) — aperto in W1.5-bis 2026-07-25
+-- **Cosa:** asset **116** ha `trust_level=fritz_historical` ma `meta.operational_state=active`. Ogni boot1 con `needs_apply=true` / `structural=1` / `T_backup≈80s`; apply trust corregge; `inventory.reconcile_asset_presence` ripristina `active`.
+-- **Attribuzione:** churn preesistente (backup pre-0.10.42), **non** indotto da `identity_evidence`.
+-- **Vietato:** tollerarlo silenziosamente come “regime ok”; sostituire la misura del boot1 con un boot successivo senza dichiararlo.
+-- **Fix quando:** ownership `operational_state` per `fritz_historical` — inventory non deve smashare la quarantena trust senza evidenza reliable; oppure heal one-shot + guard.
++- **Priorità:** media (bootstrap regime) — **CHIUSO in F1-bis / 0.10.44**; **confermato D.6** sul boot1 di **0.10.45** (`structural=0`)
++- **Cosa:** asset **116** aveva `trust_level=fritz_historical` ma `meta.operational_state=active`. Boot1 `needs_apply=true` / `structural=1` / `T_backup≈80s` perché `inventory_may_set_operational_state` permetteva `fritz_historical`→`active` se `reliable=True` (anche con 0 interfacce via reachability).
++- **Fix:** inventory non solleva né smasha `trust_quarantine` (`fritz_historical` op_state o trust_level) — gerarchia invariata `archived > trust_quarantine > trust_protected > inventory_presence`. Test `test_quarantine_zero_interfaces_inventory_cannot_set_active`.
++- **Vietato (storico):** tollerarlo come “regime ok”; caso speciale su `asset_id=116`.
++
++## DEBT-IP-CURRENT-SCOPE-PER-ASSET → ri-caratterizzato come IDENTITÀ CHASSIS (W-D)
++
++- **Priorità:** W4a/W4b (consolidamento chassis) — riaperto/riscritto F1-bis→W-D 2026-07-26
++- **Fatto:** Cassiopea è modellata come **due asset record** — asset **5** «Cassiopea — NIC 1» tiene `192.168.1.3` CURRENT (id 9); asset **6** tiene `192.168.3.24` CURRENT (id 855). L’IP di management non è perso: è sull’altro record. Il ping fallito su `.3.24` dal container api è atteso (lato SPAN), non un sintomo.
++- **Test di non-regressione (da chiudere in W4a/W4b):** dopo consolidamento, Cassiopea = **UN** apparato con **DUE** interfacce; entrambi gli IP correnti ciascuno sulla propria interfaccia; un solo nome canonico.
++- **Vietato ora:** patch dati che forzi due current sullo stesso asset_id / stessa iface.
++- **Doc:** [`docs/obs-f1bis.md`](obs-f1bis.md) · [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-DOUBLE-CURRENT-IP
++
++- **Priorità:** pre-condizione **W3** — aperto W-D 2026-07-26
++- **Cosa:** stesso IP con >1 riga `is_current=1` (stesso asset o asset diversi). Al backfill W3 collideranno con `uq_fact_assertions_current_slot`.
++- **Casi enumerati (live, invariati da X.2):**
++  - `192.168.1.2` — id **3** (asset 2, mgmt) + id **153** (asset 2, fritz)
++  - `192.168.2.108` — id **15** (asset 11) + id **853** (asset 138)
++- **Nota:** W3 richiede una **regola di risoluzione dichiarata PRIMA** del backfill. **NON** collassare ora. Cardinalità non cambiata da X.2 (dedup ≠ `is_current`).
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md) · [`docs/obs-wd-fix.md`](obs-wd-fix.md)
++
++## DEBT-PROVISIONAL-IDENTITY-MERGE
++
++- **Priorità:** post W-D (quando MAC sconosciuto → poi scoperto) — aperto W-D 2026-07-26
++- **Cosa:** `entity_key` IP-only è marcato `payload.identity_provisional=true`, ma non esiste ancora un percorso di **fusione** quando il MAC viene scoperto in seguito (evitare duplicato).
++- **X.2:** invariato — discriminante IP sul dedup non introduce merge. Cardinalità debito invariata.
++- **Vietato:** inventare il merge in questa ondata.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md) · [`docs/obs-wd-fix.md`](obs-wd-fix.md)
+ 
+ ## DEBT-E3-AVAILABLE-FALSE
+ 
+ - **Priorità:** bloccante per E3 finché SNMP non è misurabile
+ - **Cosa:** E3-topological richiede access_port + mac_count misurato + soglia **esplicita** + simultaneità. Con poll SNMP in timeout, E3 = **available=false** (degrada a E2). Nessuna soglia inventata.
+ - **Vincolo:** non promuovere E3 finché `fdb_poll.ok` / misure porta non tornano.
+-- **Ripresa:** W2+ quando SNMP/LLDP writers misurano.
++- **Ripresa:** W2+ quando SNMP/LLDP writers misurano; requisiti accesso/poll in **DEBT-FDB-LLDP-PASSIVE**.
++
++## DEBT-FDB-LLDP-PASSIVE
++
++- **Priorità:** wave futura post W1.5-bis (writers SNMP / presenza) — **non** interrompe W1.5-bis
++- **Cosa:** implementazione iniziale **passiva/read-only** FDB+LLDP: presenza/posizione L2, **non** identità; FDB ≠ ownership; LLDP/CDP solo corroborante (spoofabile). LGS310C/328C: SNMPv3 authPriv, RO, ACL solo Cassiopea, view Bridge/LLDP/ENTITY, no SET, segreti fuori repo/log, timeout/rate limit; LLDP/CDP non abilitato dove non serve. ObservationRaw: switch_id, port, VLAN/bridge-domain, timestamp, age/last_seen, acquisition_method, failure_state; dedupe per **transizione** non per poll. Alert «nuovo MAC su access» solo dopo classificazione misurata access/trunk/uplink/AP/powerline, inizialmente informativo; **niente** quarantena/shutdown auto. Spoof / MAC move / CAM flood / randomized MAC previsti; assenza alert ≠ sicurezza.
++- **Doc:** [`docs/obs-fdb-lldp-passive.md`](obs-fdb-lldp-passive.md)
++- **Vietato:** usarlo come scorciatoia identity/merge; SET SNMP; enforcement automatico porte; dichiarare “rete sicura” perché non ci sono alert.
++
++## DEBT-ENTITY-KEY-MAC-IP
++
++- **Priorità:** era bloccante W2 — **CHIUSO in W-D / 0.10.45** (2026-07-26)
++- **Fix:** `entity_key_for` → MAC quando MAC noto; IP-only → provisional (`identity_provisional`). Test T-b verde.
++- **Residuo correlato (non collassare):** righe IP duplicate / refresh-as-transition — vedi B.2 / DEBT-DOUBLE-CURRENT-IP.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-IP-MIGRATION-NONETYPE
++
++- **Priorità:** era bloccante W2 — **CHIUSO in W-D / 0.10.45** (2026-07-26)
++- **Causa:** `elect_interface_primary` demoteva senza chiudere `last_seen` → `resolve_asset_by_ip_at` tornava `None` a T intermedio.
++- **Fix:** alla demotion, `last_seen = now` se mancante/precedente. T-e / T-f verdi.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-ALEMBIC-BASELINE-LEGACY-TABLE
++
++- **Priorità:** bassa (igiene CI; Alembic **non** gira in prod) — unificato W-D 2026-07-26
++- **Ex:** DEBT-ALEMBIC-MIGRATION-TESTS + baseline disallineata da tabella `observations` droppata.
++- **Sintomi test:** `ix_observations_seen_at`, `assets.chassis_id`, `assets.printer_first_seen` su fixture/alembic.
++- **Vietato:** inseguirli come fix runtime; schema prod = `create_all`.
++- **Doc:** [`docs/obs-wd.md`](obs-wd.md)
++
++## DEBT-IPP-PRECEDENCE (T-c / T-d) — CHIUSO in W6, rank corretto in W6-REVIEW (0.10.57)
++
++- **Priorità:** media (autorità naming) — registrato W-D 2026-07-26, **chiuso** W6 2026-07-27, rank rivisto W6-REVIEW
++- **Test:** `test_ipp_precedence_and_human_category_override` (T-c); `test_snmp_enrichment_creates_proposal_without_overwriting_name` (T-d) — entrambi VERDI
++- **Root-cause:** `create_name_proposal` faceva `db.add` senza sincronizzare la relazione `asset.name_proposals` (proposte create invisibili in-sessione) + `best_guess` usava un secondo prospetto di pesi (`SOURCE_WEIGHT`) non coincidente con I5.
++- **Fix (W6.2 + W6R.1):** `create_name_proposal` → `append` alla relazione (guardia `has_rejected_name_proposal` invariata, non ricrea rifiutate); `best_guess` ordina per `authority_for` (I5) primario + confidence. **Rank corretto in W6-REVIEW:** `ipp=88`/`snmp=87` (sopra dhcp, alteravano I5) → **`ipp=snmp=81`** — unico vincolo misurato `ipp>fritz` (T-c); sotto `dhcp=85`, I5 di prodotto intatto. Posizione tier vs dhcp = decisione di dominio (Michele, STOP-5). Misurato: 0 flip in prod. Nessuna seconda gerarchia. Test non indeboliti.
++
++## DEBT-FDB-UPLINK-PORTAL (T-a) — CHIUSO in W7 (0.10.58)
++
++- **Priorità:** media — registrato W-D 2026-07-26 (preesistente), **chiuso** W7 2026-07-27
++- **Test:** `test_m2_discovery.py::test_fdb_skips_observe_portal_on_uplink_role` — VERDE
++- **Osservato:** `portal_last_seen` valorizzato invece di `None` su ruolo uplink.
++- **Root-cause:** `apply_fdb_observation` (`topology.py`) ricalcolava `interface_role` per-porta prima della guardia portale, declassando `uplink→endpoint` su un singolo hit FDB.
++- **Fix (W7.3):** un hit FDB per-porta non declassa più un'interfaccia strutturale (`uplink`/`infra`); i downgrade restano del reclassify globale. Nessun azzeramento retroattivo di `portal_last_seen`. Test non indebolito.
++
++## DEBT-MAC-IP-POLICY-WIRE — APERTO (wire additivo 0.10.58; policy piena CONSULTIVA 0.10.59; autoritativa rinviata)
++
++- **Priorità:** wave presence — **wire additivo fatto** (0.10.58); **policy piena esposta come CONSULTIVA** (0.10.59); attivazione autoritativa delle regole #3/#5 **rinviata e condizionata**.
++- **Cosa:** policy dominio MAC↔IP (chassis ≥1 IP corrente; eccezione powerline/510E; `present_l2_unaddressed`; supersession binding) — classifier `api/app/services/mac_ip_policy.py` + test contratto.
++- **Fatto (W7.2, deploy 1/2, 0.10.58):** `classify_mac_ip_presence` collegato a `reconcile_asset_presence` come **solo segnale di presenza** (`present_l2_unaddressed` + `l2_only_allowed` → `reliable`); mai forza `stale`/`superseded` (F-7 intatto, non secondo autore). Misurato 0 cambi in prod.
++- **F-14 — il wire è INERTE per costruzione (W7C-FIX, 0.10.59):** ogni decisione consumata dal wire (`present_l2_unaddressed`, `l2_only_allowed`) richiede `mac_fdb_fresh=True`; ma la stessa porta fresca genera in `reconcile_asset_presence` `physical_reasons=["FDB recente"]`, quindi `reliable` era **già** `True` senza il wire. Il wire non fa lavoro su `reliable` a prescindere dalla freschezza FDB. Misura corretta prod (`scripts/w7c_measure.py`, freschezza FDB reale): **0 hit** — vedi `docs/obs-w7close.md` §W7C-FIX.1. Correlato a DEBT-FDB-POLL-STALE (oggi 0 porte fresche).
++- **Fatto (W7C.5, 0.10.59) — policy piena CONSULTIVA:** `inventory.mac_ip_policy_consultation` (read-only) + endpoint admin `GET /api/admin/mac-ip-policy-consultation` calcolano il verdetto della policy completa (regole #1..#5) per ogni asset e lo espongono come **divergenza visibile** accanto allo stato reale e all'evidenza che tiene presente il device. **Non scrive, non guida `operational_state`/`trust_level`/`reliable`** (F-7). Le regole #3/#5 **NON sono autoritative**.
++- **Rinviato (attivazione autoritativa — decisione dominio Michele + correzione regole):** le regole #3/#5 marcherebbero `stale` device la cui presenza è dimostrata nello stesso istante da altre evidenze (FritzBox router, powerline, Sky box) — dissentono dalla realtà osservabile su una quota rilevante del parco e sbagliano sul gateway. **Il difetto è nella regola, non negli asset.** L'attivazione autoritativa è **condizionata alla correzione** delle regole che dissentono dalla realtà; fino ad allora il verdetto resta consultivo (I3). Blast-radius misurato read-only prod: vedi `docs/obs-w7close.md` (enumerazione per id).
++- **Doc:** [`docs/obs-currency-mac-ip-policy.md`](obs-currency-mac-ip-policy.md), [`docs/obs-w7close.md`](obs-w7close.md)
++- **Vietato:** attivare #3/#5 in modo autoritativo prima della correzione delle regole; usare la policy come scorciatoia di fusione chassis; inventare management IP.
++
++## DEBT-FDB-POLL-STALE — CHIUSO in O3 (2026-07-28) — poll ripristinato lato nostro
++
++- **Chiusura (O3):** le chiavi v3 erano **valorizzate** nei `.env.bak-*` (USER len=11, AUTH len=23, PRIV len=26, `SNMP_VERSION` len=1) ma **azzerate** nel `.env` attivo (limite superiore 2026-07-27; vedi precisazione in `obs-o3.md`) (`SNMP_VERSION=2c`). Restore minimo da `.env.bak-0910` + `force-recreate` collector → LGS `fdb_poll.ok=true`, `source=SNMPv3 authPriv`; porte id **{1..38}** `misurata_fresca`; GS308EP **{39..46}** resta `non_coperta` (limite).
++- **S2:** backup RO `pre-4b-drop-20260725-161330.db` (copia cancellata): poll riusciti 25/07 con `snmp_source=SNMPv3 authPriv` (non v2c).
++- **O2 resa onesta:** invariata e ancora necessaria (poll può fallire di nuovo).
++- **O4 rete di sicurezza a valle:** card S-D in Oggi se `last_fdb_at` oltre finestra; a monte resta `DEBT-ENV-NO-INTEGRITY-CHECK`.
++- **Vietato:** rimettere `SNMP_VERSION=2c` senza v3; stampare valori secret; toccare config apparati.
++
++## DEBT-O4-SPURIOUS-MOVES
++
++- **Priorità:** media — registrato O5 / 0.10.68 (bonifica F0).
++- **Cosa:** durante O4, prima dell'hotfix concurrent-presence, ogni MAC presente contemporaneamente su uplink e porta di accesso generava `reason=mac_move` spurie (**396** righe `port.fdb_mac` superseded, `created_at < 2026-07-28T22:01:43Z` = StartedAt container hotfix).
++- **Perché non si cancellano:** sono evidenza reale con interpretazione sbagliata; DELETE vietato (F0). Marcate `reason=o4_defect_concurrent_presence_move`.
++- **Esclusione:** `list_mac_move_supersessions` / card S-B / conteggio mac_move attivo le escludono; UI mostra il conteggio scartato + questo debito.
++- **Vietato:** dichiararlo chiuso cancellando le righe; alzare i tetti breaker.
++
++## DEBT-ENV-NO-INTEGRITY-CHECK
++
++
++- **Priorità:** media — registrato O4 / 0.10.67.
++- **Cosa:** un'edizione manuale di `.env` può azzerare chiavi non correlate senza che nulla lo segnali. Accaduto alle credenziali SNMPv3 fra il 22/07 (`.env.bak-0910` valorizzato) e il 27/07 18:58 (bak già vuoto); scoperto solo giorni dopo per assenza di dati FDB.
++- **Mitigazione a valle (O4):** card S-D su copertura FDB non fresca.
++- **Manca a monte:** confronto all'avvio del collector su **nomi+lunghezze** delle chiavi attese (mai leggere i valori) rispetto a un fingerprint dichiarato / bak noto.
++- **O12-FIX K5 (diagnosi, nessuna riattivazione):** quarto sensore coinvolto nello stesso evento — `asustor_nas_snmp` / chiavi `SNMP_NAS_*`: **ABSENT** nel `.env` corrente e nei bak `.env.bak.20260727*` / `o3`; **PRESENT** (nonempty, tranne `SNMP_NAS_PRIV_PROTOCOL` empty) nei bak pre-27 (`.env.bak-0910`, `-0910-preOS`, `-099`, `-prekuma-20260720-1746`). Stesso pattern di caduta chiavi di FLOW/SNMP_V3. Ultimo `meta.asustor_snmp.observed_at` ≈ 2026-07-25. **Nessuna modifica `.env`, nessuna riattivazione in O12-FIX.**
++- **Vietato:** loggare o echo dei secret; alzare i tetti breaker per «compensare»; ripristinare SNMP NAS in un'ondata di coverage senza ondata dedicata.
++
++## DEBT-ONESHOT-SCRIPT-RESIDUE
++
++- **Priorità:** media (disciplina gate) — registrato O12-FIX / 0.10.78.
++- **Cosa:** seconda volta che uno script una-tantum resta in `scripts/` e sporca il presidio currency (`_o11fix_postcheck.py` → violazione gate; prima `_w4a_measure.py` → drift repo↔NAS).
++- **Risoluzione O12-FIX:** archivio recuperabile su obs-exchange (`obs-o11fix-postcheck-archivio.py`) + `mv` in `_attic/` (mai `rm`, mai allowlist).
++- **Drift dichiarato:** dopo lo spostamento `file scansionati` repo **198** vs NAS **199** — delta = `scripts/_w4a_measure.py` solo sul NAS (`DEBT-PROD-SOURCE-DRIFT`).
++- **Convenzione proposta (non implementata):** ogni script `scripts/_*.py` (prefisso underscore = oneshot/diagnosi) deve (a) vivere solo nel tempo dell'ondata, (b) essere `mv` in `_attic/` prima della chiusura, (c) comparire nel deliverable share se serve recupero; CI/gate locale fallisce se `scripts/_*.py` è presente a chiusura ondata.
++- **Vietato:** allowlistare lo script per far passare il gate; `rm` senza archivio; lasciare oneshot in `scripts/` su prod.
++
++## DEBT-SNMP-PROFILE-PER-SWITCH — APERTO (registrato O2-FIX)
++
++- **Priorità:** progetto FDB/SNMP — tre apparati condividono un solo profilo `default`.
++- **Cosa:** `SNMP_PROFILE_*` **assenti**; `resolve_snmp_profile` supporta profili per label ma nessuno è cablato per switch. GS308EP (no FDB) e LGS (v3 target) non possono divergere via env.
++- **Ripresa:** quando ci sono credenziali v3, introdurre profili per `328c`/`310c` (e lasciare 308ep senza poll FDB).
++- **Vietato:** inventare profili senza credenziali reali.
++
++## DEBT-OGGI-QUEUE-SURFACES
++
++- **Priorità:** UX — residui O1-FIX; **chiuso O8 / 0.10.71** (conservazione a tre superfici + rename + N6).
++- **(a)** `fact_is_manual` → `held_name_is_manual` (O8 Q4).
++- **(b)** no-op identico → `suppressed_noop`, non `missing` (O8 Q2).
++- **(c)** terza superficie rumore inclusa in `queueConservationCheck` (O8 Q1); membro su card non conta anche come rumore ai fini conservazione.
++- **(d)** controllo negativo N6 aggiunto (O8 Q3).
++- **Stato:** chiuso in O8. Non riaprire salvo regressione.
+ 
+ ## DEBT-MIRROR-SOURCES
+ 
+@@ -65,20 +352,65 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+ - **Residuo:** riprendere DVR (#2) / LUMIN / openhabian dal toggle critico se servono; non riattivare Kuma runtime.
+ - **Vietato:** ripristinare Kuma come dipendenza; delete delle righe kuma archiviate.
+ 
+-## DEBT-TOPO-IP-CONTEXTUAL (CHIUSO v0.9.0)
++## DEBT-TOPO-IP-CONTEXTUAL
+ 
+-- **Priorità:** bassa (latente → perimetro ampliato 2026-07-21) — ex BUG 3 declassato
++- **Priorità:** bassa (latente → perimetro ampliato 2026-07-21; discriminante raw ripristinato 0.10.46) — ex BUG 3 declassato
++- **Invariante:** multi-IP sullo stesso MAC **non collassa** nello store raw (fatti distinti).
++- **Stato raw:** **violato in 0.10.45** (`dedup_key` usava solo `entity_key` MAC-scoped → 5 IP → 1 riga). **Ripristinato in 0.10.46:** `entity_key` resta MAC; `compute_dedup_key` aggiunge discriminante IP (`fact_discriminant_for`). Identità ≠ dedup. Vedi [`docs/obs-wd-fix.md`](obs-wd-fix.md).
+ - **Perimetro definitivo:** multi-IP per ruolo (`primario` / `vpn` / `mgmt` / `servizi`). `endpoint.ip_change` **solo sul primario**. Casi noti:
+   - **FRITZ!Box** (asset 1): 5 IP contemporanei sullo stesso MAC — `.1.1` primario, `.1.9` VPN LAN, `.1.4`/`.1.5`/`.1.6` (ruolo TBD servizi/altro); ×223 `ip_change`/24h documentati poi silenziati.
+-  - **GS308EP** (asset 4): `.1.8` mgmt (fatto). `.3.20` = binding Fritz storico sullo stesso MAC, **ownership da confermare** (non inventariale; non SPAN — SPAN=p22/NIC2 `.3.24` / sink `10.255.255.2/30`). Vedi `docs/obs-ux-ip-308-verifica.md`.
++  - **GS308EP** (asset 4): `.1.8` mgmt (fatto). `.3.20` = binding Fritz storico sullo stesso MAC, **ownership da confermare** (non inventariale; non SPAN — SPAN=p22/NIC2 `.3.24` / sink `10.255.255.2/30`). Vedi [`docs/obs-ux-ip-308-verifica.md`](obs-ux-ip-308-verifica.md).
+   - **Cassiopea (ex-bond):** `DEBT-LAG-CASSIOPEA` **CHIUSO** 21/07/2026 (eth0 LAN / eth1 SPAN).
+-- **Nota architetturale:** il dedup raw per-MAC scarta le osservazioni L3 multi-IP (sul Fritz 4/5 IP perse nel raw, `hit_count≈5` ma `l3.ip` resta solo `.1.1`) mentre l’upsert legacy scrive comunque i binding e gli `ip_change`: le due pipeline divergono. Il fix dovrà includere `dedup_key` **MAC+IP** per le osservazioni L3.
+-- **Sintomo latente (BUG 3 originale):** in [`_resolve_ap_asset`](../api/app/services/topology.py) il fallback per-IP usa `is_current` invece di `resolve_asset_by_ip_at`. Oggi non gira (0 client Wi‑Fi IP-only su 41).
+-- **Fix quando servirà:** (1) ruoli IP + `ip_change` solo primario; (2) dedup L3 MAC+IP; (3) nel solo ramo (b) di `_resolve_ap_asset`, `resolve_asset_by_ip_at` + `observed_at`; tie→None→fall-through. NON toccare `is_current` alla cieca su multi-NIC storiche.
++- **Nota architetturale:** il dedup raw per-MAC scartava le osservazioni L3 multi-IP (sul Fritz 4/5 IP perse nel raw, `hit_count≈5` ma `l3.ip` resta solo `.1.1`) mentre l’upsert legacy scrive comunque i binding e gli `ip_change`: le due pipeline divergevano. Fix 0.10.46: `dedup_key` MAC+IP per L3.
++- **Sintomo latente (BUG 3 originale / consumatore di correttezza) — MIGRATO W5 (0.10.54):** [`_resolve_ap_asset`](../api/app/services/topology.py) usa ora `resolve_asset_by_ip_at(ap_ip, observed_at)` (contestuale) invece di `is_current`; tie → None → fall-through sul nome. Gate G5 a writer fermi: 62 associazioni Wi-Fi, 0 sul path `ap_ip` → **0 differenze** (fix latente, equivalenza-preservante). Il facet «consumatore di correntezza» di questo debito è chiuso; la cardinalità/ruolo multi-IP resta tracciata in **DEBT-IFACE-IP-CARDINALITY-ROLE** (pre-condizione W3). Vedi [`docs/obs-w5.md`](obs-w5.md).
++- **Copia ingest chiusa — W5-bis (0.10.55):** [`wifi_associations.resolve_ap_asset`](../api/app/services/wifi_associations.py) (risoluzione AP lato ingest Wi-Fi) era rimasta su `is_current` dopo la migrazione W5 della sola copia di `topology`; ora usa `resolve_asset_by_ip_at(ap_ip, observed_at)` con `observed_at` dall'associazione; tie → None → fall-through sul nome (I2). Equivalenza-preservante sui dati correnti (a ingest `observed_at ≈ now`). Copertura: `tests/test_w5_consumers.py` (contestuale + tie). Vedi [`docs/obs-w5bis.md`](obs-w5bis.md).
++- **Fix quando servirà:** (1) ruoli IP + `ip_change` solo primario; (2) dedup L3 MAC+IP *(fatto 0.10.46)*; (3) nel solo ramo (b) di `_resolve_ap_asset`, `resolve_asset_by_ip_at` + `observed_at`; tie→None→fall-through. NON toccare `is_current` alla cieca su multi-NIC storiche.
+ - **Riattivazione:** attribuzione topologia sbagliata su IP DHCP migrato, oppure ripresa del rumore `ip_change` multi-ruolo dopo unmute.
+-- **Stato FASE B (codice, 2026-07-21):** elezione + `role` + dedup `mac|ip` + `ip_change` solo primario — in tree, pre-deploy. Bonifica storica duplicate `(interface_id, ip)` resta fuori scope. UI secondari = FASE C.
++- **Stato FASE B (codice):** elezione + `role` + dedup `mac|ip` + `ip_change` solo primario — in tree. Bonifica storica duplicate `(interface_id, ip)` resta fuori scope. UI secondari = FASE C.
+ - **Bonifica storica:** eventuali righe duplicate `(interface_id, ip)` pre-FASE-B restano; niente UniqueConstraint finché non c’è purge dedicato (fuori scope).
+ 
++## DEBT-IFACE-IP-CARDINALITY-ROLE
++
++- **Priorità:** pre-condizione **W3** — aperto W4a 2026-07-26
++- **Cosa:** `asset.iface_ip` ha `cardinality=single` per interfaccia e il writer shadow registra **solo l’IP eletto** (`elect_interface_primary`). Sul Fritz (asset 1) esistono cinque IP simultanei (`.1.1` primario, `.1.9` VPN, `.1.4`/`.1.5`/`.1.6` servizi) — i non-eletti **non** compaiono nel layer assertion.
++- **I2:** assenza di un IP in `fact_assertions` **non** significa che l’IP non esista.
++- **W4b.3.3:** `current()` senza `excl_key` e con più righe `current` su cardinality `single` sceglie in silenzio per authority — collegato a questo debito; non collassare ora.
++- **Prima di W3:** `excl_key` deve acquisire il **ruolo** (`fact_key + interface_id + role`), cardinalità `scoped`. NON inventare i ruoli mancanti ora (K3).
++- **Vietato in W4a/W4b:** implementare il ruolo nella excl_key; collassare i doppi-current.
++- **Doc:** [`docs/obs-w4a.md`](obs-w4a.md) · legato a DEBT-TOPO-IP-CONTEXTUAL
++
++## DEBT-RH-BEFORE-REFRESH
++
++- **Priorità:** media (correttezza resolver) — aperto W4b 2026-07-27
++- **Cosa:** `_check_rh_conflict` gira **prima** di R-A refresh. Ogni refresh riesegue la scansione cross-fact; un valore già `current` può diventare `conflict_review` per un cambiamento altrove senza che l’osservazione in ingresso sia nuova.
++- **Vietato in W4b:** correggere l’ordine ora.
++- **Doc:** [`docs/obs-w4b.md`](obs-w4b.md)
++
++## DEBT-LASTSEEN-DUAL-SEMANTICS
++
++- **Priorità:** pre-condizione **W3** — aperto W-D-fix 2026-07-26
++- **Cosa:** `elect_interface_primary` scrive `last_seen = now` alla demotion (chiusura amministrativa di intervallo) nello stesso campo «ultima osservazione».
++- **Nota W3:** prima del backfill dichiarare per ogni campo quale semantica porta; le righe con `last_seen` amministrativo daranno `valid_to`, non un’osservazione.
++- **Vietato ora:** correggere / biforcare il campo in questa ondata.
++- **Doc:** [`docs/obs-wd-fix.md`](obs-wd-fix.md)
++
++## DEBT-FRITZ-TR064-CREDENTIALS
++
++- **Priorità:** operativa — **CHIUSO F0 2026-07-27**
++- **Chiusura misurata:** Michele ha ripristinato le chiavi in `.env`. `docker compose restart collector` **non** ricarica env (USERNAME/PASSWORD len=0 nel container → ancora 401). Dopo `up -d --force-recreate --no-deps collector`: chiavi presenti nel container; hostlist **94** host; mesh `available` **6** assoc; **0** occorrenze 401/`credentials_invalid` post-recreate. Valori segreti mai letti/riportati.
++- **Doc:** [`docs/obs-fritz-restore.md`](obs-fritz-restore.md)
++
++## DEBT-PRESENCE-SOURCE-OUTAGE
++
++- **Priorità:** alta (I2/I4 + churn boot) — aperto W4c 2026-07-27; **NON corretto in W4c** (W4c.5.2); **resta APERTO** con Fritz vivo (F0)
++- **Fatto misurato (W4b boot1):** `structural=4` — asset **136, 140, 145, 148** `meta.operational_state` `active` → `stale_unlocated`. AD finestra 24h sceso 69→62.
++- **Meccanismo:** `classify_asset` / `reconcile_trust_history` in [`api/app/services/trust.py`](../api/app/services/trust.py) (~170–189, ~474–489, ~618–621): senza `portal_last_seen` recente e senza protezione → bucket `stale_unlocated`. Con Fritz TR-064 muto i refresh hostlist non aggiornano la presenza → l’assenza della **sorgente** viene trattata come assenza del **dispositivo**.
++- **Principio:** quando la sorgente che copriva un device è indisponibile, lo stato corretto è «non misurato» / «copertura sorgente non disponibile», non «assente».
++- **F0 (Fritz vivo):** evidenza Fritz corrente su 88 asset; lift live solo **109** → `known` (non `confirmed_present`). **136** ha `discovery.fritz.active=True` ma resta `stale_unlocated` perché `lift_fritz_quarantine_on_active` esce solo da `fritz_historical`. Trust layer non corretto in F0/W4d.
++- **Vietato in W4c/F0:** correggere il trust layer. UI (F2 / **0.10.51**): banner Fritz + copy «copertura sorgente non disponibile».
++- **W-P (0.10.53) — trust layer corretto, debito NON chiuso:** `classify_asset` ora legge l'evidenza fritz-active fresca e deriva `known` (autorità fritz, mai `confirmed_present`); il lift non scrive più lo stato (evidenza→derivazione). Effetto misurato: 109 converge (fine oscillazione), 136 sollevato a `known`. Questo distingue «fritz vivo→known» da «fritz stale→stale/historical», MA **non** distingue ancora «sorgente non disponibile» (outage TR-064) da «dispositivo assente»: durante un'outage l'evidenza invecchia oltre la finestra e l'asset ridiscende. Serve un segnale di **copertura sorgente** (sensor_run/coverage) per chiudere. **RESTA APERTO** (non chiuso per prossimità, W-P.2.7).
++- **Doc:** [`docs/obs-w4c.md`](obs-w4c.md) · [`docs/obs-ux2.md`](obs-ux2.md) · [`docs/obs-fritz-restore.md`](obs-fritz-restore.md) · [`docs/obs-wp.md`](obs-wp.md)
++
+ ## DEBT-A2-CASCADE-AP
+ 
+ - **Priorità:** bassa (latente) — ex nota di confine BUG 1 / A2
+@@ -107,6 +439,7 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+ - **Priorità:** bassa / policy da progettare
+ - **Sintomo:** dopo triage stale FASE 2, resta la classe (d) `local_mac_con_ip` (MAC locally-administered con IP): a ogni rotazione privacy Wi‑Fi rifà apparire stale one-shot.
+ - **Origine:** MAC privacy (bit U/L) visti con IP in finestra breve; non ignorabili alla cieca come la classe (a) senza IP.
++- **O4 (parziale):** i MAC LAA sono riconosciuti strutturalmente (`randomized`); i segnali FDB S-A/S-C su LAA non salgono a priorità alta (al massimo nota). Non chiude il churn inventario.
+ - **Fix quando servirà:** policy TTL auto-ignore (es. local MAC + no curation + inactivity N giorni) — non ora.
+ - **Vietato ora:** bulk ignorato della (d); DELETE asset; merge/fusion ad hoc.
+ 
+
+diff --git a/observatory/docs/obs-o13c.md b/observatory/docs/obs-o13c.md
+new file mode 100644
+--- /dev/null
++++ b/observatory/docs/obs-o13c.md
++# OBS-EGRESS O13C — hybrid grain (finish / deploy)
++
++**VERSION prod:** 0.10.79  
++**Ramo:** `feature/obs-currency`  
++**Natura:** abilitazione controllata `EGRESS_INGEST_ENABLED` + deploy `api`/`web`/`collector`.  
++**FA 251:** intatto. **FLOW_INGEST / ZEEK_PROVIDER:** non riattivati.  
++Nessun IP di destinazione / hostname / SNI in questo artefatto (solo aggregati).
++
++---
++
++## PREVISIONI (dichiarate PRIMA del deploy; riferimento misure O13B)
++
++- creazioni al primo giorno: attese **4.292** (3.068 ext + 1.224 int), quindi cap attivo e baseline differita su ~3 giorni;
++- creazioni/giorno a regime: attese **1.083** (841 ext + 242 int) — sotto 2.000;
++- insieme attivo a 3 giorni: atteso **7.048**; proiezione 7 giorni **11.380** — sotto 20.000;
++- MiB attesi: ≈2,9 a 3 giorni, ≈4,7 a 7 giorni — sotto 50;
++- quota attesa di associazioni `uncertain` e `unresolved`, per dispositivo;
++- card N5 attese al primo ciclo: **0** (baseline in costruzione);
++- stato atteso della nuova sorgente in copertura dopo il primo ciclo.
++
++**Se le creazioni osservate superano materialmente la previsione: kill switch, riporta, FERMATI.**
++
++---
++
++## Ambiente e deploy
++
++| voce | valore |
++|------|--------|
++| WAVE_START_ISO | `2026-07-29T09:46:48Z` |
++| `.env` backup (path only) | `.env.pre-o13c-20260729-114648` (mode `0644`) |
++| chiavi aggiunte | solo `EGRESS_INGEST_ENABLED` (len 4=`true`) e `EGRESS_INGEST_INTERVAL_SEC` (len 3=`300`) |
++| chiavi non toccate | `FLOW_INGEST_*`, `ZEEK_PROVIDER_*`, `ZEEK_BEHAVIOR_*` (len invariate; FLOW/PROVIDER assenti prima e dopo) |
++| snapshot pre-deploy | `data/backups/pre-deploy-20260729-1146.db` |
++| deploy | `./scripts/deploy.sh api web collector` + `force-recreate --no-deps collector`; web marker fix con `--no-cache` |
++
++### Test pre-deploy
++
++| suite | esito |
++|-------|-------|
++| `pytest tests/test_o13c_egress.py` | **9 passed** |
++| `node --test src/oggiPriority.test.js` | **4 passed** (O13C P6 ext/int) |
++
++---
++
++## OSSERVATI
++
++### Dimensione DB
++
++| | byte | MiB |
++|--|-----:|----:|
++| BEFORE | 1 892 810 752 | 1805.125 |
++| AFTER | 1 892 810 752 | 1805.125 |
++| delta file | **0** (SQLite non restringe; crescita logica in tabella) |
++
++### FA 251
++
++`id=251` · `subject_type=chassis` · `subject_id=24` · `fact_key=asset.name` · `value_norm=LGS310C` · `source=manual` · `state=current` · `authority=100` — **invariato** a ogni checkpoint.
++
++### Primo ciclo (trigger manuale post-enable)
++
++| metrica | valore |
++|---------|-------:|
++| conn_rows | 30 175 |
++| unique_keys posted | 1 791 |
++| righe `egress_observations` dopo ciclo | **822** (ext **493** + int **328** + `_baseline` **1**) |
++| create ext+int | **821** |
++| vs previsione primo giorno 4 292 | **sotto** (−80 % circa) — **nessun kill switch** |
++| cap 2 000/giorno | non raggiunto (`deferred=0`) |
++| baseline | **ready** nello stesso ciclo (`deferred_creates==0`) — scarto vs «differita ~3 giorni» **[Corretto in O13C-FIX]** |
++| card N5 / signals | **0** (novità solo `first_seen` *dopo* `baseline_ready_at`) — allineato alla previsione «0 al primo ciclo» sul piano novità post-baseline |
++| breaker | **chiuso** |
++| approx_bytes tabella | ~146 KiB ≪ 50 MiB |
++
++**Scarto volume 821 vs 4292 [Corretto in O13C-FIX]:** causa dominante = finestra ~1 h / **30 175** conn vs **631 194**/day O13B (ratio ≈ **20.9**), **non** hybrid key collapse. Il grano ibrido contribuisce secondariamente; il corpus del primo ciclo era un pezzo del giorno O13B, non un collasso di chiavi.
++
++### Associazione (aggregati, no IP)
++
++| assoc_reason (post-crescita) | n |
++|------------------------------|--:|
++| fatto `asset.iface_ip` current copre observed_at | 408 |
++| nessun fatto `asset.iface_ip` per questo IP | 79 |
++
++| peer interni | n |
++|--------------|--:|
++| resolved_peer | 119 |
++| unresolved_peer_ip_kept | 78 |
++
++### Coverage (dopo primo ciclo)
++
++| name | enabled | state | note |
++|------|---------|-------|------|
++| `zeek_egress` | true | **coperta_fresca** | flag `egress_ingest_enabled` |
++| `zeek_conn_flow` | false | **disabilitata** | legacy; FLOW non riattivato |
++| `zeek_behavior` | true | coperta_vecchia (age>cadenza al sample) | indipendente |
++
++### SensorRun `zeek_egress`
++
++Cicli OK osservati (counts aggregati): 1791 → 600 (post-P9) → 538 → 352 posted.
++
++### Breaker (dopo cicli successivi)
++
++`evaluate_egress_breaker` → **open=false**. Tetti invariati: 20 000 / 2 000 / 50 MiB.  
++Tabella al momento del report (post-cicli schedulati): **rows_total≈423–488**, rows_today sotto 2 000, bytes ≪ 50 MiB.
++
++### Contatori correlati (non O13C)
++
++| | |
++|--|--:|
++| `fact_assertions` total / current | 2151 / 213 (drift organico live) |
++| `zeek_behavior_evidence` | 520 |
++
++---
++
++## Rollback counts (P8 / P9)
++
++### P8 — kill switch
++
++| step | osservato |
++|------|-----------|
++| set `EGRESS_INGEST_ENABLED=false` + force-recreate collector | `egress_enabled=False`, `would_register_job=False` |
++| COUNT T0 | **822** · SensorRun max id **11562** |
++| COUNT T+120s | **822** · stesso max id — **invariato** |
++| log `zeek_egress` post-recreate | assente |
++| re-enable + recreate | `egress_enabled=True`, job registrabile |
++
++### P9 — rollback dati + riapplicazione
++
++| step | total | by scope |
++|------|------:|----------|
++| prima delete | 822 | `_baseline` 1, ext 493, int 328 |
++| dopo delete (`evidence LIKE '%obs-o13c%'` OR ext/int ≥ WAVE_START) | **0** | *(vuoto — anche meta baseline eliminata perché marcata o13c)* |
++| dopo re-enable + 1 ciclo | **324** | `_baseline` 1, ext 172, int 151 |
++| crescita | **sì** | |
++
++---
++
++## Gate INTEGRAL
++
++### Repo (`scripts/w8_currency_gate.py`)
++
++```
++file scansionati: 201
++VIOLAZIONI: 0
++RISULTATO: PASS (con 1 eccezione/i temporanea/e)
++```
++
++(eccezione temporanea `DEBT-WPGATE-CURRENCY-COUNT-LOCAL` — invariata rispetto a ondate precedenti)
++
++### NAS
++
++```
++file scansionati: 202
++VIOLAZIONI: 0
++RISULTATO: PASS (con 1 eccezione/i temporanea/e)
++```
++
++Output integrale salvato in sessione: `docs/_o13c_gate_repo_integral.txt`, `docs/_o13c_gate_nas_integral.txt` (non in share).
++
++---
++
++## Drift
++
++| | |
++|--|--:|
++| repo_scanned | 201 |
++| nas_scanned | 202 |
++| NAS−repo | **1** |
++| solo NAS | `scripts/_w4a_measure.py` |
++| solo repo | *(nessuno)* |
++
++Allineato al pattern O13B (file misura NAS-only, non toccato).
++
++---
++
++## Markers proof (web :8080)
++
++| voce | valore |
++|------|--------|
++| index asset | `/assets/index-C0zefVzT.js` |
++| sha256 | `660c9eeaea036846f17f38a086d9d385285914420edfc53b61564d4864f562bb` |
++| bytes | 441 312 |
++| `obs-o13c-marker` count | **1** (proprietà live su `api`; commenti/`void` eliminati dal minify) |
++| `data-o13c` count | **8** |
++| health | `{"ok":true,"version":"0.10.79"}` |
++
++---
++
++## Screenshot
++
++Harness Playwright viewport `dsf=1` (procedura O9; non `browser_take_screenshot`).  
++`o9_png_assert.py --pair` **PASS** su tutte le coppie.
++
++| file | WxH |
++|------|-----|
++| `obs-o13c-oggi-1280.png` | 1280×900 |
++| `obs-o13c-oggi-768.png` | 768×900 |
++| `obs-o13c-oggi-390.png` | 390×900 |
++| `obs-o13c-dossier-1280.png` | 1280×900 |
++| `obs-o13c-dossier-768.png` | 768×900 |
++| `obs-o13c-dossier-390.png` | 390×900 |
++
++Dossier: asset id **28** (membro chassis con traffico egress; nessun IP stampato).
++
++---
++
++## Criteria checklist
++
++| id | criterio | esito |
++|----|----------|-------|
++| P1 | dispositivo noto → destinazioni ext host/porta/proto, freschezza, qualità assoc | **OK** (store+Dossier; qualità via `assoc_reason` aggregata) |
++| P2 | relazione int `A↔B` senza porta | **OK** (grano int; 197 relazioni a regime report) |
++| P3 | peer unresolved → IP conservato, no soggetto inventato | **OK** (78 unresolved_peer_ip_kept) |
++| P4 | assoc non corrente / valid_from → uncertain | **OK** in test; prod: 79 senza fatto iface_ip |
++| P5 | baseline in costruzione → no card N5 | **OK** (signals=0; baseline chiusa subito per deferred=0) |
++| P6 | cap differisce senza perdita | **OK** in test; prod: cap non morso (821≪2000) |
++| P7 | breaker ferma scrittura | **OK** in test; prod: breaker chiuso, sotto tetti |
++| P8 | kill switch osservato in prod | **OK** (job assente, 822 invariato 120s) |
++| P9 | rollback → 0 poi riapplicazione cresce | **OK** (822→0→324) |
++| P10 | novità post-baseline → card | **OK** in test; prod: 0 card subito dopo ready (atteso: novità solo post-ready) |
++| N2 cap≠breaker | funzioni e contatori separati | **OK** |
++| N3 baseline visibile | data inizio + seen/created/deferred | **OK** API/UI marker |
++| N4 Dossier Cosa fa | ext+int, freschezza, no hub nuovo | **OK** (`data-o13c`) |
++| volume vs previsione | non superare materialmente 4292/1083 | **OK** (sotto; nessun STOP) |
++
++---
++
++## Diff tematici (share)
++
++- `obs-o13c-store.diff.txt` — store/ingest/collector/retention/config/test/VERSION/CHANGELOG
++- `obs-o13c-egress.diff.txt` — Dossier / behaviour / api.js / observatoryUx
++- `obs-o13c-segnale.diff.txt` — novelty/signals / Oggi / oggiPriority / coverage
++
++---
++
++## Cosa NON è stato fatto
++
++- Nessun raise di tetti
++- Nessun ripristino `FLOW_INGEST_ENABLED` / `ZEEK_PROVIDER_ENABLED`
++- Nessuna modifica a `scripts/_w4a_measure.py`
++- Nessun IP destinazione in report o assert stampati
