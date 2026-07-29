@@ -1,0 +1,3552 @@
+diff --git a/api/app/services/egress.py b/api/app/services/egress.py
+new file mode 100644
+index 0000000..d51bb71
+--- /dev/null
++++ b/api/app/services/egress.py
+@@ -0,0 +1,924 @@
++"""O13C — hybrid egress observations (ext host+port; int peer relation).
++
++Binding (do not reopen):
++- scope=ext: (subject, dst_ip, dport, proto)
++- scope=int: (subject, peer_subject) — NO port, NO proto
++- Private = RFC1918 + link-local + ULA; else external
++- Subject = chassis if present else asset — NEVER NIC
++- Cap ≠ breaker: separate functions and counters
++- Cap bites: ALL ext candidates first (FIFO by first obs in cycle), then int.
++  Starvation of int under cap is not loss — deferred reappears next cycle.
++"""
++
++from __future__ import annotations
++
++import hashlib
++import ipaddress
++import logging
++from datetime import datetime
++from typing import Any
++
++from sqlalchemy import func, select
++from sqlalchemy.orm import Session
++
++from app.facts.ip_association import associate_ip_at, subject_for_association
++from app.models import Asset, Chassis, EgressObservation, Suggestion, utcnow
++from app.services.fdb_defense import FDB_STALE_HOURS
++
++log = logging.getLogger("observatory.egress")
++
++# Breaker ceilings (emergency stop) — do not raise.
++MAX_ROWS = 20_000
++MAX_GROWTH = 2_000  # breaker: first_seen today (excl. meta)
++MAX_BYTES = 50 * 1024 * 1024
++
++# Soft daily create governor (defer, do not drop). Same number as MAX_GROWTH by design;
++# Cap ≠ breaker: separate functions — cap only gates creates; breaker can also trip
++# on total/bytes. Tests may lower DAILY_CREATE_CAP independently of breaker.
++DAILY_CREATE_CAP = 2_000
++
++SENSOR_ID = "zeek-span"
++BASELINE_SCOPE = "_baseline"
++BASELINE_DEDUP = "meta|baseline|o13c"
++O13C_MARKER = "obs-o13c"
++
++DEFENSE_PRIORITY_ID = "ignoto_con_evidenze_zeek"  # P6 — both ext and int cards
++
++
++def _parse_ts(value: Any) -> datetime | None:
++    if value is None:
++        return None
++    if isinstance(value, datetime):
++        return value.replace(tzinfo=None) if value.tzinfo else value
++    if isinstance(value, (int, float)):
++        return datetime.utcfromtimestamp(float(value))
++    text = str(value).strip()
++    if not text:
++        return None
++    try:
++        return datetime.utcfromtimestamp(float(text))
++    except ValueError:
++        pass
++    try:
++        if text.endswith("Z"):
++            text = text[:-1] + "+00:00"
++        dt = datetime.fromisoformat(text)
++        if dt.tzinfo is not None:
++            from datetime import timezone
++
++            return dt.astimezone(timezone.utc).replace(tzinfo=None)
++        return dt
++    except ValueError:
++        return None
++
++
++# Explicit private ranges per O13C binding (NOT ipaddress.is_private — that also
++# flags TEST-NET / documentation nets which must stay external for egress grain).
++_RFC1918 = (
++    ipaddress.ip_network("10.0.0.0/8"),
++    ipaddress.ip_network("172.16.0.0/12"),
++    ipaddress.ip_network("192.168.0.0/16"),
++)
++_IPV4_LINK_LOCAL = ipaddress.ip_network("169.254.0.0/16")
++_IPV6_ULA = ipaddress.ip_network("fc00::/7")
++_IPV6_LINK_LOCAL = ipaddress.ip_network("fe80::/10")
++
++
++def classify_scope(dst_ip: str) -> str:
++    """Return 'int' for RFC1918 / link-local / ULA, else 'ext'."""
++    text = (dst_ip or "").strip()
++    if not text:
++        return "ext"
++    try:
++        addr = ipaddress.ip_address(text)
++    except ValueError:
++        return "ext"
++    if isinstance(addr, ipaddress.IPv4Address):
++        if any(addr in net for net in _RFC1918):
++            return "int"
++        if addr in _IPV4_LINK_LOCAL:
++            return "int"
++        return "ext"
++    # IPv6: ULA + link-local only (not the broader is_private set).
++    if addr in _IPV6_ULA or addr in _IPV6_LINK_LOCAL:
++        return "int"
++    return "ext"
++
++
++def _subject_token(stype: str, sid: int | None, fallback_ip: str = "") -> str:
++    if stype and sid is not None:
++        return f"{stype}:{int(sid)}"
++    if fallback_ip:
++        digest = hashlib.sha256(fallback_ip.encode("utf-8")).hexdigest()[:12]
++        return f"u:{digest}"
++    return "u:unknown"
++
++
++def dedup_key_ext(
++    subject_type: str,
++    subject_id: int | None,
++    dst_ip: str,
++    dport: int,
++    proto: str,
++    *,
++    src_ip: str = "",
++) -> str:
++    subj = _subject_token(subject_type, subject_id, src_ip)
++    raw = f"ext|{subj}|{dst_ip}|{int(dport)}|{(proto or 'tcp').lower()}"
++    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:64]
++
++
++def dedup_key_int(
++    subject_type: str,
++    subject_id: int | None,
++    peer_subject_type: str,
++    peer_subject_id: int | None,
++    *,
++    src_ip: str = "",
++    peer_ip: str = "",
++) -> str:
++    # int grain: NO port, NO proto — relation only.
++    a = _subject_token(subject_type, subject_id, src_ip)
++    b = _subject_token(peer_subject_type, peer_subject_id, peer_ip)
++    # Canonical order so A↔B and B↔A collapse when both resolved to subjects.
++    left, right = sorted([a, b])
++    raw = f"int|{left}|{right}"
++    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:64]
++
++
++def table_stats(db: Session) -> dict[str, Any]:
++    total = (
++        db.scalar(
++            select(func.count())
++            .select_from(EgressObservation)
++            .where(EgressObservation.scope != BASELINE_SCOPE)
++        )
++        or 0
++    )
++    today_start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
++    today = (
++        db.scalar(
++            select(func.count())
++            .select_from(EgressObservation)
++            .where(
++                EgressObservation.scope != BASELINE_SCOPE,
++                EgressObservation.first_seen >= today_start,
++            )
++        )
++        or 0
++    )
++    rows = list(
++        db.scalars(
++            select(EgressObservation).where(EgressObservation.scope != BASELINE_SCOPE)
++        ).all()
++    )
++    approx = sum(
++        len(r.dedup_key or "")
++        + len(r.scope or "")
++        + len(r.dst_ip or "")
++        + len(r.peer_ip or "")
++        + len(r.proto or "")
++        + 96
++        for r in rows
++    )
++    return {
++        "rows_total": int(total),
++        "rows_today": int(today),
++        "approx_bytes": int(approx),
++        "ceilings": {
++            "rows_total": MAX_ROWS,
++            "rows_today": MAX_GROWTH,
++            "bytes": MAX_BYTES,
++        },
++    }
++
++
++def daily_creates_today(db: Session) -> int:
++    """CAP counter: rows with first_seen today, exclude baseline meta."""
++    today_start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
++    return int(
++        db.scalar(
++            select(func.count())
++            .select_from(EgressObservation)
++            .where(
++                EgressObservation.scope != BASELINE_SCOPE,
++                EgressObservation.first_seen >= today_start,
++            )
++        )
++        or 0
++    )
++
++
++def evaluate_egress_breaker(db: Session) -> tuple[bool, str]:
++    """Emergency stop for ALL new writes (create path). Separate from daily create cap."""
++    st = table_stats(db)
++    if st["rows_total"] >= MAX_ROWS:
++        return True, f"egress_observations rows_total={st['rows_total']} >= {MAX_ROWS}"
++    if st["rows_today"] >= MAX_GROWTH:
++        return True, f"egress_observations rows_today={st['rows_today']} >= {MAX_GROWTH}"
++    if st["approx_bytes"] >= MAX_BYTES:
++        return True, f"egress_observations approx_bytes={st['approx_bytes']} >= {MAX_BYTES}"
++    return False, ""
++
++
++def ensure_baseline_meta(db: Session, *, started_at: datetime | None = None) -> EgressObservation:
++    row = db.scalar(
++        select(EgressObservation).where(EgressObservation.dedup_key == BASELINE_DEDUP)
++    )
++    if row:
++        return row
++    at = started_at or utcnow()
++    row = EgressObservation(
++        dedup_key=BASELINE_DEDUP,
++        scope=BASELINE_SCOPE,
++        association="mac_direct",
++        sensor_id=SENSOR_ID,
++        first_seen=at,
++        last_seen=at,
++        observation_count=1,
++        evidence={
++            "baseline_status": "in_costruzione",
++            "baseline_ready": False,
++            "reason": (
++                "O13C: prima attivazione hybrid egress; "
++                "baseline resta in_costruzione fino a un ciclo completo "
++                "con deferred_creates==0"
++            ),
++            "o13c_marker": O13C_MARKER,
++        },
++    )
++    db.add(row)
++    db.flush()
++    return row
++
++
++def baseline_status(db: Session) -> dict[str, Any]:
++    row = ensure_baseline_meta(db)
++    ev = dict(row.evidence or {})
++    ready = bool(ev.get("baseline_ready"))
++    return {
++        "status": "ready" if ready else "in_costruzione",
++        "baseline_ready": ready,
++        "baseline_started_at": (row.first_seen.isoformat() + "Z") if row.first_seen else None,
++        "baseline_ready_at": ev.get("baseline_ready_at"),
++        "reason": ev.get("reason") or "",
++        "o13c_marker": O13C_MARKER,
++        "cycle_seen": ev.get("cycle_seen"),
++        "cycle_created": ev.get("cycle_created"),
++        "cycle_deferred": ev.get("cycle_deferred"),
++    }
++
++
++def maybe_close_baseline_after_cycle(db: Session, deferred_count: int, *, cycle_stats: dict | None = None) -> dict[str, Any]:
++    """Auto-mark ready after a full cycle with deferred_creates==0 while in_costruzione."""
++    row = ensure_baseline_meta(db)
++    ev = dict(row.evidence or {})
++    if cycle_stats:
++        ev["cycle_seen"] = cycle_stats.get("seen_distinct")
++        ev["cycle_created"] = cycle_stats.get("created")
++        ev["cycle_deferred"] = deferred_count
++        row.evidence = ev
++        row.last_seen = utcnow()
++    if ev.get("baseline_ready"):
++        db.flush()
++        return baseline_status(db)
++    # Full cycle = at least one distinct candidate processed and nothing deferred.
++    activity = int((cycle_stats or {}).get("seen_distinct") or 0)
++    if int(deferred_count or 0) == 0 and activity > 0:
++        now = utcnow()
++        ev["baseline_ready"] = True
++        ev["baseline_status"] = "ready"
++        ev["baseline_ready_at"] = now.isoformat() + "Z"
++        ev["reason"] = "ciclo completo con deferred_creates==0 — baseline ready (auto)"
++        row.evidence = ev
++        row.last_seen = now
++        db.flush()
++    else:
++        db.flush()
++    return baseline_status(db)
++
++
++def mark_baseline_ready(db: Session, *, user_id: int | None = None, reason: str = "") -> dict[str, Any]:
++    """Optional explicit ready — auto-close remains primary."""
++    row = ensure_baseline_meta(db)
++    ev = dict(row.evidence or {})
++    now = utcnow()
++    ev["baseline_ready"] = True
++    ev["baseline_status"] = "ready"
++    ev["baseline_ready_at"] = now.isoformat() + "Z"
++    ev["marked_ready_by"] = user_id
++    ev["marked_ready_reason"] = reason or "azione esplicita"
++    row.evidence = ev
++    row.last_seen = now
++    db.flush()
++    return baseline_status(db)
++
++
++def prepare_candidate(db: Session, raw: dict[str, Any]) -> dict[str, Any] | None:
++    """Map raw {src_ip,dst_ip,dport,proto,observed_at,...} → candidate with association."""
++    src_ip = str(raw.get("src_ip") or "").strip()
++    dst_ip = str(raw.get("dst_ip") or "").strip()
++    if not src_ip or not dst_ip:
++        return None
++    observed_at = _parse_ts(raw.get("observed_at")) or utcnow()
++    try:
++        dport = int(raw.get("dport") if raw.get("dport") is not None else raw.get("dst_port") or 0)
++    except (TypeError, ValueError):
++        dport = 0
++    proto = str(raw.get("proto") or "tcp").strip().lower() or "tcp"
++    scope = classify_scope(dst_ip)
++
++    src_assoc = associate_ip_at(db, src_ip, observed_at)
++    subject_type, subject_id, asset_id = subject_for_association(src_assoc)
++
++    peer_subject_type = ""
++    peer_subject_id: int | None = None
++    peer_unresolved = False
++    peer_assoc_status = ""
++    peer_assoc = None
++
++    if scope == "int":
++        peer_assoc = associate_ip_at(db, dst_ip, observed_at)
++        peer_assoc_status = peer_assoc.status
++        pst, psid, _ = subject_for_association(peer_assoc)
++        if pst and psid is not None:
++            peer_subject_type, peer_subject_id = pst, psid
++        else:
++            # I2: keep peer_ip, mark unresolved — do NOT invent subject.
++            peer_unresolved = True
++            peer_assoc_status = peer_assoc.status if peer_assoc.status != "unresolved" else "unresolved"
++
++    if scope == "ext":
++        key = dedup_key_ext(subject_type, subject_id, dst_ip, dport, proto, src_ip=src_ip)
++    else:
++        key = dedup_key_int(
++            subject_type,
++            subject_id,
++            peer_subject_type,
++            peer_subject_id,
++            src_ip=src_ip,
++            peer_ip=dst_ip,
++        )
++
++    return {
++        "dedup_key": key,
++        "scope": scope,
++        "subject_type": subject_type or "",
++        "subject_id": subject_id,
++        "asset_id": asset_id,
++        "dst_ip": dst_ip if scope == "ext" else "",
++        "dport": dport if scope == "ext" else None,
++        "proto": proto if scope == "ext" else "",
++        "peer_subject_type": peer_subject_type,
++        "peer_subject_id": peer_subject_id,
++        "peer_ip": dst_ip if scope == "int" else "",
++        "peer_unresolved": peer_unresolved,
++        "association": src_assoc.status,
++        "peer_association": peer_assoc_status,
++        "observed_at": observed_at,
++        "src_ip": src_ip,
++        "orig_bytes": raw.get("orig_bytes"),
++        "server_name": raw.get("server_name"),
++        "dns_query": raw.get("dns_query") or raw.get("query"),
++        "assoc_reason": src_assoc.reason,
++        "peer_assoc_reason": peer_assoc.reason if peer_assoc else None,
++    }
++
++
++def _refresh_row(row: EgressObservation, cand: dict[str, Any]) -> None:
++    observed_at = cand["observed_at"]
++    row.last_seen = max(row.last_seen or observed_at, observed_at)
++    row.observation_count = int(row.observation_count or 0) + 1
++    if cand.get("subject_type") and not row.subject_type:
++        row.subject_type = cand["subject_type"]
++        row.subject_id = cand["subject_id"]
++    if cand.get("asset_id") and not row.asset_id:
++        row.asset_id = cand["asset_id"]
++    if cand.get("scope") == "int" and cand.get("peer_unresolved") is False:
++        if cand.get("peer_subject_type") and (not row.peer_subject_type or row.peer_unresolved):
++            row.peer_subject_type = cand["peer_subject_type"]
++            row.peer_subject_id = cand["peer_subject_id"]
++            row.peer_unresolved = False
++    ev = dict(row.evidence or {})
++    for k in ("server_name", "dns_query", "orig_bytes", "src_ip", "assoc_reason"):
++        if cand.get(k) is not None:
++            ev[k] = cand[k]
++    ev["o13c_marker"] = O13C_MARKER
++    row.evidence = ev
++
++
++def ingest_egress_batch(
++    db: Session,
++    items: list[dict[str, Any]],
++    settings: Any | None = None,
++) -> dict[str, Any]:
++    """Ingest hybrid egress. Cap defers creates; breaker skips creates; refresh always OK.
++
++    Cap order when budget bites: ALL ext first (FIFO by first observation in this
++    cycle), then int. Deferred is not loss — the same tuple reappears next cycle
++    (starvation under cap is temporary, not dropped).
++    """
++    enabled = True
++    if settings is not None:
++        enabled = bool(getattr(settings, "egress_ingest_enabled", False))
++    if not enabled:
++        return {
++            "received": len(items),
++            "seen_distinct": 0,
++            "created": 0,
++            "refreshed": 0,
++            "deferred": 0,
++            "skipped_disabled": len(items),
++            "skipped_invalid": 0,
++            "skipped_breaker": 0,
++            "breaker_open": False,
++            "cap_active": False,
++            "baseline": None,
++            "table": table_stats(db) if items else {"rows_total": 0, "rows_today": 0, "approx_bytes": 0},
++            "cycle_seen": 0,
++            "cycle_created": 0,
++            "cycle_deferred": 0,
++            "o13c_marker": O13C_MARKER,
++        }
++
++    ensure_baseline_meta(db)
++
++    candidates: list[dict[str, Any]] = []
++    skipped_invalid = 0
++    for raw in items:
++        if not isinstance(raw, dict):
++            skipped_invalid += 1
++            continue
++        cand = prepare_candidate(db, raw)
++        if cand is None:
++            skipped_invalid += 1
++            continue
++        candidates.append(cand)
++
++    # Dedupe within cycle by dedup_key, keep earliest observed_at (FIFO).
++    by_key: dict[str, dict[str, Any]] = {}
++    for cand in candidates:
++        key = cand["dedup_key"]
++        prev = by_key.get(key)
++        if prev is None or cand["observed_at"] < prev["observed_at"]:
++            by_key[key] = cand
++    distinct = list(by_key.values())
++
++    # Cap order: ALL ext first (FIFO), then int (FIFO).
++    ext = sorted(
++        [c for c in distinct if c["scope"] == "ext"],
++        key=lambda c: c["observed_at"],
++    )
++    internal = sorted(
++        [c for c in distinct if c["scope"] == "int"],
++        key=lambda c: c["observed_at"],
++    )
++    ordered = ext + internal
++
++    creates_today = daily_creates_today(db)
++    created = 0
++    refreshed = 0
++    deferred = 0
++    skipped_breaker = 0
++    cap_active = False
++
++    for cand in ordered:
++        existing = db.scalar(
++            select(EgressObservation).where(EgressObservation.dedup_key == cand["dedup_key"])
++        )
++        if existing:
++            # Refresh under cap is always allowed; breaker emergency may still block
++            # when total/bytes ceilings are hit (checked below for creates; refresh
++            # of existing rows does not increase row count).
++            _refresh_row(existing, cand)
++            refreshed += 1
++            continue
++
++        # Cap governor FIRST: defer create (not drop). Cap ≠ breaker.
++        # When rows_today already == CAP, remaining candidates are deferred —
++        # not skipped_breaker — so the cycle difference stays visible (N3).
++        if creates_today + created >= DAILY_CREATE_CAP:
++            deferred += 1
++            cap_active = True
++            continue
++
++        open_, reason = evaluate_egress_breaker(db)
++        if open_:
++            log.error("egress breaker open: %s", reason)
++            skipped_breaker += 1
++            continue
++
++        ev = {
++            "src_ip": cand.get("src_ip"),
++            "assoc_reason": cand.get("assoc_reason"),
++            "peer_assoc_reason": cand.get("peer_assoc_reason"),
++            "server_name": cand.get("server_name"),
++            "dns_query": cand.get("dns_query"),
++            "orig_bytes": cand.get("orig_bytes"),
++            "o13c_marker": O13C_MARKER,
++        }
++        row = EgressObservation(
++            dedup_key=cand["dedup_key"],
++            scope=cand["scope"],
++            subject_type=cand["subject_type"],
++            subject_id=cand["subject_id"],
++            asset_id=cand["asset_id"],
++            dst_ip=cand["dst_ip"],
++            dport=cand["dport"],
++            proto=cand["proto"],
++            peer_subject_type=cand["peer_subject_type"],
++            peer_subject_id=cand["peer_subject_id"],
++            peer_ip=cand["peer_ip"],
++            peer_unresolved=bool(cand["peer_unresolved"]),
++            association=cand["association"],
++            peer_association=cand["peer_association"] or "",
++            sensor_id=SENSOR_ID,
++            first_seen=cand["observed_at"],
++            last_seen=cand["observed_at"],
++            observation_count=1,
++            evidence={k: v for k, v in ev.items() if v is not None},
++        )
++        db.add(row)
++        db.flush()
++        created += 1
++
++    open_, reason = evaluate_egress_breaker(db)
++    bl = maybe_close_baseline_after_cycle(
++        db,
++        deferred,
++        cycle_stats={
++            "seen_distinct": len(distinct),
++            "created": created,
++            "deferred": deferred,
++        },
++    )
++    st = table_stats(db)
++    return {
++        "received": len(items),
++        "seen_distinct": len(distinct),
++        "created": created,
++        "refreshed": refreshed,
++        "deferred": deferred,
++        "skipped_invalid": skipped_invalid,
++        "skipped_breaker": skipped_breaker,
++        "skipped_disabled": 0,
++        "breaker_open": open_,
++        "breaker_reason": reason,
++        "cap_active": cap_active or deferred > 0,
++        "baseline": bl,
++        "table": st,
++        "cycle_seen": len(distinct),
++        "cycle_created": created,
++        "cycle_deferred": deferred,
++        "o13c_marker": O13C_MARKER,
++    }
++
++
++def freshness_for_observed_at(observed_at: datetime | None, *, now: datetime | None = None) -> dict[str, Any]:
++    now = now or utcnow()
++    if observed_at is None:
++        return {
++            "state": "not_measured",
++            "display": "non misurato",
++            "source": SENSOR_ID,
++            "age_hours": None,
++            "window_hours": FDB_STALE_HOURS,
++        }
++    age_h = max(0.0, (now - observed_at).total_seconds() / 3600.0)
++    if age_h > FDB_STALE_HOURS:
++        return {
++            "state": "stale",
++            "display": "vecchio",
++            "source": SENSOR_ID,
++            "age_hours": round(age_h, 3),
++            "window_hours": FDB_STALE_HOURS,
++            "last_at": observed_at.isoformat() + "Z",
++        }
++    return {
++        "state": "fresh",
++        "display": "fresco",
++        "source": SENSOR_ID,
++        "age_hours": round(age_h, 3),
++        "window_hours": FDB_STALE_HOURS,
++        "last_at": observed_at.isoformat() + "Z",
++    }
++
++
++def _member_asset_ids(db: Session, asset: Asset) -> list[int]:
++    if asset.chassis_id:
++        return [
++            int(x)
++            for x in db.scalars(
++                select(Asset.id).where(Asset.chassis_id == int(asset.chassis_id))
++            ).all()
++        ]
++    return [int(asset.id)]
++
++
++def build_egress_for_asset(db: Session, asset: Asset, *, now: datetime | None = None) -> dict[str, Any]:
++    """Dossier helper: external destinations + internal relations for an asset/chassis."""
++    now = now or utcnow()
++    ids = _member_asset_ids(db, asset)
++    chassis_id = int(asset.chassis_id) if asset.chassis_id else None
++    from sqlalchemy import or_
++
++    clauses = [EgressObservation.asset_id.in_(ids)]
++    if chassis_id is not None:
++        clauses.append(
++            (EgressObservation.subject_type == "chassis")
++            & (EgressObservation.subject_id == chassis_id)
++        )
++    rows = list(
++        db.scalars(
++            select(EgressObservation)
++            .where(
++                EgressObservation.scope.in_(["ext", "int"]),
++                or_(*clauses),
++            )
++            .order_by(EgressObservation.last_seen.desc())
++        ).all()
++    )
++    external: list[dict[str, Any]] = []
++    internal: list[dict[str, Any]] = []
++    for r in rows:
++        fr = freshness_for_observed_at(r.last_seen, now=now)
++        base = {
++            "scope": r.scope,
++            "association": r.association,
++            "association_uncertain": r.association == "uncertain",
++            "first_seen": r.first_seen.isoformat() + "Z" if r.first_seen else None,
++            "last_seen": r.last_seen.isoformat() + "Z" if r.last_seen else None,
++            "observation_count": int(r.observation_count or 0),
++            "freshness": fr,
++            "source": r.sensor_id or SENSOR_ID,
++            "evidence": {
++                k: v
++                for k, v in dict(r.evidence or {}).items()
++                if k in ("server_name", "dns_query", "o13c_marker") and v
++            },
++            "o13c_marker": O13C_MARKER,
++        }
++        if r.scope == "ext":
++            external.append(
++                {
++                    **base,
++                    "dst_ip": r.dst_ip,
++                    "dport": r.dport,
++                    "proto": r.proto,
++                }
++            )
++        else:
++            internal.append(
++                {
++                    **base,
++                    "peer_ip": r.peer_ip,
++                    "peer_subject_type": r.peer_subject_type or None,
++                    "peer_subject_id": r.peer_subject_id,
++                    "peer_unresolved": bool(r.peer_unresolved),
++                    "peer_association": r.peer_association or None,
++                    "grain_note": (
++                        "relazione peer (senza porta/proto) — "
++                        "costo accettato: lateral-move a grana relazione"
++                    ),
++                }
++            )
++    assoc_counts = {"certain": 0, "uncertain": 0, "unresolved": 0, "other": 0}
++    for r in rows:
++        a = (r.association or "").strip() or "unresolved"
++        if a in assoc_counts:
++            assoc_counts[a] += 1
++        else:
++            assoc_counts["other"] += 1
++    return {
++        "external_destinations": external,
++        "internal_relations": internal,
++        "evidence_available": bool(external or internal),
++        "association_quality": {
++            "certain": assoc_counts["certain"],
++            "uncertain": assoc_counts["uncertain"],
++            "unresolved": assoc_counts["unresolved"],
++            "other": assoc_counts["other"],
++            "note": (
++                "Qualità associazione IP↔MAC al momento dell'osservazione (I2). "
++                "valid_from nullo/troncato → uncertain."
++            ),
++        },
++        "baseline": baseline_status(db),
++        "o13c_marker": O13C_MARKER,
++    }
++
++
++def _label_subject(db: Session, stype: str, sid: int, asset_id: int | None) -> str:
++    if stype == "asset" and asset_id:
++        a = db.get(Asset, asset_id)
++        return (a.name if a and a.name else None) or f"asset {asset_id}"
++    if stype == "chassis":
++        ch = db.get(Chassis, sid)
++        return (ch.label if ch and ch.label else None) or f"chassis {sid}"
++    return f"{stype}:{sid}"
++
++
++def novelty_egress_cards(db: Session, *, now: datetime | None = None) -> list[dict[str, Any]]:
++    """Structural novelty: tuples first_seen after baseline_ready_at. No signals while in_costruzione."""
++    now = now or utcnow()
++    bl = baseline_status(db)
++    if not bl["baseline_ready"]:
++        return []
++    ready_at = _parse_ts(bl.get("baseline_ready_at"))
++    if ready_at is None:
++        return []
++
++    rows = list(
++        db.scalars(
++            select(EgressObservation).where(EgressObservation.scope.in_(["ext", "int"]))
++        ).all()
++    )
++    cards: list[dict[str, Any]] = []
++    for r in rows:
++        # Structural only: first_seen after baseline_ready_at (no numeric threshold).
++        if not r.first_seen or r.first_seen < ready_at:
++            continue
++        stype = r.subject_type or ""
++        sid = int(r.subject_id) if r.subject_id is not None else 0
++        label = _label_subject(db, stype, sid, r.asset_id)
++        kind = "egress_new_ext" if r.scope == "ext" else "egress_new_int"
++        uid_raw = f"eg:{r.scope}:{r.dedup_key}"
++        uid = "eg:" + hashlib.sha256(uid_raw.encode()).hexdigest()[:30]
++        title = (
++            f"nuova destinazione esterna · {label}"
++            if r.scope == "ext"
++            else f"nuova relazione interna · {label}"
++        )
++        note = None
++        if r.scope == "int":
++            note = (
++                "Grana relazione (senza porta/proto). "
++                "Costo accettato: possibile lateral-move non distinto per porta."
++            )
++        cards.append(
++            {
++                "uid": uid,
++                "signal": "E-N",
++                "kind": kind,
++                "title": title,
++                "subject_type": stype,
++                "subject_id": sid or None,
++                "asset_id": r.asset_id,
++                "label": label,
++                "scope": r.scope,
++                "dst_ip": r.dst_ip or None,
++                "dport": r.dport,
++                "proto": r.proto or None,
++                "peer_ip": r.peer_ip or None,
++                "peer_unresolved": bool(r.peer_unresolved),
++                "association": r.association,
++                "note": note,
++                "freshness": freshness_for_observed_at(r.last_seen, now=now),
++                "defense_priority_id": DEFENSE_PRIORITY_ID,
++                "o13c_marker": O13C_MARKER,
++                "actions": [
++                    {
++                        "id": "open_dossier",
++                        "label": "Apri Dossier",
++                        "href": f"/dossier/{r.asset_id}" if r.asset_id else "/dossier",
++                        "reversible": True,
++                    },
++                    {
++                        "id": "acknowledge",
++                        "label": "Riconosci / archivia segnale",
++                        "requires_confirm": True,
++                        "reversible": True,
++                    },
++                ],
++            }
++        )
++    return cards
++
++
++def build_egress_signals(db: Session, *, now: datetime | None = None) -> dict[str, Any]:
++    now = now or utcnow()
++    ensure_baseline_meta(db)
++    bl = baseline_status(db)
++    acked = {
++        s.uid
++        for s in db.scalars(
++            select(Suggestion).where(
++                Suggestion.source == "egress",
++                Suggestion.status.in_(["approved", "rejected"]),
++            )
++        ).all()
++    }
++    cards = [c for c in novelty_egress_cards(db, now=now) if c["uid"] not in acked]
++    open_, reason = evaluate_egress_breaker(db)
++    note = None
++    if not bl["baseline_ready"]:
++        note = (
++            f"Baseline egress in costruzione dal {bl.get('baseline_started_at')}: "
++            "nessun segnale di novità (N5) finché un ciclo chiude con deferred==0."
++        )
++        if bl.get("cycle_seen") is not None:
++            note += (
++                f" Ultimo ciclo: seen={bl.get('cycle_seen')} "
++                f"created={bl.get('cycle_created')} deferred={bl.get('cycle_deferred')}."
++            )
++    return {
++        "cards": cards,
++        "baseline": bl,
++        "breaker_open": open_,
++        "breaker_reason": reason,
++        "table": table_stats(db),
++        "note": note,
++        "o13c_marker": O13C_MARKER,
++        "defense_priority_id": DEFENSE_PRIORITY_ID,
++    }
++
++
++def acknowledge_egress_signal(
++    db: Session,
++    *,
++    uid: str,
++    action: str,
++    reason: str = "",
++    user_id: int | None = None,
++) -> Suggestion:
++    status = "approved" if action in {"acknowledge", "riconosci", "archive"} else "rejected"
++    existing = db.scalar(select(Suggestion).where(Suggestion.uid == uid))
++    kind = "egress_new_ext" if "ext" in uid else "egress_new_int"
++    if existing:
++        existing.status = status
++        existing.decided_at = utcnow()
++        existing.decided_by = user_id
++        existing.body = reason or existing.body
++        payload = dict(existing.payload or {})
++        payload["action"] = action
++        existing.payload = payload
++        db.flush()
++        return existing
++    s = Suggestion(
++        uid=uid,
++        kind=kind,
++        status=status,
++        title=kind,
++        body=reason or action,
++        payload={"action": action, "reason": reason},
++        source="egress",
++        confidence=1.0,
++        decided_at=utcnow(),
++        decided_by=user_id,
++    )
++    db.add(s)
++    db.flush()
++    return s
++
++
++def build_egress_inference_block(
++    db: Session,
++    asset: Asset,
++    *,
++    ai_enabled: bool = False,
++    ai_configured: bool = False,
++    now: datetime | None = None,
++) -> dict[str, Any]:
++    """INFERENZA IA for unknown destinations — never invent; degrade without engine."""
++    now = now or utcnow()
++    block = build_egress_for_asset(db, asset, now=now)
++    local_evidence = []
++    for dest in block.get("external_destinations") or []:
++        ev = dest.get("evidence") or {}
++        if ev.get("server_name") or ev.get("dns_query"):
++            local_evidence.append(
++                {
++                    "dst_ip": dest.get("dst_ip"),
++                    "dport": dest.get("dport"),
++                    "server_name": ev.get("server_name"),
++                    "dns_query": ev.get("dns_query"),
++                    "association": dest.get("association"),
++                }
++            )
++    base = {
++        "title": "INFERENZA IA · destinazioni",
++        "label": "INFERENZA IA",
++        "disclaimer": (
++            "Output inferito — non certezza; nessuna azione automatica; "
++            "nessuna scrittura di fatti."
++        ),
++        "local_evidence": local_evidence,
++        "o13c_marker": O13C_MARKER,
++    }
++    if not ai_enabled or not ai_configured:
++        return {
++            **base,
++            "proposal_available": False,
++            "proposal": None,
++            "status": "proposta non disponibile: nessun motore di inferenza configurato",
++            "limits": [
++                "Evidenze locali (DNS/SNI da evidence) mostrate senza inventare nomi.",
++            ],
++        }
++    return {
++        **base,
++        "proposal_available": False,
++        "proposal": None,
++        "status": "proposta non disponibile: motore presente ma percorso /ai non cablato",
++        "limits": ["O13C non invoca LLM."],
++    }
+
+diff --git a/observatory/web/src/views/Oggi.vue b/observatory/web/src/views/Oggi.vue
+index 02c5a44..aaac473 100644
+--- a/observatory/web/src/views/Oggi.vue
++++ b/observatory/web/src/views/Oggi.vue
+@@ -11,7 +12,28 @@ import {
+   buildTriageRows,
+   noiseProposalIds,
+   noiseProposalsMissingIdCount,
++  queueConservationCheck,
+ } from "../triageRules";
++import { buildChassisNameCards } from "../oggiChassis";
++import {
++  DEFENSE_PRIORITY_LEGEND,
++  compareDefensePriority,
++  priorityForChassisCard,
++  priorityForFdbCard,
++  priorityForBehaviorCard,
++  priorityForCoverageCard,
++  priorityForEgressCard,
++  priorityForMove,
++  priorityForNuovo,
++  priorityForTriageRow,
++} from "../oggiPriority";
++import VisualBadge from "../components/ui/VisualBadge.vue";
++import { freshnessBadge } from "../visualVocab";
++import {
++  groupSuppressionsByRule,
++  listStructuralSuppressions,
++  suppressedProposalIdSet,
++} from "../oggiNoise";
+ import {
+   displayCurrentName,
+   displayIp,
+diff --git a/observatory/web/src/views/Oggi.vue b/observatory/web/src/views/Oggi.vue
+index 02c5a44..aaac473 100644
+--- a/observatory/web/src/views/Oggi.vue
++++ b/observatory/web/src/views/Oggi.vue
+@@ -44,25 +69,108 @@ const assets = ref([]);
+ const chassisPayload = ref({ chassis: [] });
+ const monitors = ref([]);
+ const moveSuggestions = ref([]);
++const plantSwitches = ref([]);
++const factConflicts = ref([]);
++const fdbDefense = ref({ cards: [], baseline_at_by_port: {}, roles: [] });
++const behaviorSignals = ref({
++  cards: [],
++  baseline: {},
++  note: null,
++  o11_marker: null,
++});
++const egressSignals = ref({
++  cards: [],
++  baseline: {},
++  note: null,
++  o13c_marker: null,
++});
++const coverageReport = ref({ sources: [], cards: [], o12_marker: "" });
+ const busyKey = ref("");
+ const rumoreExpanded = ref(false);
+ const rumorePreviewOpen = ref(false);
++const suppressedOpen = ref(false);
++const restoredSuppressionIds = ref(new Set());
+ const massBusy = ref(false);
+ /** Esito massa: distinto da error; non azzerato da load(). */
+ const notice = ref("");
++const reliability = ref(null);
++const fritzOutage = computed(() => fritzPresenceOutageFromReliability(reliability.value));
++/** O1: draft rename per chassis_id */
++const renameDraft = ref({});
++const renameOpen = ref({});
++
++const defenseLegend = DEFENSE_PRIORITY_LEGEND;
+ 
+ const devices = computed(() => composeDevices(assets.value, chassisPayload.value));
+ 
+-const triageRows = computed(() =>
++const orphanNameFacts = computed(
++  () => chassisPayload.value?.orphaned_manual_name_facts || [],
++);
++
++const chassisNameCards = computed(() => {
++  const cards = buildChassisNameCards(assets.value || [], chassisPayload.value || {});
++  return cards
++    .map((c) => ({ ...c, defense_priority: priorityForChassisCard(c) }))
++    .sort(compareDefensePriority);
++});
++
++const hiddenProposalIds = computed(() =>
++  suppressedProposalIdSet(assets.value || [], restoredSuppressionIds.value),
++);
++
++const structuralSuppressions = computed(() =>
++  listStructuralSuppressions(assets.value || []).filter(
++    (s) =>
++      s.demote_only ||
++      !restoredSuppressionIds.value.has(Number(s.proposal_id)),
++  ),
++);
++
++const suppressionsByRule = computed(() =>
++  groupSuppressionsByRule(structuralSuppressions.value),
++);
++
++const triageRowsRaw = computed(() =>
+   buildTriageRows(assets.value || [], chassisPayload.value || {}),
+ );
++
++const triageRows = computed(() => {
++  const hidden = hiddenProposalIds.value;
++  const byId = new Map((assets.value || []).map((a) => [Number(a.id), a]));
++  return triageRowsRaw.value
++    .filter((r) => r.proposal_id == null || !hidden.has(Number(r.proposal_id)))
++    .map((r) => {
++      const asset = byId.get(Number(r.asset_id));
++      const macs = r.macs?.length ? r.macs : asset?.macs || [];
++      const ips = r.ips?.length ? r.ips : asset?.ips || [];
++      const solo_l2 = macs.length > 0 && !(ips || []).length;
++      let defense_priority = priorityForTriageRow(r, { solo_l2 });
++      if (solo_l2) {
++        defense_priority = priorityForTriageRow(r, { solo_l2: true });
++      }
++      const laa = (macs || []).some((m) => isLocallyAdministered(m));
++      return {
++        ...r,
++        defense_priority,
++        laa_demoted: laa,
++        laa_reason: laa
++          ? "MAC locally-administered · mai priorità alta (regola mac_randomizzato)"
++          : null,
++      };
++    })
++    .sort(compareDefensePriority);
++});
++
+ const triageGroups = computed(() => groupTriageRows(triageRows.value));
+ const verificaSplit = computed(() => splitVerifica(triageGroups.value.verifica));
+ 
+ /** D10: tutte le pending rumore (anche 2º livello), non solo top di griglia. */
+-const noiseIds = computed(() =>
+-  noiseProposalIds(assets.value || [], chassisPayload.value || {}),
+-);
++const noiseIds = computed(() => {
++  const hidden = hiddenProposalIds.value;
++  return noiseProposalIds(assets.value || [], chassisPayload.value || {}).filter(
++    (id) => !hidden.has(Number(id)),
++  );
++});
+ const rumoreMissingIds = computed(() =>
+   noiseProposalsMissingIdCount(assets.value || [], chassisPayload.value || {}),
+ );
+diff --git a/observatory/web/src/views/Oggi.vue b/observatory/web/src/views/Oggi.vue
+index 02c5a44..aaac473 100644
+--- a/observatory/web/src/views/Oggi.vue
++++ b/observatory/web/src/views/Oggi.vue
+@@ -111,31 +228,144 @@ const monitorItems = computed(() => {
+     }));
+ });
+ 
+-const moveItems = computed(() =>
+-  (moveSuggestions.value || [])
++const moveItems = computed(() => {
++  const portsById = new Map();
++  for (const sw of plantSwitches.value || []) {
++    for (const p of sw.ports || []) {
++      portsById.set(Number(p.id), { port: p, sw });
++    }
++  }
++  return (moveSuggestions.value || [])
+     .filter((s) => (s.kind || "") === "move" && (s.status || "pending") === "pending")
+-    .map(moveSuggestionFields),
+-);
++    .map((s) => {
++      const payload = s.payload || {};
++      const toId = Number(payload.to_port_id || payload.port_id || 0);
++      const fromId = Number(payload.from_port_id || 0);
++      const hit = portsById.get(toId) || portsById.get(fromId) || null;
++      const fields = moveSuggestionFields(s, {
++        last_fdb_at: hit?.port?.last_fdb_at || payload.last_fdb_at || null,
++        switch_name: hit?.sw?.name || payload.switch_name || null,
++        port_label:
++          hit?.port?.port_path_label ||
++          payload.to_port_label ||
++          payload.from_port_label ||
++          null,
++      });
++      return { ...fields, defense_priority: priorityForMove(fields) };
++    })
++    .sort(compareDefensePriority);
++});
+ 
+ const noisePreview = computed(() =>
+   noiseArchivePreview(assets.value || [], noiseIds.value || []),
+ );
+ 
+ const secondaryQueue = computed(() => {
+-  return [...newItems.value, ...monitorItems.value].sort((a, b) =>
+-    String(b.age).localeCompare(String(a.age)),
+-  );
++  return [...newItems.value, ...monitorItems.value].sort((a, b) => {
++    const dp = compareDefensePriority(a, b);
++    if (dp !== 0) return dp;
++    return String(b.age).localeCompare(String(a.age));
++  });
++});
++
++/** O10 W2: riepilogo collasso — conteggio + priorità max (F-9). */
++const secondaryCollapseMeta = computed(() => {
++  const items = secondaryQueue.value;
++  let best = 99;
++  for (const it of items) {
++    const lv = it?.defense_priority?.level;
++    if (lv != null && lv < best) best = lv;
++  }
++  return {
++    count: items.length,
++    maxPriority: best === 99 ? null : best,
++  };
+ });
+ 
++/** ≤640px: sezioni secondarie chiuse di default (P1 resta aperto). */
++const narrowUi = ref(false);
++let narrowMq = null;
++function syncNarrowUi() {
++  narrowUi.value = Boolean(narrowMq?.matches);
++}
++
++const fdbDefenseCards = computed(() =>
++  (fdbDefense.value?.cards || [])
++    .map((c) => ({ ...c, defense_priority: priorityForFdbCard(c) }))
++    .sort(compareDefensePriority),
++);
++
++const behaviorCards = computed(() =>
++  (behaviorSignals.value?.cards || [])
++    .map((c) => ({ ...c, defense_priority: priorityForBehaviorCard(c) }))
++    .sort(compareDefensePriority),
++);
++
++const egressCards = computed(() =>
++  (egressSignals.value?.cards || [])
++    .map((c) => ({ ...c, defense_priority: priorityForEgressCard(c) }))
++    .sort(compareDefensePriority),
++);
++
++const coverageCards = computed(() =>
++  (coverageReport.value?.cards || [])
++    .map((c) => ({ ...c, defense_priority: priorityForCoverageCard(c) }))
++    .sort(compareDefensePriority),
++);
++
++const coverageBlindCards = computed(() =>
++  coverageCards.value.filter((c) => c.kind === "coverage_source_blind"),
++);
++const coverageDisabledCards = computed(() =>
++  coverageCards.value.filter((c) => c.kind === "coverage_source_disabled"),
++);
++
+ const emptyAll = computed(
+   () =>
+     !triageRows.value.length &&
++    !chassisNameCards.value.length &&
+     !newItems.value.length &&
+     !monitorItems.value.length &&
+     !moveItems.value.length &&
+-    !noiseIds.value.length,
++    !noiseIds.value.length &&
++    !factConflicts.value.length &&
++    !fdbDefenseCards.value.length &&
++    !behaviorCards.value.length &&
++    !egressCards.value.length &&
++    !(egressSignals.value?.note) &&
++    !coverageCards.value.length,
+ );
+ 
++function restoreSuppression(proposalId) {
++  const next = new Set(restoredSuppressionIds.value);
++  next.add(Number(proposalId));
++  restoredSuppressionIds.value = next;
++}
++
++function defensePriorityLabel(p) {
++  if (!p) return "—";
++  return `P${p.level} · ${p.label}`;
++}
++
++function coverageFreshnessBadge(card) {
++  const state = card?.state;
++  const id =
++    state === "cieca"
++      ? "not_covered"
++      : state === "coperta_vecchia"
++        ? "stale"
++        : state === "disabilitata"
++          ? "not_measured"
++          : state === "coperta_fresca"
++            ? "fresh"
++            : "not_measured";
++  return freshnessBadge({
++    id,
++    asOf: card?.last_success_at,
++    reason: card?.body || card?.last_error,
++  });
++}
++
+ const verificaBlocks = computed(() => [
+   {
+     key: "collide",
+diff --git a/observatory/web/src/views/Oggi.vue b/observatory/web/src/views/Oggi.vue
+index 02c5a44..aaac473 100644
+--- a/observatory/web/src/views/Oggi.vue
++++ b/observatory/web/src/views/Oggi.vue
+@@ -164,16 +394,30 @@ async function load() {
+   error.value = "";
+   // notice NON azzerato qui (E1): sopravvive al reload post-massa
+   try {
+-    const [a, c, m, s] = await Promise.all([
++    const [a, c, m, s, fc, rel, sw, fdb, beh, eg, cov] = await Promise.all([
+       api.assets({ include_historical: "true", all_proposals: "true" }),
+       api.chassis(),
+       api.monitors(),
+       api.suggestions().catch(() => []),
++      api.factConflicts().catch(() => ({ conflicts: [] })),
++      api.reliability().catch(() => null),
++      api.switches().catch(() => []),
++      api.fdbDefenseSignals().catch(() => ({ cards: [], roles: [] })),
++      api.behaviorSignals().catch(() => ({ cards: [], baseline: {} })),
++      api.egressSignals().catch(() => ({ cards: [], baseline: {} })),
++      api.coverageSources().catch(() => ({ sources: [], cards: [] })),
+     ]);
+     assets.value = a;
+     chassisPayload.value = c;
+     monitors.value = Array.isArray(m) ? m : m?.monitors || [];
+     moveSuggestions.value = Array.isArray(s) ? s : [];
++    factConflicts.value = (fc && fc.conflicts) || [];
++    reliability.value = rel;
++    plantSwitches.value = Array.isArray(sw) ? sw : [];
++    fdbDefense.value = fdb && typeof fdb === "object" ? fdb : { cards: [] };
++    behaviorSignals.value = beh && typeof beh === "object" ? beh : { cards: [] };
++    egressSignals.value = eg && typeof eg === "object" ? eg : { cards: [] };
++    coverageReport.value = cov && typeof cov === "object" ? cov : { sources: [], cards: [] };
+   } catch (e) {
+     error.value = e.message || "Caricamento fallito";
+   } finally {
+diff --git a/observatory/web/src/views/Oggi.vue b/observatory/web/src/views/Oggi.vue
+index 02c5a44..aaac473 100644
+--- a/observatory/web/src/views/Oggi.vue
++++ b/observatory/web/src/views/Oggi.vue
+@@ -204,10 +448,349 @@ function problemFields(row) {
+   return nameProblemFields(row);
+ }
+ 
++function chassisFields(card) {
++  return chassisNameFields(card);
++}
++
++function fdbFields(card) {
++  return fdbDefenseFields(card);
++}
++
++async function ackFdb(card, action) {
++  const key = `fdb-${card.uid}-${action}`;
++  busyKey.value = key;
++  notice.value = "";
++  try {
++    let reason = "";
++    if (action === "ignore") {
++      reason = window.prompt("Motivo (obbligatorio per Ignora):", "") || "";
++      if (!reason.trim()) {
++        notice.value = "Ignora annullato: motivo assente.";
++        return;
++      }
++    }
++    await api.fdbDefenseAck({
++      uid: card.uid,
++      action,
++      reason,
++      signal_key: card.signal_key || "",
++    });
++    notice.value = `FDB ${card.signal}: ${action}`;
++    await load();
++  } catch (e) {
++    error.value = e.message || "Ack FDB fallito";
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++const expandedBehaviorGroups = ref(new Set());
++
++function toggleBehaviorGroup(uid) {
++  const next = new Set(expandedBehaviorGroups.value);
++  if (next.has(uid)) next.delete(uid);
++  else next.add(uid);
++  expandedBehaviorGroups.value = next;
++}
++
++async function ackBehavior(card, action, member = null) {
++  const key = `beh-${card.uid}-${action}`;
++  busyKey.value = key;
++  notice.value = "";
++  try {
++    const target = member || card;
++    if (
++      action === "open_dossier" ||
++      action === "open_evidences" ||
++      action === "assign_name"
++    ) {
++      const href =
++        action === "assign_name"
++          ? target.assign_name_href || target.actions?.find((a) => a.id === "assign_name")?.href
++          : target.dossier_href ||
++            target.actions?.find((a) => a.id === "open_evidences" || a.id === "open_dossier")
++              ?.href;
++      if (href && typeof href === "string" && href.startsWith("/")) {
++        const [path, qs] = href.split("?");
++        const query = Object.fromEntries(new URLSearchParams(qs || ""));
++        router.push({ path, query: { ...query, from: "oggi" } });
++        return;
++      }
++      if (target.asset_id) {
++        router.push({
++          path: `/dossier/${target.asset_id}`,
++          query: {
++            from: "oggi",
++            focus: action === "assign_name" ? "name" : "does",
++          },
++        });
++      } else {
++        router.push({ path: "/dossier", query: { from: "oggi" } });
++      }
++      return;
++    }
++    await api.behaviorAck({ uid: card.uid, action, reason: "" });
++    notice.value = `Comportamento ${card.signal}: ${action}`;
++    await load();
++  } catch (e) {
++    error.value = e.message || "Ack comportamento fallito";
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++async function ackEgress(card, action) {
++  const key = `eg-${card.uid}-${action}`;
++  busyKey.value = key;
++  notice.value = "";
++  try {
++    if (action === "open_dossier") {
++      if (card.asset_id) {
++        router.push({
++          path: `/dossier/${card.asset_id}`,
++          query: { from: "oggi", focus: "does" },
++        });
++      } else {
++        router.push({ path: "/dossier", query: { from: "oggi" } });
++      }
++      return;
++    }
++    await api.egressAck({ uid: card.uid, action, reason: "" });
++    notice.value = `Egress ${card.signal}: ${action}`;
++    await load();
++  } catch (e) {
++    error.value = e.message || "Ack egress fallito";
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++async function ackCoverage(card, action) {
++  const key = `cov-${card.uid}-${action}`;
++  busyKey.value = key;
++  notice.value = "";
++  try {
++    if (action === "open_plant") {
++      router.push({ path: "/plant", query: { from: "oggi", coverage: "1" } });
++      return;
++    }
++    await api.coverageAck({
++      uid: card.uid,
++      action,
++      reason: "",
++      kind: card.kind || "coverage_source_blind",
++    });
++    notice.value = `Copertura ${card.signal}: ${action}`;
++    await load();
++  } catch (e) {
++    error.value = e.message || "Ack copertura fallito";
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++function fdbActionClick(card, actionId) {
++  if (actionId === "dossier") {
++    if (card.signal === "P6" && card.device?.asset_id) {
++      router.push({ path: `/dossier/${card.device.asset_id}`, query: { from: "oggi" } });
++      return;
++    }
++    // FDB ≠ identity: open plant for port context; dossier when mac search later.
++    router.push({ path: "/plant", query: { from: "oggi", fdb_mac: card.mac || "" } });
++    return;
++  }
++  if (actionId === "assign") {
++    router.push({
++      path: "/gs308",
++      query: { from: "oggi", mac: card.mac || "", refresh: String(Date.now()) },
++    });
++    return;
++  }
++  if (actionId === "open_plant") {
++    router.push({ path: "/plant", query: { from: "oggi", switch: card.switch_code || "" } });
++    return;
++  }
++  return ackFdb(card, actionId);
++}
++
++function chassisDisplayName(card) {
++  if (card?.display_name == null || String(card.display_name).trim() === "") {
++    return "nome non noto";
++  }
++  return String(card.display_name).trim();
++}
++
++function chassisProvenanceLabel(card) {
++  if (card.name_kind === "absent") return "assenza dichiarata";
++  if (card.name_kind === "inference") {
++    const src = card.name_source || "sconosciuta";
++    const conf =
++      card.name_confidence != null
++        ? ` · ${formatConfidencePct(card.name_confidence)}`
++        : "";
++    return `inferenza ${src}${conf}`;
++  }
++  if (card.name_kind === "legacy_manual") {
++    return "manuale, registrato sull'interfaccia — non ancora fatto d'apparato";
++  }
++  if (card.name_kind === "fact") {
++    if (card.held_name_is_manual || card.name_source === "manual") {
++      return "fatto manuale (apparato)";
++    }
++    return `fatto ${card.name_source || "?"} (apparato)`;
++  }
++  return `provenienza ${card.name_source || "?"}`;
++}
++
++function openRename(card) {
++  renameOpen.value = { ...renameOpen.value, [card.chassis_id]: true };
++  renameDraft.value = {
++    ...renameDraft.value,
++    [card.chassis_id]: card.display_name || "",
++  };
++}
++
++async function submitChassisRename(card) {
++  const cid = card.chassis_id;
++  const name = String(renameDraft.value[cid] || "").trim();
++  if (!name) {
++    error.value = "Serve un nome non vuoto.";
++    return;
++  }
++  if (!confirmChassisNameWrite(name)) return;
++  const key = card.key;
++  busyKey.value = key;
++  error.value = "";
++  notice.value = "";
++  try {
++    // O1.2: always chassis subject — never member adopt.
++    await api.renameChassis(cid, name);
++    renameOpen.value = { ...renameOpen.value, [cid]: false };
++    await load();
++  } catch (e) {
++    error.value = friendlyChassisError(e);
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++async function adoptChassisProposal(card) {
++  if (!card.chassis_id || !card.proposed_name) return;
++  if (!confirmChassisNameWrite(card.proposed_name)) return;
++  const key = card.key;
++  busyKey.value = key;
++  error.value = "";
++  notice.value = "";
++  try {
++    await api.adoptChassisName(card.chassis_id, {
++      source: card.proposed_source || "manual",
++      value: card.proposed_name,
++      proposalId: card.proposal_id,
++    });
++    await load();
++  } catch (e) {
++    error.value = friendlyChassisError(e);
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++async function confirmInferenceAsManual(card) {
++  if (!card.chassis_id || !card.display_name) return;
++  if (!confirmChassisNameWrite(card.display_name)) return;
++  const key = card.key;
++  busyKey.value = key;
++  error.value = "";
++  notice.value = "";
++  try {
++    await api.adoptChassisName(card.chassis_id, {
++      source: "manual",
++      value: card.display_name,
++    });
++    await load();
++  } catch (e) {
++    error.value = friendlyChassisError(e);
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++/**
++ * O9 X3 — avviso pre-scrittura fatto a soggetto chassis.
++ * DEBT-CHASSIS-SUBJECT-ID-CHURN: l'id chassis non è stabile al ri-raggruppamento;
++ * non disabilita l'azione e non tocca FA 251.
++ */
++function confirmChassisNameWrite(value) {
++  const name = String(value || "").trim() || "(nome)";
++  return window.confirm(
++    `Confermi «${name}» come nome d'apparato?\n\n` +
++      "Nota: dopo un ri-raggruppamento automatico delle interfacce potrebbe " +
++      "servire riconfermare il nome (l'id chassis non è ancora stabile — " +
++      "DEBT-CHASSIS-SUBJECT-ID-CHURN).",
++  );
++}
++
++async function keepManualRejectProposal(card) {
++  if (!card.proposal_asset_id || !card.proposed_source) {
++    error.value = "Proposta non archiviabile: manca l'id membro.";
++    return;
++  }
++  const key = card.key;
++  busyKey.value = key;
++  error.value = "";
++  notice.value = "";
++  try {
++    await api.rejectNameProposal(
++      card.proposal_asset_id,
++      card.proposed_source,
++      card.proposal_id,
++    );
++    await load();
++  } catch (e) {
++    error.value = friendlyChassisError(e);
++  } finally {
++    busyKey.value = "";
++  }
++}
++
++/** O1.2: never surface raw 409 chassis_subject_required to the user. */
++function friendlyChassisError(e) {
++  const msg = e?.message || String(e);
++  if (/chassis_subject_required/i.test(msg)) {
++    return "Adozione sul membro non consentita: usa Correggi/Adotta sulla card apparato.";
++  }
++  return msg;
++}
++
+ async function adoptRow(row) {
+-  if (row.chassis_member) {
++  // W4b.2.9 / O1.2: if chassis-scoped, always call chassis API — never member.
++  const chassisId = row.chassis_id;
++  const needsChassis =
++    row.chassis_member ||
++    row.actionable_reason === "chassis_multi_nic_adopt_blocked" ||
++    (chassisId && row.verdict === "chassis");
++  if (needsChassis && chassisId && row.proposed_name) {
++    const key = row.key;
++    busyKey.value = key;
++    error.value = "";
++    notice.value = "";
++    try {
++      await api.adoptChassisName(chassisId, {
++        source: row.source || "manual",
++        value: row.proposed_name,
++        proposalId: row.proposal_id,
++      });
++      await load();
++    } catch (e) {
++      error.value = friendlyChassisError(e);
++    } finally {
++      busyKey.value = "";
++    }
++    return;
++  }
++  if (row.actionable === false || row.verdict === "unresolvable") {
+     error.value =
+-      "Adozione bloccata: membro di chassis multi-NIC. Serve rename a livello chassis.";
++      "Proposta non risolvibile: nessuna azione disponibile su questa card.";
+     return;
+   }
+   const key = row.key;
+diff --git a/observatory/web/src/views/Oggi.vue b/observatory/web/src/views/Oggi.vue
+index 02c5a44..aaac473 100644
+--- a/observatory/web/src/views/Oggi.vue
++++ b/observatory/web/src/views/Oggi.vue
+@@ -342,13 +963,509 @@ onMounted(load);
+       title="Oggi"
+       help="Coda unica di interventi: nomi, chassis multi-NIC, porte da confermare, device nuovi e monitor. Priorità e cause in italiano."
+     />
++    <FritzOutageBanner
++      :active="fritzOutage.active"
++      :detail="fritzOutage.detail"
++    />
+     <ViewStateBanner v-if="error" kind="error" :message="error" />
+     <ViewStateBanner v-else-if="notice && (notice.includes('saltate') || notice.includes('non trovate'))" kind="partial" :message="notice" />
+     <p v-else-if="notice" class="oggi-notice" role="status">{{ notice }}</p>
+     <ViewStateBanner v-if="loading" kind="loading" />
+     <template v-if="!loading">
++      <details class="oggi-collapse" :open="!narrowUi" data-testid="oggi-legend-collapse">
++        <summary class="oggi-collapse-sum">
++          Priorità P1–P7 · legenda
++          <span class="oggi-muted-inline">7 livelli · P1 resta in coda aperta · P7 = igiene</span>
++        </summary>
++        <section class="oggi-legend" aria-label="Legenda priorità difensiva">
++          <h2 class="oggi-h2">Priorità per conseguenza difensiva</h2>
++          <ol class="oggi-legend-list">
++            <li v-for="L in defenseLegend" :key="L.id">
++              <strong>P{{ L.level }}</strong> — {{ L.label }}
++            </li>
++          </ol>
++          <p class="oggi-muted-inline">
++            Ogni riga mostra la regola che ha prodotto la posizione. Nessun ordinamento magico.
++          </p>
++        </section>
++      </details>
++      <nav class="oggi-quick" aria-label="Domande rapide da Oggi">
++        <p class="oggi-quick-title">Domande rapide (≤3 passi)</p>
++        <ul class="oggi-quick-list">
++          <li>
++            <a href="#oggi-fdb">Non riconosciuto / solo-L2 adesso?</a>
++            <span class="oggi-muted-inline">→ FDB P1 / Nuovi</span>
++          </li>
++          <li>
++            <router-link to="/plant">MAC dove è attaccato?</router-link>
++            <span class="oggi-muted-inline">→ Impianto (cerca MAC)</span>
++          </li>
++          <li>
++            <a href="#oggi-secondary">Già visto o nuovo?</a>
++            <span class="oggi-muted-inline">→ coda secondaria Nuovi</span>
++          </li>
++          <li>
++            <a href="#oggi-fdb">Sorgente cieca?</a>
++            <span class="oggi-muted-inline">→ FDB P4 / S-D</span>
++          </li>
++          <li>
++            <router-link to="/gs308">Dietro il GS308EP?</router-link>
++            <span class="oggi-muted-inline">→ vista punto cieco</span>
++          </li>
++        </ul>
++      </nav>
++      <div
++        v-if="orphanNameFacts.length"
++        class="oggi-orphan"
++        data-testid="o8-orphan-name-facts"
++        role="status"
++      >
++        <strong>Fatto nome chassis orfano (non ri-puntato)</strong>
++        <ul>
++          <li v-for="o in orphanNameFacts" :key="'orf-' + o.id">
++            FA {{ o.id }} · {{ o.fact_key }}={{ o.value_norm }} · subject chassis
++            {{ o.subject_id }} (inesistente) · {{ o.source }}/{{ o.authority }} ·
++            {{ o.state }}. Non usato sul chassis corrente.
++            <code>{{ o.debt }}</code>
++          </li>
++        </ul>
++        <p class="oggi-muted-inline">{{ chassisPayload.orphan_policy }}</p>
++      </div>
++      <div
++        v-if="conservation.missing.length || conservation.duplicated.length"
++        class="oggi-discarded"
++        role="alert"
++      >
++        Conservazione coda: missing=[{{ conservation.missing.join(", ") }}]
++        duplicated=[{{ conservation.duplicated.join(", ") }}]
++      </div>
++      <div
++        v-if="fdbDefense.discarded_moves && fdbDefense.discarded_moves.count"
++        class="oggi-discarded"
++        data-testid="o4-discarded-moves"
++      >
++        <strong>{{ fdbDefense.discarded_moves.count }} eventi mac_move scartati</strong>
++        — {{ fdbDefense.discarded_moves.note }}
++        (<code>{{ fdbDefense.discarded_moves.debt }}</code>). Non cancellati.
++      </div>
+       <ViewStateBanner v-if="emptyAll && !error" kind="empty" message="Niente in coda. La rete non richiede interventi adesso." />
+       <template v-if="!emptyAll">
++        <!-- W4b.2.6: R-H conflict review (no auto-rename) -->
++        <section v-if="factConflicts.length" class="oggi-section">
++          <div class="oggi-section-head">
++            <h2 class="oggi-h2">Conflitti da verificare</h2>
++            <span class="oggi-counts">{{ factConflicts.length }} · R-H</span>
++          </div>
++          <div
++            v-for="c in factConflicts"
++            :key="'cf-' + c.id"
++            class="oggi-grid-row oggi-problem"
++          >
++            <DenseRow metric-width="0" value-width="auto">
++              <div class="oggi-grid-main">
++                <div class="oggi-names">
++                  <span class="oggi-prop">{{ c.incumbent_value || "?" }}</span>
++                  <span class="oggi-vs">vs</span>
++                  <span class="oggi-cur">{{ c.value }}</span>
++                  <StatusBadge tone="attn" label="conflitto" />
++                </div>
++                <dl class="oggi-fields">
++                  <div>
++                    <dt>Priorità</dt>
++                    <dd>alta</dd>
++                  </div>
++                  <div>
++                    <dt>Causa ed evidenza</dt>
++                    <dd>
++                      Contraddizione forte tra
++                      «{{ c.incumbent_value }}» ({{ c.incumbent_source || "?" }},
++                      auth {{ c.incumbent_authority ?? "?" }}) e
++                      «{{ c.value }}» ({{ c.source }}, auth {{ c.authority }}).
++                      Occorrenze: {{ c.occurrences || 1 }}.
++                    </dd>
++                  </div>
++                  <div>
++                    <dt>Impatto</dt>
++                    <dd>Il current resta invariato; nessun auto-rename.</dd>
++                  </div>
++                  <div>
++                    <dt>Se ignori</dt>
++                    <dd>Il conflitto resta in coda R-H finché non scegli un lato o lo risolvi altrove.</dd>
++                  </div>
++                  <div>
++                    <dt>Se agisci</dt>
++                    <dd>Confermi quale valore è il current — l’altro resta storico/divergenza.</dd>
++                  </div>
++                  <div>
++                    <dt>Azione raccomandata</dt>
++                    <dd>Apri il Dossier e conferma a mano quale valore tenere.</dd>
++                  </div>
++                </dl>
++              </div>
++              <template #value>
++                <div class="oggi-actions">
++                  <button
++                    v-if="c.subject_type === 'asset' || c.subject_type === 'chassis'"
++                    type="button"
++                    class="oggi-btn primary"
++                    @click="openDossier(c.subject_id)"
++                  >
++                    apri Dossier
++                  </button>
++                </div>
++              </template>
++            </DenseRow>
++          </div>
++        </section>
++        <!-- O4: FDB defensive signals S-A..S-D -->
++        <section v-if="fdbDefenseCards.length" id="oggi-fdb" class="oggi-section">
++          <div class="oggi-section-head">
++            <h2 class="oggi-h2">FDB · sensore difensivo</h2>
++            <span class="oggi-counts">{{ fdbDefenseCards.length }} · S-A…S-D</span>
++          </div>
++          <div
++            v-for="card in fdbDefenseCards"
++            :key="'fdb-' + card.uid"
++            class="oggi-grid-row oggi-problem"
++          >
++            <DenseRow metric-width="0" value-width="auto">
++              <div class="oggi-grid-main">
++                <div class="oggi-names">
++                  <span class="oggi-prop">{{ fdbFields(card).title }}</span>
++                  <StatusBadge
++                    :tone="fdbFields(card).priority === 'alta' ? 'attn' : 'neutral'"
++                    :label="card.signal + ' · ' + fdbFields(card).priority"
++                  />
++                </div>
++                <div class="oggi-meta">
++                  <span v-if="card.mac" class="mono">{{ card.mac }}</span>
++                  <span v-if="card.switch_code">{{ card.switch_code }}:{{ card.port_number }}</span>
++                  <span v-if="card.ruolo_porta">ruolo {{ card.ruolo_porta }}</span>
++                  <span v-if="fdbFields(card).baseline_at">baseline {{ fdbFields(card).baseline_at }}</span>
++                </div>
++                <dl class="oggi-fields">
++                  <div><dt>Priorità</dt><dd>{{ defensePriorityLabel(card.defense_priority) }}</dd></div>
++                  <div><dt>Regola</dt><dd>{{ card.defense_priority?.rule }}</dd></div>
++                  <div v-if="card.defense_priority?.role_uncertain"><dt>Nota</dt><dd>ruolo_porta non_determinato · priorità ridotta</dd></div>
++                  <div><dt>Causa ed evidenza</dt><dd>{{ fdbFields(card).cause }}</dd></div>
++                  <div><dt>Impatto</dt><dd>{{ fdbFields(card).impact }}</dd></div>
++                  <div><dt>Azione raccomandata</dt><dd>{{ fdbFields(card).action }}</dd></div>
++                  <div><dt>Certezza</dt><dd>{{ fdbFields(card).certainty }}</dd></div>
++                </dl>
++                <div
++                  v-if="card.inference"
++                  class="oggi-inference"
++                  data-kind="inference"
++                >
++                  <strong>{{ card.inference.label || "INFERENZA" }}</strong>
++                  <p class="oggi-inference-disc">{{ card.inference.disclaimer }}</p>
++                  <ul>
++                    <li
++                      v-for="(it, idx) in (card.inference.items || [])"
++                      :key="'inf-' + card.uid + '-' + idx"
++                    >
++                      {{ it.label }}
++                      <span class="mono"> · fonte {{ it.source }} · confidenza {{ it.confidence }}</span>
++                    </li>
++                  </ul>
++                  <p
++                    v-if="card.inference.llm_slot && !card.inference.llm_slot.enabled"
++                    class="oggi-inference-disc"
++                  >
++                    Slot LLM disattivato: {{ card.inference.llm_slot.reason }}
++                  </p>
++                </div>
++              </div>
++              <template #value>
++                <div class="oggi-actions">
++                  <button
++                    v-for="act in (card.actions || [])"
++                    :key="act.id"
++                    type="button"
++                    class="oggi-btn"
++                    :class="{ primary: act.id === 'acknowledge' || act.id === 'dossier' }"
++                    :disabled="busyKey.startsWith('fdb-' + card.uid)"
++                    @click="fdbActionClick(card, act.id)"
++                  >
++                    {{ act.label }}
++                  </button>
++                </div>
++              </template>
++            </DenseRow>
++          </div>
++        </section>
++        <!-- O12: copertura sorgenti -->
++        <section
++          v-if="coverageCards.length"
++          id="oggi-coverage"
++          class="oggi-section"
++          data-o12="coverage-cards"
++        >
++          <div class="oggi-section-head">
++            <h2 class="oggi-h2">Copertura sorgenti</h2>
++            <span class="oggi-counts">
++              {{ coverageBlindCards.length }} cieche · {{ coverageDisabledCards.length }} disabilitate
++            </span>
++          </div>
++          <p class="oggi-meta">
++            cieca ≠ disabilitata (I2). Segnali non rilevabili derivati dal censimento sorgente.
++          </p>
++          <div
++            v-for="card in coverageCards"
++            :key="'cov-' + card.uid"
++            class="oggi-grid-row oggi-problem"
++            :data-o12="card.kind"
++          >
++            <DenseRow metric-width="0" value-width="auto">
++              <div class="oggi-grid-main">
++                <div class="oggi-names">
++                  <span class="oggi-prop">{{ card.title }}</span>
++                  <StatusBadge
++                    :tone="card.kind === 'coverage_source_blind' ? 'attn' : 'neutral'"
++                    :label="card.signal + ' · P' + (card.defense_priority?.level || '?')"
++                  />
++                  <VisualBadge
++                    v-if="card.state"
++                    :tone="coverageFreshnessBadge(card).tone"
++                    :label="coverageFreshnessBadge(card).label"
++                    :title="coverageFreshnessBadge(card).title"
++                    data-o12="freshness-badge"
++                  />
++                </div>
++                <div class="oggi-meta">
++                  <span v-if="card.enable_flag">flag {{ card.enable_flag }}</span>
++                  <span v-if="card.last_success_at">ultimo ok {{ card.last_success_at }}</span>
++                </div>
++                <p v-if="card.last_error" class="oggi-meta mono">{{ card.last_error }}</p>
++                <p v-if="card.body" class="oggi-meta">{{ card.body }}</p>
++                <ul
++                  v-if="(card.signals_lost || card.signals_not_observable || []).length"
++                  class="oggi-beh-members"
++                >
++                  <li
++                    v-for="sig in (card.signals_lost || card.signals_not_observable)"
++                    :key="sig"
++                  >
++                    non rilevabile: {{ sig }}
++                  </li>
++                </ul>
++                <dl class="oggi-fields">
++                  <div>
++                    <dt>Priorità</dt>
++                    <dd>{{ defensePriorityLabel(card.defense_priority) }}</dd>
++                  </div>
++                </dl>
++              </div>
++              <template #value>
++                <div class="oggi-actions">
++                  <button
++                    v-for="act in (card.actions || [])"
++                    :key="act.id"
++                    type="button"
++                    class="oggi-btn"
++                    :class="{ primary: act.id === 'open_plant' }"
++                    :disabled="busyKey.startsWith('cov-' + card.uid)"
++                    @click="ackCoverage(card, act.id)"
++                  >
++                    {{ act.label }}
++                  </button>
++                </div>
++              </template>
++            </DenseRow>
++          </div>
++        </section>
++        <!-- O11: behaviour B-C / B-I -->
++        <section
++          v-if="behaviorCards.length || behaviorSignals.note"
++          id="oggi-behavior"
++          class="oggi-section"
++          data-o11="behavior-cards"
++        >
++          <div class="oggi-section-head">
++            <h2 class="oggi-h2">Comportamento · Zeek</h2>
++            <span class="oggi-counts">{{ behaviorCards.length }} · B-C / B-I</span>
++          </div>
++          <p v-if="behaviorSignals.note" class="oggi-meta">{{ behaviorSignals.note }}</p>
++          <div
++            v-for="card in behaviorCards"
++            :key="'beh-' + card.uid"
++            class="oggi-grid-row oggi-problem"
++            :data-o11fix="card.kind"
++          >
++            <DenseRow metric-width="0" value-width="auto">
++              <div class="oggi-grid-main">
++                <div class="oggi-names">
++                  <span class="oggi-prop">{{ card.title }}</span>
++                  <StatusBadge
++                    :tone="card.defense_priority?.level <= 2 ? 'attn' : 'neutral'"
++                    :label="card.signal + ' · P' + (card.defense_priority?.level || '?')"
++                  />
++                  <button
++                    v-if="card.expandable && card.members?.length"
++                    type="button"
++                    class="oggi-btn"
++                    @click="toggleBehaviorGroup(card.uid)"
++                  >
++                    {{ expandedBehaviorGroups.has(card.uid) ? "Comprimi" : "Espandi" }}
++                    ({{ card.count || card.members.length }})
++                  </button>
++                </div>
++                <div class="oggi-meta">
++                  <span v-if="card.mac" class="mono">{{ card.mac }}</span>
++                  <span v-if="card.label">{{ card.label }}</span>
++                  <span v-if="card.new_fingerprint" class="mono">
++                    nuovo {{ card.new_fingerprint.kind }}={{ card.new_fingerprint.value }}
++                  </span>
++                  <span v-if="card.evidence_kinds">
++                    evidenze {{ (card.evidence_kinds || []).join(", ") }}
++                  </span>
++                  <span v-if="card.count">{{ card.count }} soggetti</span>
++                </div>
++                <ul
++                  v-if="card.members && expandedBehaviorGroups.has(card.uid)"
++                  class="oggi-beh-members"
++                >
++                  <li v-for="m in card.members" :key="m.uid">
++                    <span class="mono">{{ m.mac || "—" }}</span>
++                    · {{ m.label }}
++                    · {{ (m.evidence_kinds || []).join(", ") }}
++                    <button
++                      type="button"
++                      class="oggi-btn"
++                      @click="ackBehavior(card, 'open_evidences', m)"
++                    >
++                      evidenze
++                    </button>
++                    <button
++                      type="button"
++                      class="oggi-btn"
++                      @click="ackBehavior(card, 'assign_name', m)"
++                    >
++                      nome
++                    </button>
++                  </li>
++                </ul>
++                <dl class="oggi-fields">
++                  <div>
++                    <dt>Priorità</dt>
++                    <dd>{{ defensePriorityLabel(card.defense_priority) }}</dd>
++                  </div>
++                  <div>
++                    <dt>Regola</dt>
++                    <dd>{{ card.defense_priority?.rule }}</dd>
++                  </div>
++                </dl>
++              </div>
++              <template #value>
++                <div class="oggi-actions">
++                  <button
++                    v-for="act in (card.actions || [])"
++                    :key="act.id"
++                    type="button"
++                    class="oggi-btn"
++                    :class="{
++                      primary:
++                        act.id === 'open_dossier' ||
++                        act.id === 'open_evidences' ||
++                        act.id === 'assign_name',
++                    }"
++                    :disabled="busyKey.startsWith('beh-' + card.uid)"
++                    @click="ackBehavior(card, act.id)"
++                  >
++                    {{ act.label }}
++                  </button>
++                </div>
++              </template>
++            </DenseRow>
++          </div>
++        </section>
++        <!-- O13C: egress novelty E-N -->
++        <section
++          v-if="egressCards.length || egressSignals.note"
++          id="oggi-egress"
++          class="oggi-section"
++          data-o13c="egress"
++        >
++          <div class="oggi-section-head">
++            <h2 class="oggi-h2">Egress · destinazioni</h2>
++            <span class="oggi-counts">{{ egressCards.length }} · E-N</span>
++          </div>
++          <p
++            v-if="egressSignals.note || egressSignals.baseline?.status === 'in_costruzione'"
++            class="oggi-meta"
++            data-o13c="egress"
++          >
++            {{
++              egressSignals.note ||
++              `Baseline egress in costruzione dal ${egressSignals.baseline?.baseline_started_at || "—"}`
++            }}
++            <span v-if="egressSignals.baseline?.cycle_seen != null">
++              · ciclo seen={{ egressSignals.baseline.cycle_seen }}
++              created={{ egressSignals.baseline.cycle_created }}
++              deferred={{ egressSignals.baseline.cycle_deferred }}
++            </span>
++          </p>
++          <div
++            v-for="card in egressCards"
++            :key="'eg-' + card.uid"
++            class="oggi-grid-row oggi-problem"
++            :data-o13c="card.kind"
++          >
++            <DenseRow metric-width="0" value-width="auto">
++              <div class="oggi-grid-main">
++                <div class="oggi-names">
++                  <span class="oggi-prop">{{ card.title }}</span>
++                  <StatusBadge
++                    tone="neutral"
++                    :label="card.signal + ' · P' + (card.defense_priority?.level || '?')"
++                  />
++                </div>
++                <div class="oggi-meta">
++                  <span v-if="card.label">{{ card.label }}</span>
++                  <span v-if="card.scope === 'ext' && card.dst_ip" class="mono">
++                    {{ card.dst_ip }}:{{ card.dport }}/{{ card.proto }}
++                  </span>
++                  <span v-if="card.scope === 'int'">
++                    relazione interna
++                    <span v-if="card.peer_unresolved"> · peer non risolto</span>
++                  </span>
++                  <span v-if="card.note" class="muted">{{ card.note }}</span>
++                </div>
++                <dl class="oggi-fields">
++                  <div>
++                    <dt>Priorità</dt>
++                    <dd>{{ defensePriorityLabel(card.defense_priority) }}</dd>
++                  </div>
++                  <div>
++                    <dt>Regola</dt>
++                    <dd>{{ card.defense_priority?.rule }}</dd>
++                  </div>
++                  <div v-if="card.scope === 'int'">
++                    <dt>Grana</dt>
++                    <dd>
++                      Relazione peer (senza porta/proto) — costo accettato: lateral-move a grana relazione
++                    </dd>
++                  </div>
++                </dl>
++              </div>
++              <template #value>
++                <div class="oggi-actions">
++                  <button
++                    v-for="act in (card.actions || [])"
++                    :key="act.id"
++                    type="button"
++                    class="oggi-btn"
++                    :class="{ primary: act.id === 'open_dossier' }"
++                    :disabled="busyKey.startsWith('eg-' + card.uid)"
++                    @click="ackEgress(card, act.id)"
++                  >
++                    {{ act.label }}
++                  </button>
++                </div>
++              </template>
++            </DenseRow>
++          </div>
++        </section>
+         <!-- Porte / FDB move (ex /suggestions) -->
+         <section v-if="moveItems.length" class="oggi-section">
+           <div class="oggi-section-head">
+
+diff --git a/web/src/oggiPriority.js b/web/src/oggiPriority.js
+new file mode 100644
+index 0000000..c3cb399
+--- /dev/null
++++ b/web/src/oggiPriority.js
+@@ -0,0 +1,244 @@
++/**
++ * O8 FASE 3 — priorità per conseguenza difensiva (un solo posto).
++ * Nessuna soglia numerica nuova: solo ordinamento dichiarato e ispezionabile.
++ */
++
++/** @typedef {{ level: number, id: string, label: string }} DefensePriorityLevel */
++
++/** Legenda UI — ordine dichiarato P1–P7 (P7 = igiene inventario / proposte nome). */
++export const DEFENSE_PRIORITY_LEGEND = Object.freeze([
++  {
++    level: 1,
++    id: "non_riconosciuto_o_solo_l2",
++    label: "Dispositivo non riconosciuto / attivo, o solo-L2",
++  },
++  {
++    level: 2,
++    id: "mac_nuovo_accesso",
++    label: "MAC nuovo su porta di accesso",
++  },
++  {
++    level: 3,
++    id: "mac_move_accesso",
++    label: "MAC-move fra porte di accesso",
++  },
++  {
++    level: 4,
++    id: "sorgente_non_disponibile",
++    label: "Sorgente di osservazione non disponibile (cecità)",
++  },
++  {
++    level: 5,
++    id: "conflitto_identita",
++    label: "Conflitti di identità (I3)",
++  },
++  {
++    level: 6,
++    id: "ignoto_con_evidenze_zeek",
++    label:
++      "Ignoto con evidenze Zeek raccolte (non urgente come non-riconosciuto attivo; nome manuale)",
++  },
++  {
++    level: 7,
++    id: "igiene_nome",
++    label: "Proposte di nome e igiene inventario (incl. sorgente disabilitata deliberatamente)",
++  },
++]);
++
++const BY_ID = Object.fromEntries(DEFENSE_PRIORITY_LEGEND.map((x) => [x.id, x]));
++
++/**
++ * @param {string} id
++ * @param {string} [ruleDetail]
++ * @returns {{ level: number, id: string, label: string, rule: string }}
++ */
++export function defensePriority(id, ruleDetail = "") {
++  const base = BY_ID[id] || BY_ID.igiene_nome;
++  return {
++    level: base.level,
++    id: base.id,
++    label: base.label,
++    rule: ruleDetail || base.label,
++  };
++}
++
++/**
++ * FDB S-A…S-D → livello difensivo (mai soppressi come rumore).
++ * Mapping allineato a `fdb_defense.py` kind (O9 X2):
++ *   S-A / fdb_mac_new  → P2 MAC nuovo
++ *   S-B / fdb_mac_move → P3 MAC-move
++ *   S-C / fdb_l2_only  → P1 solo-L2
++ *   S-D               → P4 sorgente non disponibile
++ * @param {object} card
++ */
++export function priorityForFdbCard(card) {
++  const signal = String(card?.signal || "");
++  const kind = String(card?.kind || "");
++  const role = String(card?.ruolo_porta || "");
++  const uncertainRole = role === "non_determinato";
++  let p;
++  const isSoloL2 = kind === "fdb_l2_only" || signal === "S-C";
++  const isMacNew = kind === "fdb_mac_new" || signal === "S-A";
++  const isMacMove = kind === "fdb_mac_move" || signal === "S-B";
++  const isBlind = signal === "S-D" || kind === "fdb_source_stale";
++
++  if (isSoloL2) {
++    p = defensePriority(
++      "non_riconosciuto_o_solo_l2",
++      uncertainRole
++        ? "S-C solo-L2 · ruolo_porta non_determinato · priorità dichiarata ma ridotta in UI"
++        : "S-C solo-L2 (presente in FDB senza IP corrente)",
++    );
++  } else if (isMacNew) {
++    p = defensePriority(
++      "mac_nuovo_accesso",
++      uncertainRole
++        ? "S-A MAC nuovo · ruolo_porta non_determinato · priorità dichiarata ma ridotta in UI"
++        : "S-A MAC nuovo su porta di accesso",
++    );
++  } else if (isMacMove) {
++    p = defensePriority(
++      "mac_move_accesso",
++      uncertainRole
++        ? "S-B MAC-move · ruolo_porta non_determinato · priorità dichiarata ma ridotta in UI"
++        : "S-B MAC-move fra porte di accesso",
++    );
++  } else if (isBlind) {
++    p = defensePriority(
++      "sorgente_non_disponibile",
++      `S-D · ${card?.state || "sorgente_non_disponibile"}`,
++    );
++  } else {
++    p = defensePriority("igiene_nome", `segnale FDB ${signal || kind || "sconosciuto"}`);
++  }
++  return { ...p, role_uncertain: uncertainRole };
++}
++
++/**
++ * @param {object} card chassis name card
++ */
++export function priorityForChassisCard(card) {
++  if (card?.conflict) {
++    return defensePriority(
++      "conflitto_identita",
++      "I3 · nome manuale tenuto vs proposta più debole/divergente",
++    );
++  }
++  return defensePriority(
++    "igiene_nome",
++    `chassis_nome · verdict=${card?.verdict || "chassis_nome"}`,
++  );
++}
++
++/**
++ * @param {object} row triage row
++ * @param {{ solo_l2?: boolean, unrecognized_active?: boolean }} [ctx]
++ */
++export function priorityForTriageRow(row, ctx = {}) {
++  if (ctx.solo_l2 || ctx.unrecognized_active) {
++    return defensePriority(
++      "non_riconosciuto_o_solo_l2",
++      ctx.solo_l2
++        ? "asset solo-L2 (nessun IP corrente) · attivo in coda"
++        : "dispositivo non riconosciuto e attivo",
++    );
++  }
++  if (row?.verdict === "collide" || row?.conflict) {
++    return defensePriority("conflitto_identita", "I3 / collide su proposta nome");
++  }
++  return defensePriority(
++    "igiene_nome",
++    `proposta_nome · verdict=${row?.verdict || "?"} · action=${row?.recommended_action || "?"}`,
++  );
++}
++
++/**
++ * Nuovi da conoscere → livello 1.
++ */
++export function priorityForNuovo() {
++  return defensePriority(
++    "non_riconosciuto_o_solo_l2",
++    "isNuovoDaConoscere · dispositivo non riconosciuto / da conoscere",
++  );
++}
++
++/**
++ * Move suggestion (porte) → livello 3 se access-like, altrimenti igiene.
++ */
++export function priorityForMove(item) {
++  return defensePriority(
++    "mac_move_accesso",
++    "suggestion kind=move · conferma porta (ex /suggestions)",
++  );
++}
++
++/**
++ * O11 behaviour / O12 coverage → same P-scale.
++ * B-C → P5; B-I → P6; coverage cieca → P4 sorgente_non_disponibile; disabled → P7 igiene_nome
++ */
++export function priorityForBehaviorCard(card) {
++  const kind = String(card?.kind || "");
++  const id = card?.defense_priority_id;
++  if (id === "conflitto_identita" || kind === "behavior_character_change") {
++    return defensePriority(
++      "conflitto_identita",
++      "B-C · cambio di carattere (JA4/DHCP strutturalmente nuovo)",
++    );
++  }
++  if (
++    id === "ignoto_con_evidenze_zeek" ||
++    kind === "behavior_unknown_with_evidence" ||
++    kind === "behavior_unknown_with_evidence_group"
++  ) {
++    return defensePriority(
++      "ignoto_con_evidenze_zeek",
++      "B-I · ignoto con evidenze Zeek · priorità igiene (non P1 attivo)",
++    );
++  }
++  return defensePriority(
++    "ignoto_con_evidenze_zeek",
++    "B-I · ignoto con evidenze Zeek",
++  );
++}
++
++/** O12 coverage cards — riuso P4 (cieca) e P7 igiene_nome (disabilitata), livelli in DEFENSE_PRIORITY_LEGEND. */
++export function priorityForCoverageCard(card) {
++  const kind = String(card?.kind || "");
++  const id = card?.defense_priority_id;
++  if (id === "sorgente_non_disponibile" || kind === "coverage_source_blind") {
++    return defensePriority(
++      "sorgente_non_disponibile",
++      "C-S · sorgente di osservazione cieca (≠ disabilitata)",
++    );
++  }
++  return defensePriority(
++    "igiene_nome",
++    "C-D · sorgente disabilitata deliberatamente (informativa)",
++  );
++}
++
++/**
++ * O13C egress novelty — P6 ignoto_con_evidenze_zeek for BOTH egress_new_ext and egress_new_int.
++ * Same defense_priority_id on all surfaces (accepted lateral-move cost on int).
++ */
++export function priorityForEgressCard(card) {
++  const id = card?.defense_priority_id;
++  if (id && id !== "ignoto_con_evidenze_zeek") {
++    return defensePriority(id, "E-N · egress");
++  }
++  return defensePriority(
++    "ignoto_con_evidenze_zeek",
++    "E-N · novità egress (ext host+port / int relazione) · P6",
++  );
++}
++
++/**
++ * Sort key: lower level first; within level keep stable secondary.
++ * @param {{ defense_priority?: { level: number } }} a
++ * @param {{ defense_priority?: { level: number } }} b
++ */
++export function compareDefensePriority(a, b) {
++  const la = a?.defense_priority?.level ?? 99;
++  const lb = b?.defense_priority?.level ?? 99;
++  return la - lb;
++}
+
+diff --git a/web/src/oggiPriority.test.js b/web/src/oggiPriority.test.js
+new file mode 100644
+index 0000000..659db92
+--- /dev/null
++++ b/web/src/oggiPriority.test.js
+@@ -0,0 +1,58 @@
++/**
++ * O12-FIX K3 — legenda e livelli usati devono coincidere (P1–P7, nessun livello fantasma).
++ */
++import test from "node:test";
++import assert from "node:assert/strict";
++import {
++  DEFENSE_PRIORITY_LEGEND,
++  defensePriority,
++  priorityForCoverageCard,
++  priorityForEgressCard,
++} from "./oggiPriority.js";
++
++test("legenda dichiara P1–P7 senza buchi", () => {
++  const levels = DEFENSE_PRIORITY_LEGEND.map((x) => x.level);
++  assert.deepEqual(levels, [1, 2, 3, 4, 5, 6, 7]);
++  assert.equal(DEFENSE_PRIORITY_LEGEND.length, 7);
++  assert.ok(DEFENSE_PRIORITY_LEGEND.some((x) => x.id === "igiene_nome" && x.level === 7));
++});
++
++test("coverage cieca → P4; disabilitata → P7 igiene_nome", () => {
++  const blind = priorityForCoverageCard({
++    kind: "coverage_source_blind",
++    defense_priority_id: "sorgente_non_disponibile",
++  });
++  assert.equal(blind.level, 4);
++  assert.ok(DEFENSE_PRIORITY_LEGEND.some((L) => L.level === blind.level));
++
++  const disabled = priorityForCoverageCard({
++    kind: "coverage_source_disabled",
++    defense_priority_id: "igiene_nome",
++  });
++  assert.equal(disabled.level, 7);
++  assert.equal(disabled.id, "igiene_nome");
++  assert.ok(DEFENSE_PRIORITY_LEGEND.some((L) => L.id === disabled.id && L.level === 7));
++});
++
++test("defensePriority non inventa livelli fuori legenda", () => {
++  const p = defensePriority("igiene_nome");
++  assert.equal(p.level, 7);
++  const unknown = defensePriority("id_inesistente_xyz");
++  assert.equal(unknown.id, "igiene_nome");
++  assert.equal(unknown.level, 7);
++});
++
++test("O13C egress ext e int → stesso P6 ignoto_con_evidenze_zeek", () => {
++  const ext = priorityForEgressCard({
++    kind: "egress_new_ext",
++    defense_priority_id: "ignoto_con_evidenze_zeek",
++  });
++  const intCard = priorityForEgressCard({
++    kind: "egress_new_int",
++    defense_priority_id: "ignoto_con_evidenze_zeek",
++  });
++  assert.equal(ext.id, "ignoto_con_evidenze_zeek");
++  assert.equal(intCard.id, ext.id);
++  assert.equal(ext.level, 6);
++  assert.equal(intCard.level, 6);
++});
+
+diff --git a/api/app/services/source_coverage.py b/api/app/services/source_coverage.py
+new file mode 100644
+index 0000000..4564aed
+--- /dev/null
++++ b/api/app/services/source_coverage.py
+@@ -0,0 +1,990 @@
++"""O12 — copertura sorgenti di osservazione (un solo posto, un solo vocabolario).
++
++Stati (I2 — non confonderli):
++  coperta_fresca | coperta_vecchia | cieca | disabilitata | cadenza_non_nota
++
++La finestra di freschezza = cadenza configurata della sorgente (nessuna soglia inventata).
++GS308EP: limite strutturale (I7), mai «sorgente cieca».
++"""
++
++from __future__ import annotations
++
++import json
++import uuid
++from dataclasses import dataclass
++from datetime import datetime
++from typing import Any
++
++from sqlalchemy import func, select
++from sqlalchemy.orm import Session
++
++from app.config import Settings, get_settings
++from app.models import (
++    Asset,
++    EgressObservation,
++    FlowObservation,
++    Monitor,
++    SensorRun,
++    Suggestion,
++    Switch,
++    ZeekBehaviorEvidence,
++    utcnow,
++)
++from app.services.switch_capabilities import switch_capabilities
++
++# --- C1 census: declared once; C3 signals_lost derived from this (never hand-lists in UI) ---
++
++COVERAGE_STATES = frozenset(
++    {
++        "coperta_fresca",
++        "coperta_vecchia",
++        "cieca",
++        "disabilitata",
++        "cadenza_non_nota",
++    }
++)
++
++# Map to O10 FRESHNESS vocab (no second vocabulary).
++STATE_TO_FRESHNESS = {
++    "coperta_fresca": "fresh",
++    "coperta_vecchia": "stale",
++    "cieca": "not_covered",
++    "disabilitata": "not_measured",
++    "cadenza_non_nota": "not_measured",
++}
++
++
++def _cov_uid(kind: str, name: str) -> str:
++    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"obs-o12:{kind}:{name}"))
++
++
++@dataclass(frozen=True)
++class SourceSpec:
++    """C1 entry — name is the stable id used in cards and tests."""
++
++    name: str
++    label: str
++    job_or_endpoint: str
++    feeds: tuple[str, ...]
++    signals_lost_when_blind: tuple[str, ...]
++    enable_flag: str | None  # settings attr name; None = always-on
++    interval_attr: str | None  # settings attr; None → cadenza_non_nota
++    # How to resolve last success / last error (implemented below).
++    kind: str  # sensor_run | fdb_snmp | zeek_behavior | zeek_egress | flow | portal | internet | nas | structural_skip
++    card_eligible: bool = True  # False = censita ma non genera card (alias di altra sorgente)
++
++
++SOURCE_SPECS: tuple[SourceSpec, ...] = (
++    SourceSpec(
++        name="fdb_snmp",
++        label="FDB / SNMP switch",
++        job_or_endpoint="collector topology+discovery → POST /api/ingest/fdb-switch",
++        feeds=("switch_ports.observed_macs", "switch.meta.fdb_poll", "port_fdb facts"),
++        signals_lost_when_blind=(
++            "MAC nuovo su porta di accesso",
++            "MAC-move fra porte di accesso",
++            "solo-L2 (presente in FDB senza IP corrente)",
++        ),
++        enable_flag=None,  # always scheduled; per-switch capability applies
++        interval_attr="topology_poll_interval_sec",  # invoked every topology cycle
++        kind="fdb_snmp",
++    ),
++    SourceSpec(
++        name="fritz_tr064",
++        label="Fritz TR-064 (hostlist / mesh / WLAN)",
++        job_or_endpoint="collector topology → POST /api/ingest/observations source=fritz",
++        feeds=("sensor_runs:fritz", "observations_raw", "asset.meta.link"),
++        signals_lost_when_blind=(
++            "associazioni WLAN / mesh Fritz",
++            "hostname e hostlist Fritz",
++        ),
++        enable_flag=None,  # always on when credentials present — treated always-on
++        interval_attr="topology_poll_interval_sec",
++        kind="sensor_run",
++    ),
++    SourceSpec(
++        name="nmap_discovery",
++        label="Nmap discovery (ARP sweep)",
++        job_or_endpoint="collector discovery → POST /api/ingest/observations source=nmap",
++        feeds=("sensor_runs:nmap", "observations_raw", "portal kinds nmap/arp/icmp"),
++        signals_lost_when_blind=("discovery host/MAC su CIDR", "presenza portal nmap"),
++        enable_flag=None,
++        interval_attr="collector_interval_sec",
++        kind="sensor_run",
++    ),
++    SourceSpec(
++        name="arp_icmp",
++        label="ARP / ICMP (kinds portal via nmap)",
++        job_or_endpoint="stesso job di nmap_discovery — non un provider separato",
++        feeds=("portal kinds arp|icmp", "presence_sources"),
++        signals_lost_when_blind=("presenza ARP/ICMP su CIDR",),
++        enable_flag=None,
++        interval_attr="collector_interval_sec",
++        kind="sensor_run",
++        card_eligible=False,  # alias di nmap_discovery — evita doppia card
++    ),
++    SourceSpec(
++        name="portal_presence",
++        label="Portal presence (watermark asset.portal_*)",
++        job_or_endpoint="observe_portal da ingest nmap/fdb/… → asset.portal_last_seen",
++        feeds=("asset.portal_last_seen", "presence_sources portal"),
++        signals_lost_when_blind=("presenza portal (first/last)", "active_discovery trust"),
++        enable_flag=None,
++        interval_attr="collector_interval_sec",
++        kind="portal",
++    ),
++    SourceSpec(
++        name="ssdp",
++        label="SSDP",
++        job_or_endpoint="collector discovery → POST /api/ingest/observations source=ssdp",
++        feeds=("sensor_runs:ssdp", "assets.ssdp_*", "name_proposals ssdp"),
++        signals_lost_when_blind=("banner/dispositivo SSDP",),
++        enable_flag=None,
++        interval_attr="collector_interval_sec",
++        kind="sensor_run",
++    ),
++    SourceSpec(
++        name="printer_mdns_ipp",
++        label="mDNS / IPP stampanti",
++        job_or_endpoint="collector discovery → POST /api/ingest/observations source=printer",
++        feeds=("sensor_runs:printer", "name_proposals ipp"),
++        signals_lost_when_blind=("discovery stampanti mDNS/IPP",),
++        enable_flag=None,
++        interval_attr="collector_interval_sec",
++        kind="sensor_run",
++    ),
++    SourceSpec(
++        name="zeek_behavior",
++        label="Zeek behaviour (JA4 / JA4D / DHCP fp)",
++        job_or_endpoint="collector zeek-behavior → POST /api/ingest/zeek-behavior",
++        feeds=("zeek_behavior_evidence",),
++        signals_lost_when_blind=(
++            "cambio di carattere (B-C)",
++            "evidenze fingerprint / Cosa fa",
++        ),
++        enable_flag="zeek_behavior_enabled",
++        interval_attr="zeek_behavior_interval_sec",
++        kind="zeek_behavior",
++    ),
++    SourceSpec(
++        name="zeek_egress",
++        label="Zeek egress hybrid (ext host+port / int relazione)",
++        job_or_endpoint="collector zeek-egress → POST /api/ingest/egress",
++        feeds=("egress_observations",),
++        signals_lost_when_blind=(
++            "novità destinazione esterna (E-N ext)",
++            "novità relazione interna (E-N int)",
++            "Cosa fa · destinazioni egress",
++        ),
++        enable_flag="egress_ingest_enabled",
++        interval_attr="egress_ingest_interval_sec",
++        kind="zeek_egress",
++    ),
++    SourceSpec(
++        # LEGACY HISTORICAL — O13C does not re-enable FLOW_INGEST.
++        # flow_observations table remains intact; path stays off.
++        name="zeek_conn_flow",
++        label="Zeek conn / flow_observations (legacy storico)",
++        job_or_endpoint="collector zeek-conn → POST /api/ingest/flows (LEGACY — off)",
++        feeds=("flow_observations",),
++        signals_lost_when_blind=(
++            "visibilità destinazioni legacy flow_observations (sostituita da zeek_egress)",
++            "conn.log SPAN → flow_observations (path storico, non riattivato)",
++        ),
++        enable_flag="flow_ingest_enabled",  # API gate; stays false — do not arm
++        interval_attr="zeek_provider_interval_sec",
++        kind="flow",
++    ),
++    SourceSpec(
++        name="zeek_intel",
++        label="Zeek intel (DNS/SNI → ip_intel)",
++        job_or_endpoint="collector zeek-conn → POST /api/ingest/ip-intel",
++        feeds=("ip_intel",),
++        signals_lost_when_blind=("nomi DNS/SNI su IP (ip_intel)",),
++        enable_flag="flow_ingest_enabled",
++        interval_attr="zeek_provider_interval_sec",
++        kind="flow",  # same enable/cadence family as flow
++    ),
++    SourceSpec(
++        name="zeek_dhcp_names",
++        label="Zeek DHCP hostnames",
++        job_or_endpoint="collector zeek-conn → POST /api/ingest/dhcp-hostnames",
++        feeds=("name_proposals source=dhcp",),
++        signals_lost_when_blind=("proposte nome da DHCP Zeek",),
++        enable_flag="zeek_provider_enabled",
++        interval_attr="zeek_provider_interval_sec",
++        kind="flow",
++    ),
++    SourceSpec(
++        name="internet_probe",
++        label="Internet probe (WAN / checks)",
++        job_or_endpoint="collector checks → POST /api/ingest/topology (internet branch)",
++        feeds=("monitor.kind=internet", "internet_health"),
++        signals_lost_when_blind=("stato WAN / reachability internet",),
++        enable_flag=None,
++        interval_attr="internet_probe_interval_sec",
++        kind="internet",
++    ),
++    SourceSpec(
++        name="asustor_nas_snmp",
++        label="ASUSTOR NAS SNMP (Cassiopea)",
++        job_or_endpoint="collector asustor-nas-core → POST /api/ingest/asustor-snmp",
++        feeds=("asset.meta.asustor_snmp",),
++        signals_lost_when_blind=("telemetria NAS (temp/UPS/storage)",),
++        enable_flag=None,
++        interval_attr="snmp_nas_poll_interval_sec",
++        kind="nas",
++    ),
++    SourceSpec(
++        name="gs308ep_structural",
++        label="GS308EP (limite strutturale)",
++        job_or_endpoint="n/a — FDB SNMP non supportato (I7)",
++        feeds=("mappa manuale / FDB·LLDP upstream",),
++        signals_lost_when_blind=(),  # not a fault
++        enable_flag=None,
++        interval_attr=None,
++        kind="structural_skip",
++        card_eligible=False,
++    ),
++)
++
++# sensor_run source key per SourceSpec.name
++_SENSOR_RUN_SOURCE = {
++    "fritz_tr064": "fritz",
++    "nmap_discovery": "nmap",
++    "arp_icmp": "nmap",  # stessi SensorRun di nmap_discovery
++    "ssdp": "ssdp",
++    "printer_mdns_ipp": "printer",
++}
++
++
++def _parse_ts(value: Any) -> datetime | None:
++    if value is None:
++        return None
++    if isinstance(value, datetime):
++        return value.replace(tzinfo=None) if value.tzinfo else value
++    text = str(value).strip()
++    if not text:
++        return None
++    try:
++        if text.endswith("Z"):
++            text = text[:-1] + "+00:00"
++        dt = datetime.fromisoformat(text)
++        return dt.astimezone().replace(tzinfo=None) if dt.tzinfo else dt
++    except ValueError:
++        return None
++
++
++def _flag_enabled(settings: Settings, attr: str | None) -> tuple[bool, str | None]:
++    if attr is None:
++        return True, None
++    return bool(getattr(settings, attr, False)), attr
++
++
++def _interval_sec(settings: Settings, attr: str | None) -> int | None:
++    if attr is None:
++        return None
++    # Collector attrs may live only on collector Settings; API Settings has a subset.
++    # Prefer API settings; fall back to known defaults declared in code (not invented).
++    if hasattr(settings, attr):
++        val = getattr(settings, attr)
++        if val is None:
++            return None
++        raw = max(1, int(val))
++    else:
++        # Defaults from collector/config.py (documented, not invented).
++        defaults = {
++            "topology_poll_interval_sec": 60,
++            "collector_interval_sec": 900,
++            "zeek_provider_interval_sec": 300,
++            "zeek_behavior_interval_sec": 300,
++            "egress_ingest_interval_sec": 300,
++            "internet_probe_interval_sec": 60,
++            "snmp_nas_poll_interval_sec": 60,
++        }
++        if attr not in defaults:
++            return None
++        raw = defaults[attr]
++    # Floor identici a collector/main.py configure_scheduler (cadenza reale, non inventata).
++    floors = {
++        "topology_poll_interval_sec": 15,
++        "collector_interval_sec": 60,
++        "internet_probe_interval_sec": 30,
++        "zeek_provider_interval_sec": 60,
++        "zeek_behavior_interval_sec": 60,
++        "egress_ingest_interval_sec": 60,
++        "snmp_nas_poll_interval_sec": 60,
++    }
++    return max(floors.get(attr, 1), raw)
++
++
++def _last_sensor_run(db: Session, source: str) -> dict[str, Any]:
++    last_ok = db.scalar(
++        select(SensorRun)
++        .where(SensorRun.source == source, SensorRun.ok.is_(True))
++        .order_by(SensorRun.started_at.desc())
++        .limit(1)
++    )
++    last_err = db.scalar(
++        select(SensorRun)
++        .where(SensorRun.source == source, SensorRun.ok.is_(False))
++        .order_by(SensorRun.started_at.desc())
++        .limit(1)
++    )
++    last_any = db.scalar(
++        select(SensorRun)
++        .where(SensorRun.source == source)
++        .order_by(SensorRun.started_at.desc())
++        .limit(1)
++    )
++    err_text = None
++    if last_err is not None:
++        err_text = (last_err.error or "").strip() or "ultimo errore non registrato"
++    elif last_any is not None and not last_any.ok:
++        err_text = (last_any.error or "").strip() or "ultimo errore non registrato"
++    return {
++        "last_success_at": last_ok.started_at if last_ok else None,
++        "last_error_at": last_err.started_at if last_err else None,
++        "last_error": err_text,
++        "last_attempt_ok": last_any.ok if last_any else None,
++        "last_attempt_at": last_any.started_at if last_any else None,
++    }
++
++
++def _last_fdb_snmp(db: Session) -> dict[str, Any]:
++    """Aggregate FDB-capable switches only; GS308EP excluded (I7)."""
++    newest_ok: datetime | None = None
++    newest_err: str | None = None
++    newest_err_at: datetime | None = None
++    supporting = 0
++    for sw in db.scalars(select(Switch)).all():
++        cap = switch_capabilities(getattr(sw, "model", None) or sw.name)
++        if cap.get("fdb_supported") is False:
++            continue
++        supporting += 1
++        meta = dict(sw.meta or {})
++        fp = dict(meta.get("fdb_poll") or {})
++        at = _parse_ts(fp.get("at"))
++        ok = fp.get("ok")
++        err = str(fp.get("error") or "")
++        if ok and at and (newest_ok is None or at > newest_ok):
++            newest_ok = at
++        if ok is False and at and (newest_err_at is None or at > newest_err_at):
++            newest_err_at = at
++            newest_err = err or "poll FDB non ok (errore assente nel meta — difetto di registro)"
++    return {
++        "last_success_at": newest_ok,
++        "last_error_at": newest_err_at,
++        "last_error": newest_err,
++        "last_attempt_ok": None if newest_ok is None and newest_err_at is None else (
++            newest_ok is not None
++            and (newest_err_at is None or newest_ok >= newest_err_at)
++        ),
++        "last_attempt_at": max(
++            [t for t in (newest_ok, newest_err_at) if t is not None],
++            default=None,
++        ),
++        "fdb_supporting_switches": supporting,
++    }
++
++
++def _last_zeek_behavior(db: Session) -> dict[str, Any]:
++    """Success from evidence MAX(last_seen); error from SensorRun source=zeek_behavior (K4)."""
++    row = db.scalar(
++        select(func.max(ZeekBehaviorEvidence.last_seen)).where(
++            ZeekBehaviorEvidence.kind != "_baseline"
++        )
++    )
++    sr = _last_sensor_run(db, "zeek_behavior")
++    last_error = sr.get("last_error")
++    if last_error is None and row is None and sr.get("last_success_at") is None:
++        last_error = "ultimo errore non registrato"
++    last_success = row or sr.get("last_success_at")
++    return {
++        "last_success_at": last_success,
++        "last_error_at": sr.get("last_error_at"),
++        "last_error": last_error,
++        "last_attempt_ok": sr.get("last_attempt_ok") if sr.get("last_attempt_at") else (
++            True if row else None
++        ),
++        "last_attempt_at": sr.get("last_attempt_at") or row,
++        "registry_note": (
++            "successo evidenza=MAX(last_seen); errore ciclo=SensorRun source=zeek_behavior"
++        ),
++    }
++
++
++def _last_zeek_egress(db: Session) -> dict[str, Any]:
++    """Success from egress_observations MAX(last_seen); error from SensorRun zeek_egress."""
++    row = db.scalar(
++        select(func.max(EgressObservation.last_seen)).where(
++            EgressObservation.scope != "_baseline"
++        )
++    )
++    sr = _last_sensor_run(db, "zeek_egress")
++    last_error = sr.get("last_error")
++    if last_error is None and row is None and sr.get("last_success_at") is None:
++        last_error = "ultimo errore non registrato"
++    last_success = row or sr.get("last_success_at")
++    return {
++        "last_success_at": last_success,
++        "last_error_at": sr.get("last_error_at"),
++        "last_error": last_error,
++        "last_attempt_ok": sr.get("last_attempt_ok") if sr.get("last_attempt_at") else (
++            True if row else None
++        ),
++        "last_attempt_at": sr.get("last_attempt_at") or row,
++        "registry_note": (
++            "successo=MAX(last_seen) egress_observations; "
++            "errore ciclo=SensorRun source=zeek_egress"
++        ),
++    }
++
++
++def _last_flow(db: Session) -> dict[str, Any]:
++    """Success from flow_observations; error from SensorRun source=zeek_conn_flow (K4)."""
++    row = db.scalar(select(func.max(FlowObservation.observed_at)))
++    sr = _last_sensor_run(db, "zeek_conn_flow")
++    last_error = sr.get("last_error")
++    if last_error is None and row is None and sr.get("last_success_at") is None:
++        last_error = "ultimo errore non registrato"
++    return {
++        "last_success_at": row or sr.get("last_success_at"),
++        "last_error_at": sr.get("last_error_at"),
++        "last_error": last_error,
++        "last_attempt_ok": sr.get("last_attempt_ok"),
++        "last_attempt_at": sr.get("last_attempt_at") or row,
++        "registry_note": (
++            "successo=MAX(observed_at); errore ciclo=SensorRun source=zeek_conn_flow"
++        ),
++    }
++
++
++def _last_zeek_named_sensor(db: Session, source: str) -> dict[str, Any]:
++    """intel / dhcp_names: esito ciclo solo da SensorRun (K4)."""
++    sr = _last_sensor_run(db, source)
++    last_error = sr.get("last_error")
++    if last_error is None and sr.get("last_success_at") is None:
++        last_error = "ultimo errore non registrato"
++    return {
++        "last_success_at": sr.get("last_success_at"),
++        "last_error_at": sr.get("last_error_at"),
++        "last_error": last_error,
++        "last_attempt_ok": sr.get("last_attempt_ok"),
++        "last_attempt_at": sr.get("last_attempt_at"),
++        "registry_note": f"esito ciclo=SensorRun source={source}",
++    }
++
++
++def _last_portal(db: Session) -> dict[str, Any]:
++    row = db.scalar(select(func.max(Asset.portal_last_seen)))
++    return {
++        "last_success_at": row,
++        "last_error_at": None,
++        "last_error": None
++        if row
++        else "nessun asset.portal_last_seen registrato",
++        "last_attempt_ok": True if row else None,
++        "last_attempt_at": row,
++        "registry_note": "ultimo successo = MAX(asset.portal_last_seen)",
++    }
++
++
++def _last_internet(db: Session) -> dict[str, Any]:
++    mon = db.scalar(select(Monitor).where(Monitor.kind == "internet").limit(1))
++    if mon is None:
++        return {
++            "last_success_at": None,
++            "last_error_at": None,
++            "last_error": "monitor.kind=internet assente",
++            "last_attempt_ok": None,
++            "last_attempt_at": None,
++            "registry_note": "da monitor.kind=internet",
++        }
++    health = dict((mon.config or {}).get("internet_health") or {})
++    last_probe = health.get("last_probe")
++    probe_at = None
++    if isinstance(last_probe, dict):
++        probe_at = _parse_ts(
++            last_probe.get("at")
++            or last_probe.get("checked_at")
++            or last_probe.get("observed_at")
++        )
++    at = (
++        _parse_ts(health.get("checked_at") or health.get("at") or health.get("last_ok_at"))
++        or probe_at
++        or getattr(mon, "last_checked_at", None)
++    )
++    if isinstance(at, datetime):
++        at = at.replace(tzinfo=None) if at.tzinfo else at
++    state = str(health.get("state") or "").lower()
++    cause = health.get("cause")
++    ok = state in {"online", "ok", "up"} if state else None
++    if ok is True and at is not None:
++        return {
++            "last_success_at": at,
++            "last_error_at": None,
++            "last_error": None,
++            "last_attempt_ok": True,
++            "last_attempt_at": at,
++            "registry_note": "da monitor.last_checked_at / internet_health",
++        }
++    if ok is True and at is None:
++        return {
++            "last_success_at": None,
++            "last_error_at": None,
++            "last_error": "internet online senza timestamp (difetto di registro)",
++            "last_attempt_ok": True,
++            "last_attempt_at": None,
++            "registry_note": "da monitor.kind=internet config.internet_health",
++        }
++    err = f"internet_health.state={state or 'assente'}; cause={cause or 'assente'}"
++    return {
++        "last_success_at": None,
++        "last_error_at": at,
++        "last_error": err,
++        "last_attempt_ok": False if ok is False else None,
++        "last_attempt_at": at,
++        "registry_note": "da monitor.kind=internet config.internet_health",
++    }
++
++
++def _last_nas(db: Session) -> dict[str, Any]:
++    """Ultimo poll ASUSTOR da meta.asustor_snmp su asset NAS."""
++    newest_ok: datetime | None = None
++    newest_err_at: datetime | None = None
++    newest_err: str | None = None
++    for asset in db.scalars(select(Asset)).all():
++        meta = dict(asset.meta or {})
++        snmp = dict(meta.get("asustor_snmp") or {})
++        if not snmp:
++            continue
++        at = _parse_ts(
++            snmp.get("observed_at")
++            or snmp.get("at")
++            or snmp.get("polled_at")
++            or snmp.get("updated_at")
++        )
++        err = snmp.get("poll_error") or snmp.get("error")
++        ok = snmp.get("ok")
++        if ok is False and at and (newest_err_at is None or at > newest_err_at):
++            newest_err_at = at
++            newest_err = str(err or "asustor_snmp ok=false")
++        if ok is not False and at and (newest_ok is None or at > newest_ok):
++            newest_ok = at
++    return {
++        "last_success_at": newest_ok,
++        "last_error_at": newest_err_at,
++        "last_error": newest_err
++        if newest_err
++        else (None if newest_ok else "nessun meta.asustor_snmp"),
++        "last_attempt_ok": None
++        if newest_ok is None and newest_err_at is None
++        else (
++            newest_ok is not None
++            and (newest_err_at is None or newest_ok >= newest_err_at)
++        ),
++        "last_attempt_at": max(
++            [t for t in (newest_ok, newest_err_at) if t is not None],
++            default=None,
++        ),
++        "registry_note": "da asset.meta.asustor_snmp (ok/observed_at)",
++    }
++
++
++def classify_source(
++    *,
++    enabled: bool,
++    enable_flag: str | None,
++    interval_sec: int | None,
++    last_success_at: datetime | None,
++    last_error: str | None,
++    now: datetime,
++) -> dict[str, Any]:
++    """Pure C2 classifier — used by production and C5 tests."""
++    if not enabled:
++        return {
++            "state": "disabilitata",
++            "reason": f"flag {enable_flag or '?'} = false (scelta operatore, non guasto)",
++            "age_sec": None,
++            "window_sec": interval_sec,
++        }
++    if interval_sec is None:
++        return {
++            "state": "cadenza_non_nota",
++            "reason": "cadenza non dichiarata in configurazione — nessuna finestra inventata",
++            "age_sec": None,
++            "window_sec": None,
++        }
++    if last_success_at is None:
++        return {
++            "state": "cieca",
++            "reason": "nessun successo registrato mentre la sorgente è abilitata",
++            "age_sec": None,
++            "window_sec": interval_sec,
++            "last_error": last_error,
++        }
++    age = (now - last_success_at).total_seconds()
++    if age <= interval_sec:
++        return {
++            "state": "coperta_fresca",
++            "reason": f"ultimo successo entro cadenza {interval_sec}s",
++            "age_sec": round(age, 3),
++            "window_sec": interval_sec,
++        }
++    # Oltre cadenza con data nota → coperta_vecchia (I2). Card allarme: sì (cieca per difesa).
++    return {
++        "state": "coperta_vecchia",
++        "reason": (
++            f"ultimo successo oltre cadenza {interval_sec}s "
++            f"(age={round(age, 1)}s) — data {last_success_at.isoformat()}"
++        ),
++        "age_sec": round(age, 3),
++        "window_sec": interval_sec,
++        "last_error": last_error,
++        "alarm": True,  # oltre cadenza = non coperto per difesa (C4)
++    }
++
++
++def evaluate_source(
++    db: Session,
++    spec: SourceSpec,
++    settings: Settings,
++    *,
++    now: datetime | None = None,
++    override_enabled: bool | None = None,
++    override_last_success: datetime | None = None,
++    override_last_error: str | None = None,
++    override_interval: int | None = None,
++) -> dict[str, Any]:
++    now = now or utcnow()
++    if spec.kind == "structural_skip":
++        return {
++            "name": spec.name,
++            "label": spec.label,
++            "state": "limite_strutturale",
++            "o12_marker": "obs-o12-structural",
++            "note": "I7 — GS308EP non espone FDB SNMP; non è sorgente cieca",
++            "job_or_endpoint": spec.job_or_endpoint,
++            "feeds": list(spec.feeds),
++            "signals_lost_when_blind": [],
++            "enable_flag": None,
++            "enabled": None,
++            "interval_sec": None,
++            "freshness_vocab": "not_covered",
++            "card_eligible": False,
++        }
++
++    enabled, flag = _flag_enabled(settings, spec.enable_flag)
++    if override_enabled is not None:
++        enabled = override_enabled
++    # flow family: also need zeek_provider for collector side when classifying "should run"
++    if spec.name in {"zeek_conn_flow", "zeek_intel"} and enabled:
++        # API ingest on is not enough if provider off — still "disabilitata" if provider off
++        if not bool(getattr(settings, "zeek_provider_enabled", False)):
++            enabled = False
++            flag = "zeek_provider_enabled"
++    if spec.name == "zeek_dhcp_names":
++        enabled, flag = _flag_enabled(settings, "zeek_provider_enabled")
++        if override_enabled is not None:
++            enabled = override_enabled
++
++    interval = (
++        override_interval
++        if override_interval is not None
++        else _interval_sec(settings, spec.interval_attr)
++    )
++
++    if override_last_success is not None or override_last_error is not None:
++        last = {
++            "last_success_at": override_last_success,
++            "last_error": override_last_error,
++            "last_error_at": None,
++            "last_attempt_ok": None,
++            "last_attempt_at": override_last_success,
++        }
++    elif spec.kind == "sensor_run":
++        last = _last_sensor_run(db, _SENSOR_RUN_SOURCE[spec.name])
++    elif spec.kind == "fdb_snmp":
++        last = _last_fdb_snmp(db)
++    elif spec.kind == "zeek_behavior":
++        last = _last_zeek_behavior(db)
++    elif spec.kind == "zeek_egress":
++        last = _last_zeek_egress(db)
++    elif spec.kind == "portal":
++        last = _last_portal(db)
++    elif spec.kind == "internet":
++        last = _last_internet(db)
++    elif spec.kind == "nas":
++        last = _last_nas(db)
++    elif spec.kind == "flow":
++        if spec.name == "zeek_conn_flow":
++            last = _last_flow(db)
++        elif spec.name == "zeek_intel":
++            last = _last_zeek_named_sensor(db, "zeek_intel")
++        elif spec.name == "zeek_dhcp_names":
++            last = _last_zeek_named_sensor(db, "zeek_dhcp_names")
++        else:
++            last = {
++                "last_success_at": None,
++                "last_error": "ultimo errore non registrato",
++                "last_error_at": None,
++                "last_attempt_ok": None,
++                "last_attempt_at": None,
++            }
++    else:
++        last = {
++            "last_success_at": None,
++            "last_error": "kind sconosciuto",
++            "last_error_at": None,
++            "last_attempt_ok": None,
++            "last_attempt_at": None,
++        }
++
++    # Special: flow/intel/dhcp with registry gap but disabled → disabilitata first
++    cls = classify_source(
++        enabled=enabled,
++        enable_flag=flag or spec.enable_flag,
++        interval_sec=interval,
++        last_success_at=last.get("last_success_at"),
++        last_error=last.get("last_error"),
++        now=now,
++    )
++    # Soft: coperta_vecchia is primary; alarm path uses alarm flag / state set
++    display_state = cls["state"]
++    display_extra = None
++
++    last_success = last.get("last_success_at")
++    not_covered = display_state in {"cieca", "coperta_vecchia", "disabilitata"}
++    return {
++        "name": spec.name,
++        "label": spec.label,
++        "state": display_state,
++        "display_extra": display_extra,
++        "reason": cls.get("reason"),
++        "job_or_endpoint": spec.job_or_endpoint,
++        "feeds": list(spec.feeds),
++        "signals_lost_when_blind": list(spec.signals_lost_when_blind)
++        if display_state in {"cieca", "coperta_vecchia"}
++        else (
++            list(spec.signals_lost_when_blind)
++            if display_state == "disabilitata"
++            else []
++        ),
++        "signals_not_observable": list(spec.signals_lost_when_blind) if not_covered else [],
++        "enable_flag": flag or spec.enable_flag,
++        "enabled": enabled,
++        "interval_sec": interval,
++        "interval_attr": spec.interval_attr,
++        "age_sec": cls.get("age_sec"),
++        "window_sec": cls.get("window_sec"),
++        "last_success_at": last_success.isoformat() + "Z" if last_success else None,
++        "last_error": last.get("last_error"),
++        "last_error_at": (
++            last["last_error_at"].isoformat() + "Z"
++            if last.get("last_error_at")
++            else None
++        ),
++        "registry_note": last.get("registry_note"),
++        "freshness_vocab": STATE_TO_FRESHNESS.get(display_state, "not_measured"),
++        "o12_marker": "obs-o12-source",
++        "card_eligible": spec.card_eligible,
++        "defense_priority_id": (
++            "sorgente_non_disponibile"
++            if display_state in {"cieca", "coperta_vecchia"}
++            else "igiene_nome"
++        ),
++    }
++
++
++def build_coverage_report(
++    db: Session,
++    settings: Settings | None = None,
++    *,
++    now: datetime | None = None,
++) -> dict[str, Any]:
++    settings = settings or get_settings()
++    now = now or utcnow()
++    sources = [evaluate_source(db, spec, settings, now=now) for spec in SOURCE_SPECS]
++    return {
++        "sources": sources,
++        "o12_marker": "obs-o12-coverage",
++        "generated_at": now.isoformat() + "Z",
++        "vocab": {
++            "states": sorted(COVERAGE_STATES | {"limite_strutturale"}),
++            "freshness_map": STATE_TO_FRESHNESS,
++            "note": "Stati copertura → FRESHNESS O10 (nessun secondo vocabolario)",
++        },
++    }
++
++
++def coverage_alarm_cards(
++    db: Session,
++    settings: Settings | None = None,
++    *,
++    now: datetime | None = None,
++) -> list[dict[str, Any]]:
++    """C4 — cards for cieca only. disabilitata → informational (separate)."""
++    settings = settings or get_settings()
++    now = now or utcnow()
++    report = build_coverage_report(db, settings, now=now)
++    acked = {
++        s.uid
++        for s in db.scalars(
++            select(Suggestion).where(
++                Suggestion.source == "coverage",
++                Suggestion.status.in_(["approved", "rejected"]),
++            )
++        ).all()
++    }
++    cards: list[dict[str, Any]] = []
++    info: list[dict[str, Any]] = []
++    for src in report["sources"]:
++        if src.get("state") == "limite_strutturale":
++            continue
++        if not src.get("card_eligible", True):
++            continue
++        # C4: cieca (nessun successo) e coperta_vecchia (oltre cadenza) → card allarme.
++        # Motivazione O12: oltre cadenza = ciechi per difesa; stato I2 resta distinto.
++        if src["state"] in {"cieca", "coperta_vecchia"}:
++            uid = _cov_uid("blind", src["name"])
++            signal_key = f"cov:blind:{src['name']}"
++            if uid in acked:
++                continue
++            err = (
++                (src.get("last_error") or "").strip()
++                or (src.get("reason") or "").strip()
++                or "ultimo errore non registrato"
++            )
++            cards.append(
++                {
++                    "uid": uid,
++                    "signal_key": signal_key,
++                    "signal": "C-S",
++                    "kind": "coverage_source_blind",
++                    "title": (
++                        f"Sorgente cieca · {src['label']}"
++                        if src["state"] == "cieca"
++                        else f"Sorgente copertura vecchia · {src['label']}"
++                    ),
++                    "source_name": src["name"],
++                    "state": src["state"],
++                    "last_success_at": src.get("last_success_at"),
++                    "last_error": err,
++                    "signals_lost": src.get("signals_not_observable") or [],
++                    "interval_sec": src.get("interval_sec"),
++                    "enable_flag": src.get("enable_flag"),
++                    "defense_priority_id": "sorgente_non_disponibile",
++                    "o12_marker": "obs-o12-blind-card",
++                    "actions": [
++                        {
++                            "id": "open_plant",
++                            "label": "Apri Impianto / copertura",
++                            "href": "/plant?from=oggi&coverage=1",
++                            "reversible": True,
++                        },
++                        {
++                            "id": "acknowledge",
++                            "label": "Presa visione",
++                            "requires_confirm": True,
++                            "reversible": True,
++                        },
++                    ],
++                }
++            )
++        elif src["state"] == "disabilitata":
++            uid = _cov_uid("disabled", src["name"])
++            signal_key = f"cov:disabled:{src['name']}"
++            if uid in acked:
++                continue
++            info.append(
++                {
++                    "uid": uid,
++                    "signal_key": signal_key,
++                    "signal": "C-D",
++                    "kind": "coverage_source_disabled",
++                    "title": f"Sorgente disabilitata · {src['label']}",
++                    "source_name": src["name"],
++                    "state": "disabilitata",
++                    "enable_flag": src.get("enable_flag"),
++                    "last_success_at": src.get("last_success_at"),
++                    "signals_not_observable": src.get("signals_not_observable") or [],
++                    "defense_priority_id": "igiene_nome",
++                    "o12_marker": "obs-o12-disabled-info",
++                    "body": (
++                        f"Flag {src.get('enable_flag')} = false — non è un guasto. "
++                        f"Da quando (ultimo successo noto): {src.get('last_success_at') or 'non registrato'}."
++                    ),
++                    "actions": [
++                        {
++                            "id": "open_plant",
++                            "label": "Vedi copertura",
++                            "href": "/plant?from=oggi&coverage=1",
++                            "reversible": True,
++                        },
++                        {
++                            "id": "acknowledge",
++                            "label": "Nascondi voce",
++                            "requires_confirm": False,
++                            "reversible": True,
++                        },
++                    ],
++                }
++            )
++    return cards + info
++
++
++def acknowledge_coverage_signal(
++    db: Session,
++    *,
++    uid: str,
++    action: str,
++    reason: str = "",
++    user_id: int | None = None,
++    kind: str = "coverage_source_blind",
++) -> Suggestion:
++    status = "approved" if action in {"acknowledge", "archive"} else "rejected"
++    existing = db.scalar(select(Suggestion).where(Suggestion.uid == uid))
++    if existing:
++        existing.status = status
++        existing.decided_at = utcnow()
++        existing.decided_by = user_id
++        existing.body = reason or existing.body
++        payload = dict(existing.payload or {})
++        payload["action"] = action
++        existing.payload = payload
++        db.flush()
++        return existing
++    s = Suggestion(
++        uid=uid,
++        kind=kind[:64],
++        source="coverage",
++        status=status,
++        title=(reason or uid)[:255],
++        body=reason or action,
++        payload={"action": action, "o12": True},
++        decided_at=utcnow(),
++        decided_by=user_id,
++    )
++    db.add(s)
++    db.flush()
++    return s
++
++
++def diagnose_flow_ingest_flag(settings: Settings | None = None) -> dict[str, Any]:
++    """C6 — classify FLOW_INGEST; origin evidence is filled by report from NAS bak scan."""
++    settings = settings or get_settings()
++    enabled = bool(getattr(settings, "flow_ingest_enabled", False))
++    provider = bool(getattr(settings, "zeek_provider_enabled", False))
++    return {
++        "flow_ingest_enabled": enabled,
++        "zeek_provider_enabled": provider,
++        "classification": "disabilitata" if not enabled else (
++            "disabilitata_provider" if not provider else "abilitata"
++        ),
++        "o12_marker": "obs-o12-flow-c6",
++        "note": (
++            "Riattivazione flow/conn = O13. Qui solo classificazione. "
++            "Origine del flag: vedi obs-o12.md accertamento .env.bak-* (nomi/presenza)."
++        ),
++    }
+
+diff --git a/api/app/routers/egress.py b/api/app/routers/egress.py
+new file mode 100644
+index 0000000..0d94e71
+--- /dev/null
++++ b/api/app/routers/egress.py
+@@ -0,0 +1,88 @@
++"""O13C — egress signals API (Oggi cards). No new top-level hub."""
++
++from __future__ import annotations
++
++from fastapi import APIRouter, Depends, Request
++from pydantic import BaseModel
++from sqlalchemy.orm import Session
++
++from app.auth import check_csrf, require_user
++from app.config import Settings, get_settings
++from app.db import get_db
++from app.models import User
++from app.services.egress import (
++    acknowledge_egress_signal,
++    baseline_status,
++    build_egress_signals,
++    mark_baseline_ready,
++)
++
++router = APIRouter(prefix="/api/egress", tags=["egress"])
++
++
++class AckBody(BaseModel):
++    uid: str
++    action: str = "acknowledge"
++    reason: str = ""
++
++
++class BaselineReadyBody(BaseModel):
++    reason: str = ""
++
++
++@router.get("/signals")
++def get_signals(db: Session = Depends(get_db), user: User = Depends(require_user)):
++    return build_egress_signals(db)
++
++
++@router.get("/baseline")
++def get_baseline(db: Session = Depends(get_db), user: User = Depends(require_user)):
++    return baseline_status(db)
++
++
++@router.get("/cycle-stats")
++def get_cycle_stats(db: Session = Depends(get_db), user: User = Depends(require_user)):
++    """Last cycle counters stored on baseline meta (also embedded in /signals)."""
++    bl = baseline_status(db)
++    return {
++        "baseline": bl,
++        "cycle_seen": bl.get("cycle_seen"),
++        "cycle_created": bl.get("cycle_created"),
++        "cycle_deferred": bl.get("cycle_deferred"),
++        "o13c_marker": "obs-o13c",
++    }
++
++
++@router.post("/baseline/ready")
++def post_baseline_ready(
++    body: BaselineReadyBody,
++    request: Request,
++    db: Session = Depends(get_db),
++    user: User = Depends(require_user),
++    settings: Settings = Depends(get_settings),
++):
++    """Optional explicit ready — auto-close after deferred==0 cycle is primary."""
++    check_csrf(request, settings)
++    out = mark_baseline_ready(db, user_id=user.id, reason=body.reason)
++    db.commit()
++    return {"ok": True, **out}
++
++
++@router.post("/ack")
++def post_ack(
++    body: AckBody,
++    request: Request,
++    db: Session = Depends(get_db),
++    user: User = Depends(require_user),
++    settings: Settings = Depends(get_settings),
++):
++    check_csrf(request, settings)
++    row = acknowledge_egress_signal(
++        db,
++        uid=body.uid,
++        action=body.action,
++        reason=body.reason,
++        user_id=user.id,
++    )
++    db.commit()
++    return {"ok": True, "uid": row.uid, "status": row.status, "kind": row.kind}
