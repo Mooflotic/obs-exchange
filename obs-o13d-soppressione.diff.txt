@@ -1,0 +1,750 @@
+diff --git a/observatory/api/app/routers/egress.py b/observatory/api/app/routers/egress.py
+index d79c390..c458c18 100644
+--- a/observatory/api/app/routers/egress.py
++++ b/observatory/api/app/routers/egress.py
+@@ -16,6 +16,8 @@ from app.services.egress import (
+     build_egress_signals,
+     list_invalid_baseline_emissions,
+     mark_baseline_ready,
++    remark_invalid_emission,
++    unmark_invalid_emission,
+ )
+ 
+ router = APIRouter(prefix="/api/egress", tags=["egress"])
+@@ -31,6 +33,10 @@ class BaselineReadyBody(BaseModel):
+     reason: str = ""
+ 
+ 
++class EmissionIdBody(BaseModel):
++    reason: str = ""
++
++
+ @router.get("/signals")
+ def get_signals(
+     db: Session = Depends(get_db),
+@@ -53,9 +59,44 @@ def get_invalid_emissions(db: Session = Depends(get_db), user: User = Depends(re
+         "count": len(rows),
+         "items": rows,
+         "o13cfix_marker": "obs-o13c-fix",
++        "o13d_marker": "obs-o13d",
+     }
+ 
+ 
++@router.post("/invalid-baseline-emissions/{observation_id}/unmark")
++def post_unmark_emission(
++    observation_id: int,
++    request: Request,
++    db: Session = Depends(get_db),
++    user: User = Depends(require_user),
++    settings: Settings = Depends(get_settings),
++):
++    """O13D R6 — ripesca one id (clear emitted_on_invalid_baseline)."""
++    check_csrf(request, settings)
++    out = unmark_invalid_emission(db, observation_id)
++    if not out.get("ok"):
++        return out
++    db.commit()
++    return out
++
++
++@router.post("/invalid-baseline-emissions/{observation_id}/remark")
++def post_remark_emission(
++    observation_id: int,
++    request: Request,
++    db: Session = Depends(get_db),
++    user: User = Depends(require_user),
++    settings: Settings = Depends(get_settings),
++):
++    """Re-mark one id as emitted_on_invalid_baseline."""
++    check_csrf(request, settings)
++    out = remark_invalid_emission(db, observation_id)
++    if not out.get("ok"):
++        return out
++    db.commit()
++    return out
++
++
+ @router.get("/cycle-stats")
+ def get_cycle_stats(db: Session = Depends(get_db), user: User = Depends(require_user)):
+     """Last cycle counters stored on baseline meta (also embedded in /signals)."""
+@@ -67,6 +108,7 @@ def get_cycle_stats(db: Session = Depends(get_db), user: User = Depends(require_
+         "cycle_deferred": bl.get("cycle_deferred"),
+         "o13c_marker": "obs-o13c",
+         "o13cfix_marker": "obs-o13c-fix",
++        "o13d_marker": "obs-o13d",
+     }
+ 
+ 
+diff --git a/observatory/api/app/services/egress.py b/observatory/api/app/services/egress.py
+index 90e5c09..30042dc 100644
+--- a/observatory/api/app/services/egress.py
++++ b/observatory/api/app/services/egress.py
+@@ -42,6 +42,7 @@ BASELINE_SCOPE = "_baseline"
+ BASELINE_DEDUP = "meta|baseline|o13c"
+ O13C_MARKER = "obs-o13c"
+ O13CFIX_MARKER = "obs-o13c-fix"
++O13D_MARKER = "obs-o13d"
+ 
+ DEFENSE_PRIORITY_ID = "ignoto_con_evidenze_zeek"  # P6 — both ext and int cards
+ 
+@@ -285,6 +286,14 @@ def invalidate_premature_baseline(db: Session, *, reason: str | None = None) ->
+     # Annotate, do not erase previous ready_at value.
+     ev["reason"] = msg
+     ev["o13cfix_marker"] = O13CFIX_MARKER
++    # O13D C1 — premature protection: suppress N5 until B2 close auto-lifts.
++    ev["novelty_suppression_active"] = True
++    ev["novelty_suppression_reason"] = "premature_baseline_protection"
++    ev["novelty_suppression_since"] = now.isoformat() + "Z"
++    ev["signals_armed"] = False
++    ev["novelty_auto_enabled"] = False
++    ev["manual_suppress"] = False
++    ev["o13d_marker"] = O13D_MARKER
+     row.evidence = ev
+     row.last_seen = now
+     db.flush()
+@@ -396,6 +405,12 @@ def baseline_status(db: Session, *, now: datetime | None = None) -> dict[str, An
+     ev = dict(row.evidence or {})
+     ready = bool(ev.get("baseline_ready"))
+     readiness = evaluate_baseline_readiness(db, now=now)
++    since = ev.get("novelty_suppression_since")
++    age_sec = None
++    if since:
++        st = _parse_ts(since)
++        if st is not None:
++            age_sec = max(0.0, (now - st).total_seconds())
+     return {
+         "status": "ready" if ready else "in_costruzione",
+         "baseline_ready": ready,
+@@ -406,18 +421,237 @@ def baseline_status(db: Session, *, now: datetime | None = None) -> dict[str, An
+         "reason": ev.get("reason") or "",
+         "o13c_marker": O13C_MARKER,
+         "o13cfix_marker": O13CFIX_MARKER,
++        "o13d_marker": O13D_MARKER,
+         "cycle_seen": ev.get("cycle_seen"),
+         "cycle_created": ev.get("cycle_created"),
+         "cycle_deferred": ev.get("cycle_deferred"),
+         "cycle_novelty_new": ev.get("cycle_novelty_new"),
+         "readiness": readiness,
++        "novelty_suppression": {
++            "active": bool(ev.get("novelty_suppression_active")),
++            "reason": ev.get("novelty_suppression_reason"),
++            "since": since,
++            "age_sec": age_sec,
++            "lifted_at": ev.get("novelty_suppression_lifted_at"),
++            "lift_reason": ev.get("novelty_suppression_lift_reason"),
++            "manual_suppress": bool(ev.get("manual_suppress")),
++            "signals_armed": bool(ev.get("signals_armed")),
++            "novelty_auto_enabled": bool(ev.get("novelty_auto_enabled")),
++            "distinct_from": ["cieca", "disabilitata"],
++        },
+         "novelty_signals_note": (
+-            "emissione N5 gated da EGRESS_NOVELTY_SIGNALS_ENABLED "
+-            "(distinto da EGRESS_INGEST_ENABLED)"
++            "emissione N5 gated da resolve_novelty_emission "
++            "(signals_armed / manual_suppress; distinto da EGRESS_INGEST_ENABLED)"
+         ),
+     }
+ 
+ 
++def _persist_baseline_evidence(db: Session, ev: dict[str, Any]) -> None:
++    row = ensure_baseline_meta(db)
++    row.evidence = ev
++    row.last_seen = utcnow()
++    db.flush()
++
++
++def resolve_novelty_emission(
++    db: Session,
++    settings: Any | None = None,
++    *,
++    now: datetime | None = None,
++) -> dict[str, Any]:
++    """O13D C1 — decide if N5 novelty cards may emit.
++
++    allowed iff baseline_ready and signals_armed and not manual_suppress.
++    On B2 close, lift sets signals_armed + novelty_auto_enabled so env=false
++    from B1 protection does not immediately re-suppress; after auto shield is
++    cleared (env goes true once), env=false ⇒ visible manual_suppress.
++    """
++    now = now or utcnow()
++    row = ensure_baseline_meta(db)
++    ev = dict(row.evidence or {})
++    ready = bool(ev.get("baseline_ready"))
++    env_on = bool(
++        getattr(settings, "egress_novelty_signals_enabled", False) if settings is not None else False
++    )
++    suppression = {
++        "active": bool(ev.get("novelty_suppression_active")),
++        "reason": ev.get("novelty_suppression_reason"),
++        "since": ev.get("novelty_suppression_since"),
++        "manual_suppress": bool(ev.get("manual_suppress")),
++        "signals_armed": bool(ev.get("signals_armed")),
++        "novelty_auto_enabled": bool(ev.get("novelty_auto_enabled")),
++        "distinct_from": ["cieca", "disabilitata"],
++    }
++
++    if not ready:
++        return {
++            "allowed": False,
++            "state": "baseline_in_costruzione",
++            "suppression": suppression,
++            "o13d_marker": O13D_MARKER,
++        }
++
++    # Premature protection still active (should have been lifted on close).
++    if ev.get("novelty_suppression_active") and ev.get("novelty_suppression_reason") == (
++        "premature_baseline_protection"
++    ):
++        since = ev.get("novelty_suppression_since")
++        st = _parse_ts(since)
++        age = max(0.0, (now - st).total_seconds()) if st else None
++        suppression["age_sec"] = age
++        return {
++            "allowed": False,
++            "state": "novelty_suppressed",
++            "suppression": suppression,
++            "o13d_marker": O13D_MARKER,
++        }
++
++    if ev.get("manual_suppress") or (
++        ev.get("novelty_suppression_active")
++        and ev.get("novelty_suppression_reason") == "manual"
++    ):
++        # Env true clears manual.
++        if env_on:
++            ev["manual_suppress"] = False
++            ev["novelty_suppression_active"] = False
++            if ev.get("novelty_suppression_reason") == "manual":
++                ev["novelty_suppression_reason"] = None
++            ev["signals_armed"] = True
++            ev["novelty_auto_enabled"] = False
++            _persist_baseline_evidence(db, ev)
++            suppression = {
++                "active": False,
++                "reason": None,
++                "since": None,
++                "manual_suppress": False,
++                "signals_armed": True,
++                "novelty_auto_enabled": False,
++                "distinct_from": ["cieca", "disabilitata"],
++            }
++            return {
++                "allowed": True,
++                "state": "novelty_allowed",
++                "suppression": suppression,
++                "o13d_marker": O13D_MARKER,
++            }
++        suppression["active"] = True
++        suppression["reason"] = "manual"
++        suppression["manual_suppress"] = True
++        return {
++            "allowed": False,
++            "state": "novelty_suppressed_manual",
++            "suppression": suppression,
++            "o13d_marker": O13D_MARKER,
++        }
++
++    signals_armed = bool(ev.get("signals_armed"))
++    auto = bool(ev.get("novelty_auto_enabled"))
++
++    if not signals_armed:
++        # Legacy / forged ready without arm: follow env only.
++        if not env_on:
++            return {
++                "allowed": False,
++                "state": "novelty_suppressed_manual",
++                "suppression": {
++                    **suppression,
++                    "active": True,
++                    "reason": "manual",
++                    "manual_suppress": True,
++                    "signals_armed": False,
++                },
++                "o13d_marker": O13D_MARKER,
++            }
++        ev["signals_armed"] = True
++        ev["novelty_auto_enabled"] = False
++        _persist_baseline_evidence(db, ev)
++        return {
++            "allowed": True,
++            "state": "novelty_allowed",
++            "suppression": {**suppression, "signals_armed": True, "active": False},
++            "o13d_marker": O13D_MARKER,
++        }
++
++    # Armed. Auto shield from B2 lift: allow even if env still false (B1 residue).
++    if auto:
++        if env_on:
++            # Michele turned env on → drop auto shield; future env=false is manual.
++            ev["novelty_auto_enabled"] = False
++            ev["manual_suppress"] = False
++            ev["novelty_suppression_active"] = False
++            _persist_baseline_evidence(db, ev)
++        return {
++            "allowed": True,
++            "state": "novelty_allowed",
++            "suppression": {
++                **suppression,
++                "active": False,
++                "novelty_auto_enabled": bool(ev.get("novelty_auto_enabled")),
++                "signals_armed": True,
++            },
++            "o13d_marker": O13D_MARKER,
++        }
++
++    # Armed, no auto shield: env drives manual suppress.
++    if not env_on:
++        since = now.isoformat() + "Z"
++        ev["manual_suppress"] = True
++        ev["novelty_suppression_active"] = True
++        ev["novelty_suppression_reason"] = "manual"
++        ev["novelty_suppression_since"] = since
++        ev["o13d_marker"] = O13D_MARKER
++        _persist_baseline_evidence(db, ev)
++        return {
++            "allowed": False,
++            "state": "novelty_suppressed_manual",
++            "suppression": {
++                "active": True,
++                "reason": "manual",
++                "since": since,
++                "manual_suppress": True,
++                "signals_armed": True,
++                "novelty_auto_enabled": False,
++                "distinct_from": ["cieca", "disabilitata"],
++            },
++            "o13d_marker": O13D_MARKER,
++        }
++
++    ev["manual_suppress"] = False
++    if ev.get("novelty_suppression_active") and ev.get("novelty_suppression_reason") == "manual":
++        ev["novelty_suppression_active"] = False
++        ev["novelty_suppression_reason"] = None
++    _persist_baseline_evidence(db, ev)
++    return {
++        "allowed": True,
++        "state": "novelty_allowed",
++        "suppression": {
++            "active": False,
++            "reason": None,
++            "since": None,
++            "manual_suppress": False,
++            "signals_armed": True,
++            "novelty_auto_enabled": False,
++            "distinct_from": ["cieca", "disabilitata"],
++        },
++        "o13d_marker": O13D_MARKER,
++    }
++
++
++def _lift_novelty_on_baseline_close(ev: dict[str, Any], readiness: dict[str, Any], now: datetime) -> None:
++    """O13D C1 (i) — auto-lift premature suppression when B2 closes to ready."""
++    ev["novelty_suppression_active"] = False
++    ev["novelty_suppression_lifted_at"] = now.isoformat() + "Z"
++    ev["novelty_suppression_lift_reason"] = "baseline_closed_b2"
++    ev["novelty_suppression_lift_criteria"] = readiness
++    ev["signals_armed"] = True
++    ev["novelty_auto_enabled"] = True
++    ev["manual_suppress"] = False
++    if ev.get("novelty_suppression_reason") == "premature_baseline_protection":
++        ev["novelty_suppression_reason_was"] = "premature_baseline_protection"
++        ev["novelty_suppression_reason"] = None
++    ev["o13d_marker"] = O13D_MARKER
++
++
+ def _record_cycle_novelty(db: Session, created: int, *, now: datetime) -> None:
+     """Accumulate novelty_new per UTC day (creates in this cycle count as new tuples)."""
+     row = ensure_baseline_meta(db)
+@@ -470,6 +704,7 @@ def maybe_close_baseline_after_cycle(
+             f"serie novità>={MIN_NOVELTY_SERIES_DAYS} giorni UTC completi"
+         )
+         ev["readiness_snapshot"] = readiness
++        _lift_novelty_on_baseline_close(ev, readiness, now)
+         row.evidence = ev
+         row.last_seen = now
+         db.flush()
+@@ -502,6 +737,7 @@ def mark_baseline_ready(db: Session, *, user_id: int | None = None, reason: str
+     ev["marked_ready_by"] = user_id
+     ev["marked_ready_reason"] = reason or "azione esplicita con criteri B2 soddisfatti"
+     ev["o13cfix_marker"] = O13CFIX_MARKER
++    _lift_novelty_on_baseline_close(ev, readiness, now)
+     row.evidence = ev
+     row.last_seen = now
+     db.flush()
+@@ -916,21 +1152,24 @@ def novelty_egress_cards(
+     db: Session,
+     *,
+     now: datetime | None = None,
+-    novelty_signals_enabled: bool = False,
++    novelty_signals_enabled: bool | None = None,
++    settings: Any | None = None,
+ ) -> list[dict[str, Any]]:
+-    """Structural novelty. Suspended unless novelty_signals_enabled AND baseline_ready."""
++    """Structural novelty. Gated by resolve_novelty_emission (O13D).
++
++    ``novelty_signals_enabled`` kept for O13C tests: when explicitly False/True and
++    settings is None, wraps a synthetic settings object.
++    """
+     now = now or utcnow()
+-    bl = baseline_status(db, now=now)
+-    if not novelty_signals_enabled:
+-        return []
+-    if not bl["baseline_ready"]:
++    if settings is None and novelty_signals_enabled is not None:
++        settings = type("S", (), {"egress_novelty_signals_enabled": bool(novelty_signals_enabled)})()
++    emission = resolve_novelty_emission(db, settings, now=now)
++    if not emission["allowed"]:
+         return []
++    bl = baseline_status(db, now=now)
+     ready_at = _parse_ts(bl.get("baseline_ready_at"))
+     if ready_at is None:
+         return []
+-    # Never emit against a premature ready_at that was invalidated.
+-    if bl.get("premature_baseline_ready_at_was") and not bl["baseline_ready"]:
+-        return []
+ 
+     rows = list(
+         db.scalars(
+@@ -984,6 +1223,7 @@ def novelty_egress_cards(
+                 "freshness": freshness_for_observed_at(r.last_seen, now=now),
+                 "defense_priority_id": DEFENSE_PRIORITY_ID,
+                 "o13c_marker": O13C_MARKER,
++                "o13d_marker": O13D_MARKER,
+                 "actions": [
+                     {
+                         "id": "open_dossier",
+@@ -1026,11 +1266,62 @@ def list_invalid_baseline_emissions(db: Session) -> list[dict[str, Any]]:
+                 "marked": True,
+                 "recoverable": True,
+                 "o13cfix_marker": O13CFIX_MARKER,
++                "o13d_marker": O13D_MARKER,
+             }
+         )
+     return out
+ 
+ 
++def unmark_invalid_emission(db: Session, observation_id: int) -> dict[str, Any]:
++    """O13D R6 — ripesca one id: clear emitted_on_invalid_baseline mark."""
++    row = db.get(EgressObservation, int(observation_id))
++    if row is None:
++        return {"ok": False, "error": "not_found", "id": observation_id}
++    ev = dict(row.evidence or {})
++    if not ev.get("emitted_on_invalid_baseline"):
++        return {
++            "ok": True,
++            "id": int(row.id),
++            "changed": False,
++            "marked": False,
++            "o13d_marker": O13D_MARKER,
++        }
++    ev["emitted_on_invalid_baseline"] = False
++    ev["unmarked_at"] = utcnow().isoformat() + "Z"
++    ev["unmark_reason"] = "r6_ripesca"
++    ev["o13d_marker"] = O13D_MARKER
++    # Keep invalid_baseline_ready_at for audit.
++    row.evidence = ev
++    db.flush()
++    return {
++        "ok": True,
++        "id": int(row.id),
++        "changed": True,
++        "marked": False,
++        "o13d_marker": O13D_MARKER,
++    }
++
++
++def remark_invalid_emission(db: Session, observation_id: int) -> dict[str, Any]:
++    """Re-apply emitted_on_invalid_baseline mark (undo ripesca)."""
++    row = db.get(EgressObservation, int(observation_id))
++    if row is None:
++        return {"ok": False, "error": "not_found", "id": observation_id}
++    ev = dict(row.evidence or {})
++    ev["emitted_on_invalid_baseline"] = True
++    ev["remarked_at"] = utcnow().isoformat() + "Z"
++    ev["o13d_marker"] = O13D_MARKER
++    row.evidence = ev
++    db.flush()
++    return {
++        "ok": True,
++        "id": int(row.id),
++        "changed": True,
++        "marked": True,
++        "o13d_marker": O13D_MARKER,
++    }
++
++
+ def build_egress_signals(
+     db: Session,
+     *,
+@@ -1040,9 +1331,8 @@ def build_egress_signals(
+     now = now or utcnow()
+     ensure_baseline_meta(db)
+     bl = baseline_status(db, now=now)
+-    novelty_on = False
+-    if settings is not None:
+-        novelty_on = bool(getattr(settings, "egress_novelty_signals_enabled", False))
++    emission = resolve_novelty_emission(db, settings, now=now)
++    novelty_on = bool(emission["allowed"])
+     acked = {
+         s.uid
+         for s in db.scalars(
+@@ -1054,19 +1344,28 @@ def build_egress_signals(
+     }
+     cards = [
+         c
+-        for c in novelty_egress_cards(
+-            db, now=now, novelty_signals_enabled=novelty_on
+-        )
++        for c in novelty_egress_cards(db, now=now, settings=settings)
+         if c["uid"] not in acked
+     ]
+     invalid = list_invalid_baseline_emissions(db)
+     open_, reason = evaluate_egress_breaker(db)
+     note_parts: list[str] = []
+-    if not novelty_on:
++    state = emission.get("state")
++    if state == "novelty_suppressed_manual":
++        note_parts.append(
++            "Segnali N5 in soppressione manuale (visibile): "
++            "EGRESS_NOVELTY_SIGNALS_ENABLED=false dopo armamento; "
++            "ingest egress indipendente se EGRESS_INGEST_ENABLED."
++        )
++    elif state == "novelty_suppressed":
++        supp = emission.get("suppression") or {}
+         note_parts.append(
+-            "Segnali N5 sospesi (EGRESS_NOVELTY_SIGNALS_ENABLED=false); "
+-            "ingest egress indipendente e attivo se EGRESS_INGEST_ENABLED."
++            f"Segnali N5 soppressi (protezione baseline prematura"
++            f"{', da ' + str(supp.get('since')) if supp.get('since') else ''}); "
++            "distinto da cieca/disabilitata."
+         )
++    elif not novelty_on and state == "baseline_in_costruzione":
++        pass  # readiness note below
+     if not bl["baseline_ready"]:
+         rd = bl.get("readiness") or {}
+         miss = rd.get("missing") or {}
+@@ -1089,18 +1388,25 @@ def build_egress_signals(
+             f"{len(invalid)} emissioni su baseline non valida: marcate, "
+             "ispezionabili e ripescabili (non cancellate)."
+         )
++    env_flag = bool(
++        getattr(settings, "egress_novelty_signals_enabled", False) if settings is not None else False
++    )
+     return {
+         "cards": cards,
+         "invalid_baseline_emissions": invalid,
+         "invalid_baseline_emissions_count": len(invalid),
+         "baseline": bl,
++        "novelty_emission": emission,
++        "novelty_suppression": emission.get("suppression"),
+         "novelty_signals_enabled": novelty_on,
++        "novelty_signals_env": env_flag,
+         "breaker_open": open_,
+         "breaker_reason": reason,
+         "table": table_stats(db),
+         "note": " ".join(note_parts) if note_parts else None,
+         "o13c_marker": O13C_MARKER,
+         "o13cfix_marker": O13CFIX_MARKER,
++        "o13d_marker": O13D_MARKER,
+         "defense_priority_id": DEFENSE_PRIORITY_ID,
+     }
+ 
+diff --git a/observatory/api/app/services/source_coverage.py b/observatory/api/app/services/source_coverage.py
+index 4564aed..9fdba96 100644
+--- a/observatory/api/app/services/source_coverage.py
++++ b/observatory/api/app/services/source_coverage.py
+@@ -756,7 +756,7 @@ def evaluate_source(
+ 
+     last_success = last.get("last_success_at")
+     not_covered = display_state in {"cieca", "coperta_vecchia", "disabilitata"}
+-    return {
++    out: dict[str, Any] = {
+         "name": spec.name,
+         "label": spec.label,
+         "state": display_state,
+@@ -795,6 +795,24 @@ def evaluate_source(
+             else "igiene_nome"
+         ),
+     }
++    # O13D: novelty suppression ≠ cieca/disabilitata — expose on zeek_egress while ingest on.
++    if spec.kind == "zeek_egress" and enabled:
++        from app.services.egress import resolve_novelty_emission
++
++        emission = resolve_novelty_emission(db, settings, now=now)
++        if not emission.get("allowed"):
++            supp = dict(emission.get("suppression") or {})
++            supp["active"] = True
++            supp["emission_state"] = emission.get("state")
++            supp["distinct_from"] = ["cieca", "disabilitata"]
++            out["signal_suppression"] = supp
++            out["novelty_suppression"] = supp
++            # State stays coverage state (e.g. coperta_fresca); do NOT flip to cieca/disabilitata.
++            out["display_extra"] = (
++                f"novità N5 soppressa ({emission.get('state')}) — ingest attivo; "
++                "distinto da cieca/disabilitata"
++            )
++    return out
+ 
+ 
+ def build_coverage_report(
+@@ -931,6 +949,51 @@ def coverage_alarm_cards(
+                     ],
+                 }
+             )
++    # O13D — informative note when zeek_egress ingest on but novelty suppressed.
++    for src in report["sources"]:
++        if src.get("name") != "zeek_egress":
++            continue
++        supp = src.get("signal_suppression") or src.get("novelty_suppression")
++        if not supp or not supp.get("active"):
++            continue
++        if src.get("state") in {"cieca", "disabilitata"}:
++            continue
++        uid = _cov_uid("novelty_supp", src["name"])
++        if uid in acked:
++            continue
++        info.append(
++            {
++                "uid": uid,
++                "signal_key": f"cov:novelty_supp:{src['name']}",
++                "signal": "C-N",
++                "kind": "coverage_novelty_suppressed",
++                "title": f"Novità egress soppressa · {src['label']}",
++                "source_name": src["name"],
++                "state": src["state"],
++                "signal_suppression": supp,
++                "defense_priority_id": "igiene_nome",
++                "o12_marker": "obs-o12-novelty-supp",
++                "o13d_marker": "obs-o13d",
++                "body": (
++                    f"Ingest attivo; segnali N5 soppressi ({supp.get('emission_state') or supp.get('reason')}). "
++                    "Non è cieca né disabilitata."
++                ),
++                "actions": [
++                    {
++                        "id": "open_plant",
++                        "label": "Vedi copertura",
++                        "href": "/plant?from=oggi&coverage=1",
++                        "reversible": True,
++                    },
++                    {
++                        "id": "acknowledge",
++                        "label": "Nascondi voce",
++                        "requires_confirm": False,
++                        "reversible": True,
++                    },
++                ],
++            }
++        )
+     return cards + info
+ 
+ 
+diff --git a/observatory/api/app/services/source_coverage.py b/observatory/api/app/services/source_coverage.py
+index 4564aed..9fdba96 100644
+--- a/observatory/api/app/services/source_coverage.py
++++ b/observatory/api/app/services/source_coverage.py
+@@ -756,7 +756,7 @@ def evaluate_source(
+ 
+     last_success = last.get("last_success_at")
+     not_covered = display_state in {"cieca", "coperta_vecchia", "disabilitata"}
+-    return {
++    out: dict[str, Any] = {
+         "name": spec.name,
+         "label": spec.label,
+         "state": display_state,
+@@ -795,6 +795,24 @@ def evaluate_source(
+             else "igiene_nome"
+         ),
+     }
++    # O13D: novelty suppression ≠ cieca/disabilitata — expose on zeek_egress while ingest on.
++    if spec.kind == "zeek_egress" and enabled:
++        from app.services.egress import resolve_novelty_emission
++
++        emission = resolve_novelty_emission(db, settings, now=now)
++        if not emission.get("allowed"):
++            supp = dict(emission.get("suppression") or {})
++            supp["active"] = True
++            supp["emission_state"] = emission.get("state")
++            supp["distinct_from"] = ["cieca", "disabilitata"]
++            out["signal_suppression"] = supp
++            out["novelty_suppression"] = supp
++            # State stays coverage state (e.g. coperta_fresca); do NOT flip to cieca/disabilitata.
++            out["display_extra"] = (
++                f"novità N5 soppressa ({emission.get('state')}) — ingest attivo; "
++                "distinto da cieca/disabilitata"
++            )
++    return out
+ 
+ 
+ def build_coverage_report(
+@@ -931,6 +949,51 @@ def coverage_alarm_cards(
+                     ],
+                 }
+             )
++    # O13D — informative note when zeek_egress ingest on but novelty suppressed.
++    for src in report["sources"]:
++        if src.get("name") != "zeek_egress":
++            continue
++        supp = src.get("signal_suppression") or src.get("novelty_suppression")
++        if not supp or not supp.get("active"):
++            continue
++        if src.get("state") in {"cieca", "disabilitata"}:
++            continue
++        uid = _cov_uid("novelty_supp", src["name"])
++        if uid in acked:
++            continue
++        info.append(
++            {
++                "uid": uid,
++                "signal_key": f"cov:novelty_supp:{src['name']}",
++                "signal": "C-N",
++                "kind": "coverage_novelty_suppressed",
++                "title": f"Novità egress soppressa · {src['label']}",
++                "source_name": src["name"],
++                "state": src["state"],
++                "signal_suppression": supp,
++                "defense_priority_id": "igiene_nome",
++                "o12_marker": "obs-o12-novelty-supp",
++                "o13d_marker": "obs-o13d",
++                "body": (
++                    f"Ingest attivo; segnali N5 soppressi ({supp.get('emission_state') or supp.get('reason')}). "
++                    "Non è cieca né disabilitata."
++                ),
++                "actions": [
++                    {
++                        "id": "open_plant",
++                        "label": "Vedi copertura",
++                        "href": "/plant?from=oggi&coverage=1",
++                        "reversible": True,
++                    },
++                    {
++                        "id": "acknowledge",
++                        "label": "Nascondi voce",
++                        "requires_confirm": False,
++                        "reversible": True,
++                    },
++                ],
++            }
++        )
+     return cards + info
+ 
+ 
+diff --git a/observatory/web/src/views/Oggi.vue b/observatory/web/src/views/Oggi.vue
+index 028b084..24f2e73 100644
+--- a/observatory/web/src/views/Oggi.vue
++++ b/observatory/web/src/views/Oggi.vue
+@@ -1416,6 +1416,14 @@ onUnmounted(() => {
+             <span v-if="egressSignals.novelty_signals_enabled === false">
+               · novità N5 sospesa (ingest indipendente)
+             </span>
++            <span
++              v-if="egressSignals.novelty_suppression?.active || egressSignals.novelty_emission?.state === 'novelty_suppressed_manual'"
++              data-o13d="novelty-suppression"
++            >
++              · soppressione novità:
++              {{ egressSignals.novelty_emission?.state || egressSignals.novelty_suppression?.reason || "attiva" }}
++              (≠ cieca/disabilitata)
++            </span>
+             <span v-if="(egressSignals.invalid_baseline_emissions_count || 0) > 0">
+               · {{ egressSignals.invalid_baseline_emissions_count }} emissioni su baseline non valida
+               (marcate, ripescabili)
