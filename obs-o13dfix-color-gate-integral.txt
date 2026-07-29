@@ -1,0 +1,5 @@
+PASS: no hard-coded color literals outside token/allowlist files
+  token_files=['assets/matrix.css']
+  allowlist_count=21
+SELFTEST inject detected: (2, '#ff00aa', '.x { color: #ff00aa; /* O13D_COLOR_GATE_INJECT */ }')
+SELFTEST PASS: inject fails, remove passes
