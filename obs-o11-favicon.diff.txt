@@ -1,0 +1,38 @@
+diff --git a/observatory/web/public/favicon.svg b/observatory/web/public/favicon.svg
+index 59f88e6..72709c8 100644
+--- a/observatory/web/public/favicon.svg
++++ b/observatory/web/public/favicon.svg
+@@ -1,18 +1,17 @@
+ <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="LAN Observatory">
+-  <!-- Matrix tile: chunky LO monogram — readable at 16×16 -->
+-  <rect width="32" height="32" rx="5" fill="#06140c"/>
+-  <!-- faint scanlines -->
+-  <g fill="#3dff8a" opacity="0.08">
+-    <rect y="3" width="32" height="1"/>
+-    <rect y="8" width="32" height="1"/>
+-    <rect y="13" width="32" height="1"/>
+-    <rect y="18" width="32" height="1"/>
+-    <rect y="23" width="32" height="1"/>
+-    <rect y="28" width="32" height="1"/>
+-  </g>
+-  <!-- L: left stem + foot (4px bars) -->
+-  <rect x="4" y="5" width="5" height="18" fill="#3dff8a"/>
+-  <rect x="4" y="23" width="12" height="5" fill="#3dff8a"/>
+-  <!-- O: outer block + hole (evenodd) -->
+-  <path fill="#77ffad" fill-rule="evenodd" d="M18 5h10v23H18V5zm3 5h4v13h-4V10z"/>
++  <!-- O11-D: palette matrix.css — --bg-0 #0f1319 · --accent #6bc5db · --text-2 #98a2b3 · --ok #4fb477 -->
++  <style>
++    .mark { fill: #6bc5db; }
++    .mark-alt { fill: #98a2b3; }
++    @media (prefers-color-scheme: light) {
++      .bg { fill: #e8ebf0; }
++      .mark { fill: #0f1319; }
++      .mark-alt { fill: #4fb477; }
++    }
++  </style>
++  <rect class="bg" width="32" height="32" rx="6" fill="#0f1319"/>
++  <!-- Opzione A (scelta Michele): L + O — non riaprire -->
++  <rect class="mark" x="5" y="6" width="5" height="16"/>
++  <rect class="mark" x="5" y="22" width="11" height="5"/>
++  <path class="mark-alt" fill-rule="evenodd" d="M18 6h10v21H18V6zm3 4h4v13h-4V10z"/>
+ </svg>
