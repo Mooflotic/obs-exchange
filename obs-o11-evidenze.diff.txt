@@ -1,0 +1,892 @@
+=== NEW api/app/facts/ip_association.py ===
+diff --git a/observatory/api/app/facts/ip_association.py b/observatory/api/app/facts/ip_association.py
+new file mode 100644
+index 0000000..631a968
+--- /dev/null
++++ b/observatory/api/app/facts/ip_association.py
+@@ -0,0 +1,171 @@
++"""O11 B1 — IP↔MAC association at observation time via the fact store.
++
++Lives under ``api/app/facts/`` so currency is never read outside the resolver
++boundary. Callers outside this package must use these helpers, not raw
++``FactAssertion`` queries for association.
++"""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++from datetime import datetime
++from typing import Any
++
++from sqlalchemy import and_, or_, select
++from sqlalchemy.orm import Session
++from sqlalchemy import func
++
++from app.models import Asset, FactAssertion, Interface, utcnow
++
++FACT_IFACE_IP = "asset.iface_ip"
++
++
++@dataclass(frozen=True)
++class IpMacAssociation:
++    """Result of resolving an IP at a point in time (I2: uncertain declared)."""
++
++    status: str  # certain | uncertain | unresolved
++    ip: str
++    mac: str = ""
++    interface_id: int | None = None
++    asset_id: int | None = None
++    chassis_id: int | None = None
++    fact_id: int | None = None
++    fact_state: str = ""
++    reason: str = ""
++
++
++def _norm_mac(mac: str | None) -> str:
++    return (mac or "").replace("-", ":").strip().upper()
++
++
++def _covers(fa: FactAssertion, at: datetime) -> bool:
++    """True if the assertion's validity window covers ``at`` (naive UTC)."""
++    vf = fa.valid_from
++    vt = fa.valid_to
++    if vf is not None and at < vf:
++        return False
++    if vt is not None and at >= vt:
++        return False
++    return True
++
++
++def associate_ip_at(
++    db: Session, ip: str, observed_at: datetime | None = None
++) -> IpMacAssociation:
++    """Map IP → MAC/asset using iface_ip facts current (or covering) at ``observed_at``.
++
++    - ``certain``: a ``state=current`` iface_ip fact covers the timestamp.
++    - ``uncertain``: only superseded/historical/stale facts cover it, or the
++      binding existed but was not current at observation time.
++    - ``unresolved``: no iface_ip fact for this IP at all.
++    """
++    ip = (ip or "").strip()
++    at = observed_at or utcnow()
++    if not ip:
++        return IpMacAssociation(status="unresolved", ip="", reason="ip assente")
++
++    rows = list(
++        db.scalars(
++            select(FactAssertion)
++            .where(
++                FactAssertion.fact_key == FACT_IFACE_IP,
++                FactAssertion.value_norm == ip,
++            )
++            .order_by(FactAssertion.id.desc())
++        ).all()
++    )
++    if not rows:
++        return IpMacAssociation(
++            status="unresolved",
++            ip=ip,
++            reason="nessun fatto asset.iface_ip per questo IP",
++        )
++
++    covering = [fa for fa in rows if _covers(fa, at)]
++    current_covering = [fa for fa in covering if (fa.state or "") == "current"]
++
++    def _pack(fa: FactAssertion, status: str, reason: str) -> IpMacAssociation:
++        iface_id = int(fa.subject_id) if fa.subject_type == "interface" else None
++        mac = ""
++        asset_id = None
++        chassis_id = None
++        if iface_id is not None:
++            iface = db.get(Interface, iface_id)
++            if iface:
++                mac = _norm_mac(iface.mac)
++                asset_id = int(iface.asset_id)
++                asset = db.get(Asset, asset_id)
++                if asset and asset.chassis_id:
++                    chassis_id = int(asset.chassis_id)
++        return IpMacAssociation(
++            status=status,
++            ip=ip,
++            mac=mac,
++            interface_id=iface_id,
++            asset_id=asset_id,
++            chassis_id=chassis_id,
++            fact_id=int(fa.id),
++            fact_state=str(fa.state or ""),
++            reason=reason,
++        )
++
++    if current_covering:
++        return _pack(
++            current_covering[0],
++            "certain",
++            "fatto asset.iface_ip current copre observed_at",
++        )
++
++    if covering:
++        return _pack(
++            covering[0],
++            "uncertain",
++            f"fatto asset.iface_ip state={covering[0].state} copre observed_at ma non current",
++        )
++
++    # Fact exists but validity window does not cover observed_at.
++    return _pack(
++        rows[0],
++        "uncertain",
++        "fatto asset.iface_ip esiste ma non copre observed_at (associazione incerta)",
++    )
++
++
++def associate_mac_direct(db: Session, mac: str) -> IpMacAssociation:
++    """MAC taken from Zeek DHCP/JA4D log — no IP join required."""
++    m = _norm_mac(mac)
++    if not m:
++        return IpMacAssociation(status="unresolved", ip="", reason="mac assente")
++    iface = db.scalar(select(Interface).where(Interface.mac == m))
++    if iface is None:
++        iface = db.scalar(
++            select(Interface).where(func.upper(Interface.mac) == m)
++        )
++    if iface is None:
++        return IpMacAssociation(
++            status="mac_direct",
++            ip="",
++            mac=m,
++            reason="MAC da log Zeek; interfaccia non in inventario",
++        )
++    asset = db.get(Asset, int(iface.asset_id))
++    chassis_id = int(asset.chassis_id) if asset and asset.chassis_id else None
++    return IpMacAssociation(
++        status="mac_direct",
++        ip="",
++        mac=m,
++        interface_id=int(iface.id),
++        asset_id=int(iface.asset_id),
++        chassis_id=chassis_id,
++        reason="MAC diretto da dhcp.log/ja4d.log",
++    )
++
++
++def subject_for_association(assoc: IpMacAssociation) -> tuple[str, int | None, int | None]:
++    """Prefer chassis subject when present (B3: one behaviour card per apparatus)."""
++    if assoc.chassis_id:
++        return "chassis", assoc.chassis_id, assoc.asset_id
++    if assoc.asset_id:
++        return "asset", assoc.asset_id, assoc.asset_id
++    return "", None, assoc.asset_id
+=== NEW collector/adapters/zeek_behavior.py ===
+diff --git a/observatory/collector/collector/adapters/zeek_behavior.py b/observatory/collector/collector/adapters/zeek_behavior.py
+new file mode 100644
+index 0000000..31bf5d1
+--- /dev/null
++++ b/observatory/collector/collector/adapters/zeek_behavior.py
+@@ -0,0 +1,244 @@
++"""Zeek ssl.log / dhcp.log / ja4d.log → fingerprint evidence POST.
++
++Cold-start: offsets at EOF (no backlog flood — breaker-safe). Dedup on API.
++"""
++
++from __future__ import annotations
++
++import json
++from pathlib import Path
++from typing import Any, Callable, Optional
++
++STATE_NAME = "zeek_behavior_state.json"
++BATCH_SIZE = 100
++
++
++def load_state(path: Path) -> dict[str, Any]:
++    if not path.is_file():
++        return {"offsets": {}, "cold_started": {}}
++    try:
++        data = json.loads(path.read_text(encoding="utf-8"))
++    except (OSError, json.JSONDecodeError):
++        return {"offsets": {}, "cold_started": {}}
++    if not isinstance(data, dict):
++        return {"offsets": {}, "cold_started": {}}
++    offsets = data.get("offsets") if isinstance(data.get("offsets"), dict) else {}
++    cold = data.get("cold_started") if isinstance(data.get("cold_started"), dict) else {}
++    return {"offsets": offsets, "cold_started": cold}
++
++
++def save_state(path: Path, state: dict[str, Any]) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_text(json.dumps(state, indent=0), encoding="utf-8")
++
++
++def _read_new_lines(path: Path, offset: int) -> tuple[list[str], int]:
++    if not path.is_file():
++        return [], offset
++    size = path.stat().st_size
++    if offset > size:
++        offset = 0
++    with path.open("rb") as fh:
++        fh.seek(offset)
++        raw = fh.read()
++        new_offset = fh.tell()
++    if not raw:
++        return [], new_offset
++    text = raw.decode("utf-8", errors="replace")
++    lines = [ln for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
++    return lines, new_offset
++
++
++def parse_ssl_row(row: dict[str, Any]) -> list[dict[str, Any]]:
++    out: list[dict[str, Any]] = []
++    ip = str(row.get("id.orig_h") or "").strip()
++    ts = row.get("ts")
++    ja4 = row.get("ja4")
++    ja4s = row.get("ja4s")
++    if ja4 and ja4 not in ("-", "", None):
++        out.append(
++            {
++                "kind": "ja4",
++                "value": str(ja4),
++                "src_ip": ip,
++                "observed_at": ts,
++                "ja4s": ja4s,
++                "server_name": row.get("server_name"),
++                "uid": row.get("uid"),
++            }
++        )
++    if ja4s and ja4s not in ("-", "", None):
++        out.append(
++            {
++                "kind": "ja4s",
++                "value": str(ja4s),
++                "src_ip": ip,
++                "observed_at": ts,
++                "uid": row.get("uid"),
++            }
++        )
++    return out
++
++
++def parse_dhcp_row(row: dict[str, Any]) -> list[dict[str, Any]]:
++    out: list[dict[str, Any]] = []
++    mac = str(row.get("mac") or "").strip()
++    ip = str(row.get("assigned_addr") or row.get("client_addr") or "").strip()
++    ts = row.get("ts")
++    host = str(row.get("host_name") or row.get("client_fqdn") or "").strip()
++    if host and host not in ("-", "null"):
++        out.append(
++            {
++                "kind": "dhcp_hostname",
++                "value": host,
++                "src_mac": mac,
++                "src_ip": ip,
++                "observed_at": ts,
++            }
++        )
++    pl = row.get("param_list")
++    if pl:
++        if isinstance(pl, list):
++            val = ",".join(str(x) for x in pl)
++        else:
++            val = str(pl)
++        if val and val not in ("-", "null"):
++            out.append(
++                {
++                    "kind": "dhcp_param_list",
++                    "value": val[:255],
++                    "src_mac": mac,
++                    "src_ip": ip,
++                    "observed_at": ts,
++                }
++            )
++    vc = row.get("vendor_class")
++    if vc and str(vc) not in ("-", "", "null"):
++        out.append(
++            {
++                "kind": "dhcp_vendor",
++                "value": str(vc)[:255],
++                "src_mac": mac,
++                "src_ip": ip,
++                "observed_at": ts,
++            }
++        )
++    return out
++
++
++def parse_ja4d_row(row: dict[str, Any]) -> list[dict[str, Any]]:
++    out: list[dict[str, Any]] = []
++    mac = str(row.get("client_mac") or "").strip()
++    ip = str(row.get("id.orig_h") or "").strip()
++    ts = row.get("ts")
++    ja4d = row.get("ja4d")
++    if ja4d and ja4d not in ("-", "", None):
++        out.append(
++            {
++                "kind": "ja4d",
++                "value": str(ja4d)[:255],
++                "src_mac": mac,
++                "src_ip": ip,
++                "observed_at": ts,
++                "uid": row.get("uid"),
++            }
++        )
++    host = str(row.get("hostname") or "").strip()
++    if host and host not in ("-", "null"):
++        out.append(
++            {
++                "kind": "dhcp_hostname",
++                "value": host,
++                "src_mac": mac,
++                "src_ip": ip,
++                "observed_at": ts,
++            }
++        )
++    vc = row.get("vendor_class_id")
++    if vc and str(vc) not in ("-", "", "null"):
++        out.append(
++            {
++                "kind": "dhcp_vendor",
++                "value": str(vc)[:255],
++                "src_mac": mac,
++                "src_ip": ip,
++                "observed_at": ts,
++            }
++        )
++    return out
++
++
++def run_zeek_behavior_cycle(
++    *,
++    log_dir: Path,
++    post_items: Callable[[list[dict[str, Any]]], None],
++    state_path: Path | None = None,
++) -> dict[str, Any]:
++    """Tail current ssl/dhcp/ja4d. First seen: ingest full current file (not rotated)."""
++    log_dir = Path(log_dir)
++    path = Path(state_path) if state_path else log_dir.parent / STATE_NAME
++    state = load_state(path)
++    offsets: dict[str, int] = dict(state.get("offsets") or {})
++    cold: dict[str, bool] = dict(state.get("cold_started") or {})
++
++    batch: list[dict[str, Any]] = []
++    stats = {
++        "ssl_rows": 0,
++        "dhcp_rows": 0,
++        "ja4d_rows": 0,
++        "items": 0,
++        "posted": 0,
++        "initial_full_read": 0,
++    }
++
++    files: list[tuple[str, str]] = [
++        ("ssl.log", "ssl"),
++        ("dhcp.log", "dhcp"),
++        ("ja4d.log", "ja4d"),
++    ]
++
++    def _flush() -> None:
++        nonlocal batch
++        if not batch:
++            return
++        post_items(batch)
++        stats["posted"] += len(batch)
++        batch = []
++
++    for name, kind in files:
++        fpath = log_dir / name
++        if not fpath.is_file():
++            continue
++        key = name
++        # First encounter: read from byte 0 of the *current* log only.
++        if not cold.get(key):
++            offsets[key] = 0
++            cold[key] = True
++            stats["initial_full_read"] += 1
++        lines, new_off = _read_new_lines(fpath, int(offsets.get(key, 0)))
++        offsets[key] = new_off
++        for line in lines:
++            try:
++                row = json.loads(line)
++            except json.JSONDecodeError:
++                continue
++            if kind == "ssl":
++                stats["ssl_rows"] += 1
++                parsed = parse_ssl_row(row)
++            elif kind == "dhcp":
++                stats["dhcp_rows"] += 1
++                parsed = parse_dhcp_row(row)
++            else:
++                stats["ja4d_rows"] += 1
++                parsed = parse_ja4d_row(row)
++            for item in parsed:
++                batch.append(item)
++                stats["items"] += 1
++                if len(batch) >= BATCH_SIZE:
++                    _flush()
++
++    _flush()
++    state["offsets"] = offsets
++    state["cold_started"] = cold
++    save_state(path, state)
++    return stats
+=== NEW tests/test_o11_behaviour.py ===
+diff --git a/observatory/tests/test_o11_behaviour.py b/observatory/tests/test_o11_behaviour.py
+new file mode 100644
+index 0000000..eab76c6
+--- /dev/null
++++ b/observatory/tests/test_o11_behaviour.py
+@@ -0,0 +1,258 @@
++"""O11 — Zeek behaviour evidence (Z1–Z6 named nodes only)."""
++
++from __future__ import annotations
++
++import sys
++from datetime import datetime, timedelta
++from pathlib import Path
++
++import pytest
++from sqlalchemy import create_engine, select
++from sqlalchemy.orm import sessionmaker
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
++
++from app.config import get_settings
++from app.db import Base
++from app.facts.ip_association import associate_ip_at
++from app.models import Asset, FactAssertion, Interface, IpAddress, ZeekBehaviorEvidence
++from app.services.behaviour import (
++    baseline_status,
++    build_behavior_signals,
++    build_does_block,
++    build_identity_inference,
++    ingest_zeek_behavior_batch,
++    mark_baseline_ready,
++    structural_character_changes,
++)
++
++
++@pytest.fixture()
++def db(tmp_path, monkeypatch):
++    db_path = tmp_path / "o11.db"
++    monkeypatch.setenv("SQLITE_PATH", str(db_path))
++    get_settings.cache_clear()
++    engine = create_engine(f"sqlite:///{db_path}")
++    Base.metadata.create_all(engine)
++    Session = sessionmaker(bind=engine)
++    session = Session()
++    yield session
++    session.close()
++    get_settings.cache_clear()
++
++
++def _asset_mac(db, *, mac: str, name: str = "", status: str = "nuovo", ip: str | None = None, current=True):
++    import uuid
++
++    a = Asset(uid=str(uuid.uuid4()), name=name, status=status, category="media")
++    db.add(a)
++    db.flush()
++    iface = Interface(asset_id=a.id, mac=mac, is_primary=True)
++    db.add(iface)
++    db.flush()
++    if ip:
++        db.add(
++            IpAddress(
++                interface_id=iface.id,
++                ip=ip,
++                is_current=current,
++                source="fritz",
++            )
++        )
++        db.flush()
++    return a, iface
++
++
++def test_z1_solo_l2_with_zeek_does_populated(db):
++    """Z1: solo-L2 with Zeek evidence → Cosa fa populated with source+age."""
++    a, iface = _asset_mac(db, mac="D4:52:EE:C3:25:17", name="Sky", status="noto")
++    db.commit()
++    stats = ingest_zeek_behavior_batch(
++        db,
++        [
++            {
++                "kind": "ja4d",
++                "value": "disco0000nn_55_1-3-6",
++                "src_mac": "D4:52:EE:C3:25:17",
++                "observed_at": datetime.utcnow().isoformat() + "Z",
++            }
++        ],
++    )
++    db.commit()
++    assert stats["created"] >= 1
++    does = build_does_block(db, a)
++    assert does["evidence_available"] is True
++    assert does["fingerprints"]
++    fp = does["fingerprints"][0]
++    assert fp["kind"] == "ja4d"
++    assert fp["source"] == "zeek-span"
++    assert fp["freshness"]["state"] in {"fresh", "stale"}
++    assert "o11_marker" in does
++
++
++def test_z2_solo_l2_without_evidence(db):
++    """Z2: no Zeek evidence → declared empty, no invented proposal."""
++    a, _ = _asset_mac(db, mac="DC:15:C8:80:BB:EA", name="", status="nuovo")
++    db.commit()
++    does = build_does_block(db, a)
++    assert does["evidence_available"] is False
++    assert "nessuna evidenza" in (does["empty_reason"] or "")
++    inf = build_identity_inference(db, a, ai_enabled=False, ai_configured=False)
++    assert inf["proposal_available"] is False
++    assert inf["proposal"] is None
++    assert "nessuna evidenza" in (inf["status"] or "").lower() or "evidenza" in (inf["status"] or "").lower()
++
++
++def test_z3_uncertain_ip_mac_association(db):
++    """Z3: IP↔MAC not current at observation → association uncertain."""
++    a, iface = _asset_mac(
++        db, mac="AA:BB:CC:DD:EE:01", name="X", status="noto", ip="192.168.2.195", current=False
++    )
++    # Create superseded iface_ip fact covering the observation time.
++    past = datetime.utcnow() - timedelta(hours=2)
++    fa = FactAssertion(
++        subject_type="interface",
++        subject_id=iface.id,
++        fact_key="asset.iface_ip",
++        excl_key=f"asset.iface_ip:{iface.id}",
++        value_norm="192.168.2.195",
++        value_json={},
++        source="fritz",
++        authority=80,
++        confidence=0.9,
++        observed_at=past,
++        last_seen_at=past,
++        valid_from=past - timedelta(days=1),
++        valid_to=past + timedelta(minutes=1),  # expired before "now" obs
++        state="superseded",
++    )
++    db.add(fa)
++    db.commit()
++
++    obs_at = past  # within valid window but fact not current
++    assoc = associate_ip_at(db, "192.168.2.195", obs_at)
++    assert assoc.status == "uncertain"
++
++    stats = ingest_zeek_behavior_batch(
++        db,
++        [
++            {
++                "kind": "ja4",
++                "value": "t13d3113h1_e8f1e7e78f70_1b3407e2c936",
++                "src_ip": "192.168.2.195",
++                "observed_at": obs_at.isoformat() + "Z",
++            }
++        ],
++    )
++    db.commit()
++    assert stats["created"] >= 1
++    row = db.scalar(
++        select(ZeekBehaviorEvidence).where(ZeekBehaviorEvidence.kind == "ja4")
++    )
++    assert row is not None
++    assert row.association == "uncertain"
++    does = build_does_block(db, a)
++    assert any(f.get("association_uncertain") for f in does["fingerprints"])
++
++
++def test_z4_character_change_when_baseline_ready(db):
++    """Z4: new JA4 never seen → character-change card with action; priority coherent."""
++    a, _ = _asset_mac(db, mac="11:22:33:44:55:66", name="Dev", status="noto")
++    db.commit()
++    t0 = datetime.utcnow() - timedelta(hours=5)
++    t1 = datetime.utcnow() - timedelta(hours=1)
++    ingest_zeek_behavior_batch(
++        db,
++        [
++            {
++                "kind": "ja4",
++                "value": "ja4_old_fingerprint_aaaa",
++                "src_mac": "11:22:33:44:55:66",
++                "observed_at": t0.isoformat() + "Z",
++            }
++        ],
++    )
++    ingest_zeek_behavior_batch(
++        db,
++        [
++            {
++                "kind": "ja4",
++                "value": "ja4_new_fingerprint_bbbb",
++                "src_mac": "11:22:33:44:55:66",
++                "observed_at": t1.isoformat() + "Z",
++            }
++        ],
++    )
++    db.commit()
++    # Without baseline ready → no signal (Z5 gate)
++    assert structural_character_changes(db) == []
++    mark_baseline_ready(db, user_id=1, reason="test Z4")
++    db.commit()
++    cards = structural_character_changes(db)
++    assert cards, "expected character-change card after baseline ready"
++    c = cards[0]
++    assert c["kind"] == "behavior_character_change"
++    assert c["defense_priority_id"] == "conflitto_identita"
++    assert any(a["id"] == "acknowledge" for a in c["actions"])
++    # Same priority id on signals surface
++    sig = build_behavior_signals(db)
++    assert any(x["uid"] == c["uid"] for x in sig["character_change_cards"])
++
++
++def test_z5_baseline_in_construction_no_signal(db):
++    """Z5: insufficient history → baseline in costruzione, no character-change emit."""
++    a, _ = _asset_mac(db, mac="22:33:44:55:66:77", name="Y", status="noto")
++    db.commit()
++    ingest_zeek_behavior_batch(
++        db,
++        [
++            {
++                "kind": "ja4",
++                "value": "first",
++                "src_mac": "22:33:44:55:66:77",
++                "observed_at": (datetime.utcnow() - timedelta(hours=3)).isoformat() + "Z",
++            },
++            {
++                "kind": "ja4",
++                "value": "second",
++                "src_mac": "22:33:44:55:66:77",
++                "observed_at": datetime.utcnow().isoformat() + "Z",
++            },
++        ],
++    )
++    db.commit()
++    bl = baseline_status(db)
++    assert bl["status"] == "in_costruzione"
++    assert bl["baseline_started_at"]
++    assert structural_character_changes(db) == []
++    sig = build_behavior_signals(db)
++    assert sig["character_change_cards"] == []
++    assert sig["note"] and "in costruzione" in sig["note"]
++
++
++def test_z6_inference_engine_absent_degrades(db):
++    """Z6: no inference engine → safe degrade, evidence shown, no simulated proposal."""
++    a, _ = _asset_mac(db, mac="33:44:55:66:77:88", name="", status="nuovo")
++    db.commit()
++    ingest_zeek_behavior_batch(
++        db,
++        [
++            {
++                "kind": "ja4",
++                "value": "t13i0811h2_48922242edce_b26ce05bbdd6",
++                "src_mac": "33:44:55:66:77:88",
++                "observed_at": datetime.utcnow().isoformat() + "Z",
++            }
++        ],
++    )
++    db.commit()
++    does = build_does_block(db, a)
++    assert does["evidence_available"] is True
++    inf = build_identity_inference(db, a, ai_enabled=False, ai_configured=False)
++    assert inf["proposal_available"] is False
++    assert inf["proposal"] is None
++    assert "nessun motore di inferenza configurato" in (inf["status"] or "")
++    assert inf["evidence"]
++    assert inf["limits"]
++    assert inf["verification_action"]
++    assert "INFERENZA IA" in (inf["title"] or inf["label"] or "")
+diff --git a/observatory/api/app/bootstrap.py b/observatory/api/app/bootstrap.py
+index 2be9ab4..1480988 100644
+--- a/observatory/api/app/bootstrap.py
++++ b/observatory/api/app/bootstrap.py
+@@ -17,6 +17,7 @@ from app.auth import hash_password
+ from app.config import get_settings
+ from app.db import Base, get_engine, _session_factory
+ from app.models import FactAssertion, IdentityEvidence, IdentityLinkProposal, Switch, User  # noqa: F401 — create_all
++from app.models import ZeekBehaviorEvidence  # noqa: F401 — O11 create_all
+ from app.services.backup import bootstrap_should_backup, create_backup
+ from app.services.identity import reconcile_known_infrastructure
+ from app.services.migrate import import_legacy
+@@ -133,12 +134,17 @@ def main() -> None:
+             reconcile_ssdp_name_proposals,
+             reconcile_weak_oui_proposals,
+         )
++        from app.services.name_proposal_chassis import (
++            reconcile_chassis_name_proposal_suppression,
++        )
+         from app.services.topology import reconcile_stale_move_suggestions
+ 
+         ssdp_fix = reconcile_ssdp_name_proposals(db)
+         oui_fix = reconcile_weak_oui_proposals(db)
+         bare_fix = reconcile_bare_oui_collisions(db)
+         move_fix = reconcile_stale_move_suggestions(db)
++        # W4c.2/W4c.3: bonify + mark_lgs310c_manual removed from boot (one-shot only).
++        chassis_np = reconcile_chassis_name_proposal_suppression(db)
+         if (
+             ssdp_fix["rewritten"]
+             or ssdp_fix["archived"]
+@@ -146,6 +152,8 @@ def main() -> None:
+             or bare_fix["rewritten"]
+             or bare_fix["archived"]
+             or move_fix["rejected"]
++            or chassis_np["archived_a"]
++            or chassis_np["archived_b"]
+         ):
+             db.commit()
+             print(
+@@ -153,7 +161,9 @@ def main() -> None:
+                 f"rewritten={ssdp_fix['rewritten']} archived={ssdp_fix['archived']}; "
+                 f"oui weak archived={oui_fix['archived']}; "
+                 f"oui bare rewritten={bare_fix['rewritten']} archived={bare_fix['archived']}; "
+-                f"move uplink rejected={move_fix['rejected']}"
++                f"move uplink rejected={move_fix['rejected']}; "
++                f"chassis NP archived_a={chassis_np['archived_a']} "
++                f"archived_b={chassis_np['archived_b']}"
+             )
+         _step_end(4, "purge_placeholders", t0)
+ 
+diff --git a/observatory/api/app/models.py b/observatory/api/app/models.py
+index 60ac11e..3ddeddd 100644
+--- a/observatory/api/app/models.py
++++ b/observatory/api/app/models.py
+@@ -1007,3 +1007,37 @@ class IpIntel(Base):
+     context_what: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+     context_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+     ai_fetched_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
++
++
++class ZeekBehaviorEvidence(Base):
++    """O11 — Zeek JA4/JA4D/DHCP fingerprint evidence (F-7: write evidence, derive state).
++
++    Deduped by (kind, value, src identity). Not a fact store — association may be
++    uncertain when IP↔MAC was not current at observed_at (I2).
++    """
++
++    __tablename__ = "zeek_behavior_evidence"
++    __table_args__ = (
++        UniqueConstraint("dedup_key", name="uq_zeek_behavior_dedup"),
++        Index("ix_zeek_behavior_subject", "subject_type", "subject_id"),
++        Index("ix_zeek_behavior_mac", "src_mac"),
++        Index("ix_zeek_behavior_last", "last_seen"),
++        Index("ix_zeek_behavior_kind", "kind"),
++    )
++
++    id: Mapped[int] = mapped_column(Integer, primary_key=True)
++    dedup_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
++    kind: Mapped[str] = mapped_column(String(32), default="")  # ja4|ja4s|ja4d|dhcp_*
++    value: Mapped[str] = mapped_column(String(255), default="")
++    src_ip: Mapped[str] = mapped_column(String(45), default="")
++    src_mac: Mapped[str] = mapped_column(String(17), default="")
++    # certain | uncertain | mac_direct | unresolved
++    association: Mapped[str] = mapped_column(String(16), default="unresolved")
++    subject_type: Mapped[str] = mapped_column(String(16), default="")  # asset|chassis|""
++    subject_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
++    asset_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
++    sensor_id: Mapped[str] = mapped_column(String(64), default="zeek-span")
++    first_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
++    last_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
++    observation_count: Mapped[int] = mapped_column(Integer, default=1)
++    evidence: Mapped[dict] = mapped_column(JSON, default=dict)
+diff --git a/observatory/api/app/routers/ingest.py b/observatory/api/app/routers/ingest.py
+index 1e953a9..c8a58bc 100644
+--- a/observatory/api/app/routers/ingest.py
++++ b/observatory/api/app/routers/ingest.py
+@@ -984,6 +984,37 @@ def ingest_dhcp_hostnames(
+     return {"ok": True, **stats}
+ 
+ 
++@router.post("/zeek-behavior")
++def ingest_zeek_behavior(
++    body: dict[str, Any],
++    db: Session = Depends(get_db),
++    settings: Settings = Depends(get_settings),
++    x_obs_token: Optional[str] = Header(default=None),
++):
++    """O11 — JA4/JA4D/DHCP fingerprint evidence. Deduped; never writes identity facts."""
++    _check_internal(x_obs_token, settings)
++    from app.services.behaviour import ingest_zeek_behavior_batch
++
++    items = body.get("items") if isinstance(body, dict) else None
++    if not isinstance(items, list):
++        raise HTTPException(400, "items[] richiesto")
++    cleaned: list[dict[str, Any]] = []
++    for raw in items:
++        if not isinstance(raw, dict):
++            continue
++        kind = str(raw.get("kind") or "").strip()
++        value = str(raw.get("value") or "").strip()
++        if not kind or not value:
++            continue
++        cleaned.append(raw)
++    stats = ingest_zeek_behavior_batch(db, cleaned)
++    db.commit()
++    if stats.get("breaker_open"):
++        # Kill switch: report but do not raise ceilings.
++        return {"ok": False, "kill_switch": True, **stats}
++    return {"ok": True, **stats}
++
++
+ @router.post("/wan-telemetry")
+ def wan_telemetry_internal(
+     body: WanTelemetryIn,
+diff --git a/observatory/collector/collector/main.py b/observatory/collector/collector/main.py
+index cc58161..a7b9c8d 100644
+--- a/observatory/collector/collector/main.py
++++ b/observatory/collector/collector/main.py
+@@ -27,6 +27,7 @@ from collector.adapters.snmp_lldp import collect_switch_snapshot, group_fdb_by_p
+ from collector.adapters.zeek_conn import run_zeek_provider_cycle
+ from collector.adapters.zeek_intel import run_zeek_intel_cycle
+ from collector.adapters.zeek_dhcp_names import run_zeek_dhcp_names_cycle
++from collector.adapters.zeek_behavior import run_zeek_behavior_cycle
+ from collector.config import Settings
+ from collector.scan_jobs import process_scan_queue
+ 
+@@ -586,6 +587,34 @@ def _run_zeek_provider(settings: Settings) -> None:
+         print(f"[collector] zeek_dhcp_names err: {exc}")
+ 
+ 
++def _run_zeek_behavior(settings: Settings) -> None:
++    """O11 — JA4/JA4D/DHCP fingerprints. Independent of zeek_provider_enabled / FLOW_INGEST."""
++    api = settings.api_internal.rstrip("/")
++    log_dir = Path(getattr(settings, "zeek_log_dir", "/data/zeek"))
++
++    def _post_behavior(items: list[dict]) -> None:
++        with httpx.Client(timeout=60.0) as client:
++            response = client.post(
++                f"{api}/api/ingest/zeek-behavior",
++                headers=headers(settings),
++                json={"items": items},
++            )
++            if response.status_code >= 400:
++                raise RuntimeError(
++                    f"zeek-behavior ingest {response.status_code}: {response.text[:200]}"
++                )
++
++    try:
++        beh = run_zeek_behavior_cycle(log_dir=log_dir, post_items=_post_behavior)
++        print(
++            f"[collector] zeek_behavior ssl={beh.get('ssl_rows')} "
++            f"dhcp={beh.get('dhcp_rows')} ja4d={beh.get('ja4d_rows')} "
++            f"posted={beh.get('posted')} initial={beh.get('initial_full_read')}"
++        )
++    except Exception as exc:  # noqa: BLE001
++        print(f"[collector] zeek_behavior err: {exc}")
++
++
+ def configure_scheduler(sched: BlockingScheduler, settings: Settings) -> None:
+     sched.add_job(
+         run_cycle,
+@@ -649,6 +678,16 @@ def configure_scheduler(sched: BlockingScheduler, settings: Settings) -> None:
+             max_instances=1,
+             coalesce=True,
+         )
++    # O11: behaviour fingerprints always on (SPAN logs), even when flow ingest is off.
++    sched.add_job(
++        _run_zeek_behavior,
++        "interval",
++        seconds=max(60, getattr(settings, "zeek_provider_interval_sec", 300)),
++        args=[settings],
++        id="zeek-behavior",
++        max_instances=1,
++        coalesce=True,
++    )
+     if getattr(settings, "speedtest_nightly_enabled", False):
+         try:
+             hour, minute = (
