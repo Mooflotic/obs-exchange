@@ -1,0 +1,402 @@
+diff --git a/observatory/docs/KNOWN_DEBT.md b/observatory/docs/KNOWN_DEBT.md
+index 6599fb0..21cd4aa 100644
+--- a/observatory/docs/KNOWN_DEBT.md
++++ b/observatory/docs/KNOWN_DEBT.md
+@@ -297,7 +297,7 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+ 
+ ## DEBT-SCREENSHOT-HARNESS-FRAGILE
+ 
+-- **Priorità:** media (evidenza UI) — aperto O13D / 0.10.81; **diagnosi radice aggiornata O13D-FIX / 0.10.82**.
++- **Priorità:** media (evidenza UI) — aperto O13D / 0.10.81; **diagnosi radice aggiornata O13D-FIX / 0.10.82**; **auth formalizzata O14 / 0.10.83**; **TTL mint O14-FIX / 0.10.84**.
+ - **Quattro occorrenze (cause diverse in superficie, stessa radice):**
+   1. **O1-FIX** — overflow layout (`body`/`workspace`) → full-page non oltre viewport.
+   2. **O8** — `browser_take_screenshot` MCP ignora Emulation → W×H falsi (`DEBT-SCREENSHOT-HARNESS-FALSE-EVIDENCE`).
+@@ -305,7 +305,16 @@ Voci consapevoli, non in coda di fix immediata. Non “dimenticate”: esplicite
+   4. **O13D** — STOP «credenziali assenti» senza leggere `.env` (`ADMIN_USER`/`ADMIN_PASSWORD` già presenti).
+ - **Causa radice effettiva:** l'harness non era un singolo strumento vincolato nel flusso ondata (dipendenze, login, CDP) ma una checklist opzionale; ogni ondata falliva sul primo anello non verificato.
+ - **Mitigazione O13D-FIX:** `scripts/o13dfix_capture.py` (venv Playwright + login indiretto da `.env` + viewport dsf=1 + redazione privacy DOM all'origine + `o9_png_assert.py --pair`); procedura in `scripts/o9_capture_harness.md`.
+-- **Vietato:** dichiarare «tre breakpoint» senza W×H reali; inventare PNG; usare `browser_take_screenshot` MCP; STOP-credenziali senza aver cercato `ADMIN_USER`/`ADMIN_PASSWORD` (solo nomi/lunghezze).
++- **O14 — autenticazione formalizzata (4ª occorrenza):** il **session mint** è il metodo ufficiale dell’harness (`docs/obs-session-mint.md`); path `/tmp/obs_session_mint.txt`, file cancellato a fine cattura, riga `CAPTURE_PROVENANCE` emessa dall’harness. Nessuna modifica a password/utenti/store.
++- **O14-FIX — vita breve propria:** `CAPTURE_MINT_TTL_SEC=180` (fonte: run harness 36s × 5), indipendente da `SESSION_HOURS` (non toccato). Enforcement su età `mtime` del file mint.
++- **Vietato:** dichiarare «tre breakpoint» senza W×H reali; inventare PNG; usare `browser_take_screenshot` MCP; STOP-credenziali senza aver cercato `ADMIN_USER`/`ADMIN_PASSWORD` (solo nomi/lunghezze); committare/pubblicare il token mint; legare la vita del mint a `SESSION_HOURS`.
++
++## DEBT-INFERENCE-EDGE-CONTRAST
++
++- **Priorità:** bassa (accessibilità UI) — registrato O14-FIX / 0.10.84.
++- **Cosa:** bordo `--inference-edge` (`#6b4aa8`) su `--bg-1` misura **2.609:1**, sotto il **3:1** WCAG 2.1 AA per componenti UI (fonte: WCAG 2.1 AA; misura O14).
++- **Stato:** preesistente, **invariato** in O14/O14-FIX (nessuna variazione visiva autorizzata qui). Non corretto in questa ondata.
++- **Vietato:** «aggiustare» alzando contrasto cambiando il viola senza decisione esplicita di Michele.
+ 
+ ## DEBT-SNMP-PROFILE-PER-SWITCH — APERTO (registrato O2-FIX)
+ 
+diff --git a/observatory/scripts/o13dfix_capture.py b/observatory/scripts/o13dfix_capture.py
+index c0f368a..26c8e13 100644
+--- a/observatory/scripts/o13dfix_capture.py
++++ b/observatory/scripts/o13dfix_capture.py
+@@ -1,7 +1,11 @@
+ #!/usr/bin/env python3
+-"""O13D-FIX D1 — harness O9 + privacy-safe all'origine.
++"""O9 / O13D-FIX / O14 — harness cattura screenshot privacy-safe all'origine.
+ 
+-- Login via ADMIN_USER / ADMIN_PASSWORD da observatory/.env (mai stampati).
++Autenticazione ufficiale (O14/O14-FIX): session mint — vedi docs/obs-session-mint.md.
++- Path mint: /tmp/obs_session_mint.txt (fuori dal repo; cancellato a fine run).
++- Scadenza mint PROPRIA: CAPTURE_MINT_TTL_SEC (default 180), indipendente da SESSION_HOURS.
++  Fonte: run harness misurata 36s (dossier×3 bp) × 5 margine → 180s (O14-FIX).
++- Fallback form login solo se mint assente/rifiutato/scaduto (non è il metodo ufficiale).
+ - Emulation viewport + deviceScaleFactor=1.
+ - Page.screenshot (Playwright → CDP); MAI browser_take_screenshot MCP.
+ - Redazione privacy DOM prima della cattura (IP/MAC/hostname-like/nomi in UI).
+@@ -12,6 +16,7 @@ import os
+ import re
+ import struct
+ import sys
++import time
+ from pathlib import Path
+ 
+ from playwright.sync_api import sync_playwright
+@@ -22,6 +27,11 @@ OUT = ROOT / "docs"
+ WIDTHS = (1280, 768, 390)
+ HEIGHT = 900
+ PREFIX = os.environ.get("OBS_CAPTURE_PREFIX", "obs-o13dfix")
++SESSION_MINT_PATH = Path("/tmp/obs_session_mint.txt")
++# O14-FIX: vita breve propria del mint (secondi). Non leggere/modificare SESSION_HOURS.
++# Misura fonte: wall-clock run dossier-only = 36s (2026-07-29); TTL = 36×5 = 180s.
++CAPTURE_MINT_TTL_SEC = int(os.environ.get("CAPTURE_MINT_TTL_SEC", "180"))
++MEASURED_HARNESS_RUN_SEC = 36
+ 
+ # Rotte fisse; dossier id risolti a runtime (solo id numerici in log).
+ STATIC_ROUTES: list[tuple[str, str]] = [
+@@ -148,11 +158,39 @@ def load_env_creds() -> tuple[str, str]:
+     return user, password
+ 
+ 
++def mint_ttl_sec() -> int:
++    """Harness-only mint lifetime; independent of SESSION_HOURS."""
++    return CAPTURE_MINT_TTL_SEC if CAPTURE_MINT_TTL_SEC > 0 else 180
++
++
+ def load_session_mint() -> dict[str, str] | None:
+-    """o12 format: cookie_name\\ncookie_value\\n[csrf]. Never print values."""
+-    mint = Path("/tmp/obs_session_mint.txt")
++    """Mint file format: cookie_name\\ncookie_value\\n[csrf]. Never print values.
++
++    Rejects mint older than CAPTURE_MINT_TTL_SEC (mtime age).
++    """
++    mint = SESSION_MINT_PATH
+     if not mint.exists():
+         return None
++    # Circoscrizione: path deve restare fuori dall'albero repo
++    try:
++        mint.resolve().relative_to(ROOT.resolve())
++        print(
++            "FAIL session_mint path inside repo tree — refused",
++            file=sys.stderr,
++        )
++        raise SystemExit(3)
++    except ValueError:
++        pass
++    age = time.time() - mint.stat().st_mtime
++    ttl = mint_ttl_sec()
++    if age > ttl:
++        print(
++            f"session_mint expired age_sec={int(age)} ttl_sec={ttl} "
++            f"(measured_run_sec={MEASURED_HARNESS_RUN_SEC})",
++            file=sys.stderr,
++        )
++        return None
++    print(f"session_mint_age_sec={int(age)} ttl_sec={ttl}")
+     lines = [ln.strip() for ln in mint.read_text(encoding="utf-8").splitlines() if ln.strip()]
+     if len(lines) < 2:
+         return None
+@@ -170,6 +208,33 @@ def load_session_mint() -> dict[str, str] | None:
+     return {"name": name, "value": value, "csrf": csrf}
+ 
+ 
++def clear_session_mint() -> None:
++    """Remove mint file after capture — token must not linger on disk."""
++    try:
++        if SESSION_MINT_PATH.exists():
++            SESSION_MINT_PATH.unlink()
++            print(f"session_mint_cleared path={SESSION_MINT_PATH}")
++    except OSError as exc:
++        print(f"warn session_mint_clear type={type(exc).__name__}", file=sys.stderr)
++
++
++def emit_mint_provenance(used: bool) -> str:
++    """Line that screenshot reports must quote — emitted by harness, not hand-written."""
++    ttl = mint_ttl_sec()
++    if used:
++        line = (
++            f"catture autenticate via session mint, scadenza {ttl}s "
++            f"(fonte run harness {MEASURED_HARNESS_RUN_SEC}s×5), token non pubblicato"
++        )
++    else:
++        line = (
++            f"catture autenticate via form login (session mint assente/rifiutato/scaduto); "
++            f"mint_ttl_sec={ttl}; token mint non pubblicato"
++        )
++    print(f"CAPTURE_PROVENANCE\t{line}")
++    return line
++
++
+ def png_wh(path: Path) -> tuple[int, int]:
+     raw = path.read_bytes()
+     return struct.unpack(">II", raw[16:24])
+@@ -181,30 +246,34 @@ def resolve_dossier_ids(page) -> list[tuple[str, str]]:
+     try:
+         data = page.evaluate(
+             """async () => {
+-              const r = await fetch('/api/inventory/devices', { credentials: 'same-origin' });
++              const r = await fetch('/api/assets', { credentials: 'same-origin' });
+               if (!r.ok) return { ok:false, status:r.status };
+               const j = await r.json();
+-              const items = j.items || j.devices || j || [];
++              const items = j.items || j.assets || j.devices || j || [];
+               const arr = Array.isArray(items) ? items : [];
+-              let solo = null, manual = null;
++              let solo = null, manual = null, withInfer = null;
+               for (const d of arr) {
+                 const id = d.id ?? d.asset_id ?? d.device_id;
+                 if (id == null) continue;
+-                const l2 = d.l2_only || d.solo_l2 || d.kind === 'l2_only' || d.presence === 'l2_only'
+-                  || (d.flags && (d.flags.l2_only || d.flags.solo_l2))
+-                  || (d.labels && d.labels.includes && d.labels.includes('solo-L2'));
+-                const nameSrc = (d.name_source || d.name_kind || d.held_name_source || '');
+-                const manualish = /manual/i.test(String(nameSrc)) || d.name_authority >= 100;
++                const ips = d.ips || [];
++                const l2 = (!ips || ips.length === 0);
++                const nameSrc = String(
++                  (d.field_sources && d.field_sources.name && d.field_sources.name.source)
++                  || d.name_source || d.name_kind || d.guess_source || ''
++                );
++                const manualish = /manual/i.test(nameSrc);
++                const inferish = /ai|infer/i.test(nameSrc) || /ai|infer/i.test(String(d.guess_source || ''));
+                 if (l2 && solo == null) solo = id;
+                 if (manualish && manual == null) manual = id;
+-                if (solo != null && manual != null) break;
++                if (inferish && withInfer == null) withInfer = id;
++                if (solo != null && manual != null && withInfer != null) break;
+               }
+-              // fallback: first two distinct ids
+               const ids = arr.map(d => d.id ?? d.asset_id).filter(x => x != null);
+               if (solo == null && ids[0] != null) solo = ids[0];
+               if (manual == null && ids[1] != null) manual = ids[1];
+               if (manual == null) manual = solo;
+-              return { ok:true, solo, manual, n: ids.length };
++              if (withInfer == null) withInfer = manual;
++              return { ok:true, solo, manual, withInfer, n: ids.length };
+             }"""
+         )
+     except Exception as exc:
+@@ -213,13 +282,16 @@ def resolve_dossier_ids(page) -> list[tuple[str, str]]:
+     if not data or not data.get("ok"):
+         print(f"dossier_resolve_fail status={data}", file=sys.stderr)
+         return out
+-    print(f"dossier_resolve n={data.get('n')} solo_id={data.get('solo')} manual_id={data.get('manual')}")
++    print(
++        f"dossier_resolve n={data.get('n')} solo_id={data.get('solo')} "
++        f"manual_id={data.get('manual')} infer_id={data.get('withInfer')}"
++    )
+     if data.get("solo") is not None:
+         out.append(("dossier-solo-l2", f"/dossier/{data['solo']}"))
+-    if data.get("manual") is not None and data.get("manual") != data.get("solo"):
+-        out.append(("dossier-noto", f"/dossier/{data['manual']}"))
+-    elif data.get("manual") is not None:
++    if data.get("manual") is not None:
+         out.append(("dossier-noto", f"/dossier/{data['manual']}"))
++    if data.get("withInfer") is not None:
++        out.append(("dossier", f"/dossier/{data['withInfer']}"))
+     return out
+ 
+ 
+@@ -229,6 +301,18 @@ def capture_one(page, slug: str, route: str, w: int, full_page: bool = False) ->
+     iw = page.evaluate("window.innerWidth")
+     if iw != w:
+         raise SystemExit(f"FAIL innerWidth {iw}!={w} {slug}")
++    # O14: porta il blocco INFERENZA IA in viewport prima dello scatto
++    if slug.startswith("dossier"):
++        try:
++            page.evaluate(
++                """() => {
++                  const el = document.querySelector('#q-inference, [data-o11="inferenza"], .inference');
++                  if (el) el.scrollIntoView({ block: 'center' });
++                }"""
++            )
++            page.wait_for_timeout(300)
++        except Exception as exc:
++            print(f"warn scroll_infer type={type(exc).__name__} slug={slug}", file=sys.stderr)
+     try:
+         page.evaluate(PRIVACY_REDACT_JS)
+     except Exception as exc:
+@@ -246,79 +330,104 @@ def capture_one(page, slug: str, route: str, w: int, full_page: bool = False) ->
+ def main() -> int:
+     user, password = load_env_creds()
+     mint = load_session_mint()
++    mint_used = False
+     OUT.mkdir(parents=True, exist_ok=True)
+-    with sync_playwright() as p:
+-        browser = p.chromium.launch(headless=True)
+-        context = browser.new_context(
+-            viewport={"width": 1280, "height": HEIGHT},
+-            device_scale_factor=1,
+-        )
+-        page = context.new_page()
+-        authed = False
+-        if mint:
+-            cookies = [
+-                {
+-                    "name": mint["name"],
+-                    "value": mint["value"],
+-                    "url": BASE,
+-                    "httpOnly": True,
+-                    "sameSite": "Lax",
+-                }
+-            ]
+-            if mint.get("csrf"):
+-                cookies.append(
++    try:
++        with sync_playwright() as p:
++            launch_kw: dict = {"headless": True}
++            exe = os.environ.get("OBS_PW_EXECUTABLE", "").strip()
++            if exe:
++                launch_kw["executable_path"] = exe
++            browser = p.chromium.launch(**launch_kw)
++            context = browser.new_context(
++                viewport={"width": 1280, "height": HEIGHT},
++                device_scale_factor=1,
++            )
++            page = context.new_page()
++            authed = False
++            if mint:
++                cookies = [
+                     {
+-                        "name": "obs_csrf",
+-                        "value": mint["csrf"],
++                        "name": mint["name"],
++                        "value": mint["value"],
+                         "url": BASE,
+-                        "httpOnly": False,
++                        "httpOnly": True,
+                         "sameSite": "Lax",
+                     }
+-                )
+-            context.add_cookies(cookies)
+-            page.goto(f"{BASE}/oggi", wait_until="domcontentloaded", timeout=60_000)
+-            page.wait_for_timeout(1200)
+-            if "/login" not in page.url:
+-                print(
+-                    f"auth_via=session_mint cookie_name={mint['name']} "
+-                    f"value_len={len(mint['value'])} csrf_len={len(mint.get('csrf') or '')}"
+-                )
+-                authed = True
+-            else:
+-                print("session_mint rejected; falling back to form login")
+-        if not authed:
+-            page.goto(f"{BASE}/login", wait_until="domcontentloaded", timeout=60_000)
+-            page.wait_for_timeout(600)
+-            page.locator("#login-username, input[autocomplete='username']").first.fill(user)
+-            page.locator("#login-password, input[type='password']").first.fill(password)
+-            # Login.vue: <button class="primary"> inside <form> — not type=submit
+-            page.locator("form button.primary, form button").first.click()
+-            page.wait_for_timeout(2500)
+-            if "/login" in page.url:
+-                print(
+-                    "FAIL login: ADMIN_* present in .env but rejected by /api/auth/login; "
+-                    "session mint absent/expired. "
+-                    "searched=ADMIN_USER,ADMIN_PASSWORD (+ /tmp/obs_session_mint.txt)",
+-                    file=sys.stderr,
+-                )
+-                return 1
+-            print("auth_via=form_login")
++                ]
++                if mint.get("csrf"):
++                    cookies.append(
++                        {
++                            "name": "obs_csrf",
++                            "value": mint["csrf"],
++                            "url": BASE,
++                            "httpOnly": False,
++                            "sameSite": "Lax",
++                        }
++                    )
++                context.add_cookies(cookies)
++                page.goto(f"{BASE}/oggi", wait_until="domcontentloaded", timeout=60_000)
++                page.wait_for_timeout(1200)
++                if "/login" not in page.url:
++                    print(
++                        f"auth_via=session_mint cookie_name={mint['name']} "
++                        f"value_len={len(mint['value'])} csrf_len={len(mint.get('csrf') or '')}"
++                    )
++                    authed = True
++                    mint_used = True
++                else:
++                    print("session_mint rejected; falling back to form login")
++            if not authed:
++                page.goto(f"{BASE}/login", wait_until="domcontentloaded", timeout=60_000)
++                page.wait_for_timeout(600)
++                page.locator("#login-username, input[autocomplete='username']").first.fill(user)
++                page.locator("#login-password, input[type='password']").first.fill(password)
++                # Login.vue: <button class="primary"> inside <form> — not type=submit
++                page.locator("form button.primary, form button").first.click()
++                page.wait_for_timeout(2500)
++                if "/login" in page.url:
++                    print(
++                        "FAIL login: ADMIN_* present in .env but rejected by /api/auth/login; "
++                        "session mint absent/expired. "
++                        f"searched=ADMIN_USER,ADMIN_PASSWORD (+ {SESSION_MINT_PATH})",
++                        file=sys.stderr,
++                    )
++                    return 1
++                print("auth_via=form_login")
++
++            emit_mint_provenance(used=mint_used)
++
++            only = {
++                s.strip()
++                for s in os.environ.get("OBS_CAPTURE_ONLY", "").split(",")
++                if s.strip()
++            }
++            routes = list(STATIC_ROUTES)
++            # need a logged-in page first for dossier resolve
++            page.goto(f"{BASE}/oggi", wait_until="networkidle", timeout=90_000)
++            page.wait_for_timeout(800)
++            routes.extend(resolve_dossier_ids(page))
++            if only:
++                def _match(slug: str) -> bool:
++                    for pref in only:
++                        if slug == pref or slug.startswith(pref + "-") or slug.startswith(pref):
++                            return True
++                    return False
+ 
+-        routes = list(STATIC_ROUTES)
+-        # need inventory-ish page first for dossier resolve
+-        page.goto(f"{BASE}/oggi", wait_until="networkidle", timeout=90_000)
+-        page.wait_for_timeout(800)
+-        routes.extend(resolve_dossier_ids(page))
++                routes = [(s, r) for s, r in routes if _match(s)]
++                print(f"capture_filter only={sorted(only)} matched={[s for s, _ in routes]}")
+ 
+-        for slug, route in routes:
+-            page.goto(f"{BASE}{route}", wait_until="networkidle", timeout=90_000)
+-            page.wait_for_timeout(1000)
+-            for w in WIDTHS:
+-                full = slug.startswith("dossier") and w == 390
+-                capture_one(page, slug, route, w, full_page=full)
+-        browser.close()
+-    print("CAPTURE_DONE")
+-    return 0
++            for slug, route in routes:
++                page.goto(f"{BASE}{route}", wait_until="networkidle", timeout=90_000)
++                page.wait_for_timeout(1000)
++                for w in WIDTHS:
++                    full = slug.startswith("dossier") and w == 390
++                    capture_one(page, slug, route, w, full_page=full)
++            browser.close()
++        print("CAPTURE_DONE")
++        return 0
++    finally:
++        clear_session_mint()
+ 
+ 
+ if __name__ == "__main__":
