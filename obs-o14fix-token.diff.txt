@@ -1,0 +1,437 @@
+diff --git a/observatory/scripts/color_literal_gate.py b/observatory/scripts/color_literal_gate.py
+index bfb945a..2c28c6e 100644
+--- a/observatory/scripts/color_literal_gate.py
++++ b/observatory/scripts/color_literal_gate.py
+@@ -1,12 +1,11 @@
+ #!/usr/bin/env python3
+-"""O13D / O13D-FIX — gate hard-coded color literals in web/src.
++"""Color literal gate for web/src.
+ 
+-- Token file ``assets/matrix.css``: hex/rgba OK (CSS variables source of truth).
++- ``assets/matrix.css`` (token file): hex/rgba ammessi SOLO in dichiarazioni
++  ``--nome: valore``. Literal in regole = FAIL (O14-FIX).
+ - ``var(--token, #fallback)`` fallbacks are ignored (not new palette).
+ - ``*.test.js`` ignored (assert token values).
+-- Other literals FAIL unless the file is in ALLOWLIST with a reason.
+-- O13D-FIX D3: canvas greens → ``var(--ok)`` / runtime token read; AI purple
+-  without ``--ai`` token is FERMO (allowlisted, not invented).
++- Other files: literals FAIL unless the file is in ALLOWLIST with a reason.
+ 
+ Exit 0 = pass; exit 1 = fail.
+ """
+@@ -21,19 +20,10 @@ from pathlib import Path
+ ROOT = Path(__file__).resolve().parents[1]
+ WEB_SRC = ROOT / "web" / "src"
+ 
+-TOKEN_FILES = {
+-    "assets/matrix.css",
+-}
++TOKEN_FILE = "assets/matrix.css"
+ 
+ # relative path -> reason (must cite residual class; no empty reasons)
+ ALLOWLIST: dict[str, str] = {
+-    "components/AiInferenceLabel.vue": (
+-        "FERMO D3: AI purple (#9b7bd4/#c4a0ff/#6b4aa8) — nessun token --ai in matrix.css; "
+-        "non inventare palette"
+-    ),
+-    "components/AssetDecide.vue": (
+-        "FERMO D3: AI purple su .src.ai (#c4a0ff/#6b4aa8/#1a1228) — nessun --ai"
+-    ),
+     "components/AssetHabits.vue": (
+         "habits probable/soft (#c47a2c/#6a9cc8/#c45c5c) — non canvas/AI; deferred oltre D3"
+     ),
+@@ -53,13 +43,6 @@ ALLOWLIST: dict[str, str] = {
+     "components/SpanSensorCard.vue": (
+         "span status rgba — deferred oltre canvas/AI"
+     ),
+-    "components/TopologyBranch.vue": (
+-        "FERMO D3: solo residual AP purple #9b82e8 (nessun token ruolo-AP); "
+-        "verdi albero → var(--ok) in O13D-FIX"
+-    ),
+-    "components/ui/VisualBadge.vue": (
+-        "FERMO D3: inference badge purple (#c4b5fd/#8b7cf7) — nessun --ai"
+-    ),
+     "views/Actions.vue": (
+         "actions glow rgba(61,255,138,*) — residual decorativo non-canvas; deferred"
+     ),
+@@ -67,14 +50,14 @@ ALLOWLIST: dict[str, str] = {
+         "dashboard residual rgba — deferred oltre canvas/AI"
+     ),
+     "views/Dossier.vue": (
+-        "FERMO D3: blocco INFERENZA IA purple rgba(155,123,212)/#c4b0e8 — nessun --ai; "
+-        "warn/ok già su token dove possibile"
++        "warn/state chips rgba + fallback var(--warn/--ok,#…) — non AI; "
++        "INFERENZA IA → var(--inference*) in O14/O14-FIX"
+     ),
+     "views/Gs308.vue": (
+         "gs308 status rgba / #9ab0e0 infer — deferred oltre canvas/AI"
+     ),
+     "views/Inventory.vue": (
+-        "FERMO D3: AI purple inventory (#c4a0ff/#6b4aa8) — nessun --ai"
++        "overlay/modal rgba residui — non AI; chrome AI → token in O14-FIX"
+     ),
+     "views/Monitoring.vue": (
+         "monitoring glow rgba(61,255,138,*) — deferred oltre canvas/AI"
+@@ -87,20 +70,19 @@ ALLOWLIST: dict[str, str] = {
+         "ok greens già var(--ok); deferred oltre canvas/AI"
+     ),
+     "views/Suggestions.vue": (
+-        "FERMO D3: AI purple (#c4a0ff/#6b4aa8/#1a1228) — nessun --ai"
++        "badge.enrich hex (#122028/#3a6a88/#8ec8e8) — non AI; "
++        "badge.ai → var(--inference*) in O14-FIX"
+     ),
+     "views/Timeline.vue": (
+         "timeline glow rgba(61,255,138,*) — deferred oltre canvas/AI"
+     ),
+-    "views/Topology.vue": (
+-        "FERMO D3: residual AP/group purple #9b82e8/#775fbd/#131323 (nessun token ruolo-AP); "
+-        "verdi griglia/edge/glow → var(--ok) in O13D-FIX"
+-    ),
+ }
+ 
+ HEX_RE = re.compile(r"#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b")
+ RGB_RE = re.compile(r"\brgba?\(\s*[^)]+\)")
+ VAR_RE = re.compile(r"var\([^)]*\)")
++# custom property declaration: optional whitespace, --name, :, value
++PROP_DECL_RE = re.compile(r"^\s*--[a-zA-Z0-9_-]+\s*:")
+ 
+ SCAN_SUFFIXES = {".vue", ".css", ".js", ".ts", ".scss"}
+ 
+@@ -120,9 +102,38 @@ def iter_files():
+         yield p
+ 
+ 
++def _line_comment(st: str) -> bool:
++    return st.startswith("//") or st.startswith("*") or st.startswith("/*")
++
++
++def scan_token_file(path: Path) -> list[tuple[int, str, str]]:
++    """matrix.css: literals only allowed on custom-property declaration lines."""
++    try:
++        text = path.read_text(encoding="utf-8")
++    except UnicodeDecodeError:
++        return []
++    stripped = _strip_var_fallbacks(text)
++    hits: list[tuple[int, str, str]] = []
++    for i, (oline, sline) in enumerate(
++        zip(text.splitlines(), stripped.splitlines()), 1
++    ):
++        st = oline.strip()
++        if not st or _line_comment(st):
++            continue
++        if PROP_DECL_RE.match(oline):
++            continue
++        for m in HEX_RE.finditer(sline):
++            hits.append((i, m.group(0), oline.strip()[:120]))
++        for m in RGB_RE.finditer(sline):
++            hits.append((i, m.group(0), oline.strip()[:120]))
++    return hits
++
++
+ def scan_file(path: Path) -> list[tuple[int, str, str]]:
+     rel = path.relative_to(WEB_SRC).as_posix()
+-    if rel in TOKEN_FILES or rel in ALLOWLIST:
++    if rel == TOKEN_FILE:
++        return scan_token_file(path)
++    if rel in ALLOWLIST:
+         return []
+     try:
+         text = path.read_text(encoding="utf-8")
+@@ -130,11 +141,11 @@ def scan_file(path: Path) -> list[tuple[int, str, str]]:
+         return []
+     stripped = _strip_var_fallbacks(text)
+     hits: list[tuple[int, str, str]] = []
+-    orig_lines = text.splitlines()
+-    strip_lines = stripped.splitlines()
+-    for i, (oline, sline) in enumerate(zip(orig_lines, strip_lines), 1):
++    for i, (oline, sline) in enumerate(
++        zip(text.splitlines(), stripped.splitlines()), 1
++    ):
+         st = oline.strip()
+-        if st.startswith("//") or st.startswith("*") or st.startswith("/*"):
++        if _line_comment(st):
+             continue
+         for m in HEX_RE.finditer(sline):
+             hits.append((i, m.group(0), oline.strip()[:120]))
+@@ -144,7 +155,8 @@ def scan_file(path: Path) -> list[tuple[int, str, str]]:
+ 
+ 
+ def self_test_inject() -> int:
+-    """Prove gate fails on injected literal and passes after remove."""
++    """Prove inject fails in Vue and in matrix.css rule; remove passes."""
++    # 1) Vue inject (pre-existing path)
+     tmp = WEB_SRC / "_o13d_color_gate_inject_tmp.vue"
+     try:
+         tmp.write_text(
+@@ -153,16 +165,40 @@ def self_test_inject() -> int:
+         )
+         hits = scan_file(tmp)
+         if not hits:
+-            print("SELFTEST FAIL: inject not detected")
++            print("SELFTEST FAIL: vue inject not detected")
+             return 1
+-        print(f"SELFTEST inject detected: {hits[0]}")
++        print(f"SELFTEST vue inject detected: {hits[0]}")
+     finally:
+         if tmp.exists():
+             tmp.unlink()
+     if tmp.exists():
+-        print("SELFTEST FAIL: tmp not removed")
++        print("SELFTEST FAIL: vue tmp not removed")
++        return 1
++
++    # 2) matrix.css rule inject (O14-FIX negative control)
++    matrix = WEB_SRC / TOKEN_FILE
++    if not matrix.exists():
++        print("SELFTEST FAIL: matrix.css missing")
++        return 1
++    original = matrix.read_text(encoding="utf-8")
++    marker = "/* O14FIX_COLOR_GATE_INJECT */"
++    inject = f"\n.o14fix-gate-inject {{ color: #ff00aa; {marker} }}\n"
++    try:
++        matrix.write_text(original + inject, encoding="utf-8")
++        hits = scan_token_file(matrix)
++        if not any(marker in h[2] or h[1].lower() == "#ff00aa" for h in hits):
++            print("SELFTEST FAIL: matrix.css rule inject not detected")
++            print(f"  hits_sample={hits[:3]}")
++            return 1
++        print(f"SELFTEST matrix rule inject detected: {hits[0]}")
++    finally:
++        matrix.write_text(original, encoding="utf-8")
++    # after restore must be clean
++    post = scan_token_file(matrix)
++    if post:
++        print(f"SELFTEST FAIL: matrix.css still dirty after remove ({len(post)} hits)")
+         return 1
+-    print("SELFTEST PASS: inject fails, remove passes")
++    print("SELFTEST PASS: inject fails (vue+matrix rule), remove passes")
+     return 0
+ 
+ 
+@@ -185,7 +221,6 @@ def main() -> int:
+             if not path.exists():
+                 print(f"{rel}: MISSING | {reason}")
+                 continue
+-            # temporary un-allowlist scan
+             text = path.read_text(encoding="utf-8")
+             stripped = _strip_var_fallbacks(text)
+             first = None
+@@ -193,7 +228,7 @@ def main() -> int:
+                 zip(text.splitlines(), stripped.splitlines()), 1
+             ):
+                 st = oline.strip()
+-                if st.startswith("//") or st.startswith("*") or st.startswith("/*"):
++                if _line_comment(st):
+                     continue
+                 m = HEX_RE.search(sline) or RGB_RE.search(sline)
+                 if m:
+@@ -211,15 +246,15 @@ def main() -> int:
+             all_hits.append((p.relative_to(WEB_SRC).as_posix(), line_no, lit, ctx))
+ 
+     if all_hits:
+-        print(f"FAIL: {len(all_hits)} hard-coded color literal(s) outside token/allowlist")
++        print(f"FAIL: {len(all_hits)} hard-coded color literal(s) outside allowlist/token-decl")
+         for rel, ln, lit, ctx in all_hits[:60]:
+             print(f"  {rel}:{ln}: {lit}  |  {ctx}")
+         if len(all_hits) > 60:
+             print(f"  ... +{len(all_hits) - 60} more")
+         return 1
+ 
+-    print("PASS: no hard-coded color literals outside token/allowlist files")
+-    print(f"  token_files={sorted(TOKEN_FILES)}")
++    print("PASS: no hard-coded color literals outside allowlist; matrix.css decls-only")
++    print(f"  token_file={TOKEN_FILE} (literals only in --custom-property decls)")
+     print(f"  allowlist_count={len(ALLOWLIST)}")
+     return 0
+ 
+diff --git a/observatory/web/src/api.js b/observatory/web/src/api.js
+index ca47f6b..8e4d95a 100644
+--- a/observatory/web/src/api.js
++++ b/observatory/web/src/api.js
+@@ -281,6 +281,8 @@ export const api = {
+   "obs-o13c-fix-marker": true,
+   "obs-o13d-marker": true,
+   "obs-o13dfix-marker": true,
++  "obs-o14-marker": true,
++  "obs-o14fix-marker": true,
+   egressAck: (body) =>
+     request("/api/egress/ack", { method: "POST", body }),
+   egressBaseline: () => request("/api/egress/baseline"),
+diff --git a/observatory/web/src/assets/matrix.css b/observatory/web/src/assets/matrix.css
+index eae2d02..570b9df 100644
+--- a/observatory/web/src/assets/matrix.css
++++ b/observatory/web/src/assets/matrix.css
+@@ -21,6 +21,28 @@
+   --attn: #d9a441;
+   --alert: #e06b52;
+   --accent: #6bc5db;
++  /* O14/O14-FIX — inferenza (I1) e AP/group (distinti; stessi hex di produzione) */
++  --inference: #9b7bd4;
++  --inference-fg: #c4a0ff;
++  --inference-fg-soft: #c4b0e8;
++  --inference-edge: #6b4aa8;
++  --inference-well-bg: #1a1228;
++  --inference-badge: #8b7cf7;
++  --inference-badge-fg: #c4b5fd;
++  --ap-border: #9b82e8;
++  --group-border: #775fbd;
++  --group-bg: #131323;
++  /* Badge / attenzione (bordi dedicati, già in produzione) */
++  --badge-warn-border: #6a5520;
++  --badge-danger-border: #803333;
++  --attn-ring: rgba(230, 195, 92, 0.45);
++  /* Ombre / overlay UI (ruolo, non tinta di marca) */
++  --shadow-sticky-action: rgba(0, 0, 0, 0.25);
++  --drawer-backdrop: rgba(0, 0, 0, 0.45);
++  --drawer-shadow: rgba(0, 0, 0, 0.5);
++  --helptip-shadow: rgba(0, 0, 0, 0.55);
++  --spark-down-glow: rgba(255, 107, 107, 0.35);
++  --scanline-stripe: rgba(0, 0, 0, 0.05);
+ 
+   /* Tipografia */
+   --font-sans: Inter, -apple-system, system-ui, sans-serif;
+@@ -334,7 +356,7 @@ button.primary {
+   position: sticky;
+   right: 0;
+   background: var(--bg-1);
+-  box-shadow: -6px 0 8px rgba(0, 0, 0, 0.25);
++  box-shadow: -6px 0 8px var(--shadow-sticky-action);
+   z-index: 1;
+ }
+ .table-scroll-x .table td .truncate,
+@@ -371,14 +393,14 @@ button.primary {
+   text-overflow: ellipsis;
+   vertical-align: middle;
+ }
+-.badge.new { color: var(--warn); border-color: #6a5520; }
++.badge.new { color: var(--warn); border-color: var(--badge-warn-border); }
+ .badge.up { color: var(--ok); border-color: var(--accent-dim); }
+-.badge.down { color: var(--danger); border-color: #803333; }
+-.badge.unknown, .badge.degraded, .badge.pending { color: var(--warn); border-color: #6a5520; }
++.badge.down { color: var(--danger); border-color: var(--badge-danger-border); }
++.badge.unknown, .badge.degraded, .badge.pending { color: var(--warn); border-color: var(--badge-warn-border); }
+ .badge.info { color: var(--muted); }
+-.badge.warn { color: var(--warn); border-color: #6a5520; }
++.badge.warn { color: var(--warn); border-color: var(--badge-warn-border); }
+ .badge.ok { color: var(--ok); border-color: var(--accent-dim); }
+-.badge.danger { color: var(--danger); border-color: #803333; }
++.badge.danger { color: var(--danger); border-color: var(--badge-danger-border); }
+ 
+ .toolbar { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.75rem; align-items: center; }
+ .toolbar input, .toolbar select { min-width: 160px; }
+@@ -394,7 +416,7 @@ button.primary {
+ .drawer-backdrop {
+   position: fixed;
+   inset: 0;
+-  background: rgba(0, 0, 0, 0.45);
++  background: var(--drawer-backdrop);
+   z-index: 10000;
+   animation: fadeIn 0.18s ease;
+ }
+@@ -408,7 +430,7 @@ button.primary {
+   z-index: 10001;
+   background: linear-gradient(180deg, var(--bg-1), var(--bg-0));
+   border-left: 1px solid var(--accent-dim);
+-  box-shadow: -20px 0 60px rgba(0,0,0,0.5), 0 0 40px color-mix(in srgb, var(--accent) 8%, transparent);
++  box-shadow: -20px 0 60px var(--drawer-shadow), 0 0 40px color-mix(in srgb, var(--accent) 8%, transparent);
+   display: flex;
+   flex-direction: column;
+   animation: slideIn 0.22s ease;
+@@ -493,7 +515,7 @@ button.primary {
+   background: var(--bg-2);
+ }
+ .callout.warn {
+-  border-color: rgba(230, 195, 92, 0.45);
++  border-color: var(--attn-ring);
+   color: var(--warn);
+ }
+ 
+@@ -557,7 +579,7 @@ button.primary {
+   letter-spacing: 0;
+   text-transform: none;
+   line-height: 1.4;
+-  box-shadow: 0 10px 28px rgba(0,0,0,0.55);
++  box-shadow: 0 10px 28px var(--helptip-shadow);
+   white-space: normal;
+   pointer-events: none;
+ }
+@@ -620,7 +642,7 @@ button.primary {
+ }
+ .topo-node.switch { border-color: var(--accent-dim); box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 10%, transparent); }
+ .topo-node.endpoint { border-color: var(--border-2); }
+-.topo-node.critical { box-shadow: 0 0 0 1px rgba(230,195,92,0.45); }
++.topo-node.critical { box-shadow: 0 0 0 1px var(--attn-ring); }
+ .topo-node.on-path {
+   border-color: var(--accent) !important;
+   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent), 0 0 22px color-mix(in srgb, var(--accent) 35%, transparent);
+@@ -690,7 +712,7 @@ button.primary {
+   background: var(--data-idle);
+ }
+ .spark i.u { background: var(--ok); box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 35%, transparent); }
+-.spark i.d { background: var(--danger); box-shadow: 0 0 6px rgba(255,107,107,0.35); }
++.spark i.d { background: var(--danger); box-shadow: 0 0 6px var(--spark-down-glow); }
+ .spark i.w { background: var(--warn); }
+ .spark-lg {
+   display: flex;
+@@ -722,6 +744,38 @@ button.primary {
+ }
+ .seen-meta strong { color: var(--muted); font-weight: 500; font-family: var(--mono); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; display: block; }
+ 
++/*
++ * O14-FIX — chrome INFERENZA/AI/AP via token (stessi hex; AI ≠ AP).
++ */
++.obs-inference-fg { color: var(--inference-fg); }
++.obs-inference-fg-soft { color: var(--inference-fg-soft); }
++.obs-inference-edge { border-color: var(--inference-edge); }
++.obs-inference-well {
++  color: var(--inference-fg);
++  border-color: var(--inference-edge);
++  background: var(--inference-well-bg);
++}
++.obs-inference-tag-chrome {
++  color: var(--inference-fg);
++  border: 0.5px solid var(--inference-edge);
++  background: color-mix(in srgb, var(--inference-edge) 18%, transparent);
++}
++.obs-inference-spin-chrome {
++  border: 2px solid var(--inference-edge);
++  border-top-color: var(--inference-fg);
++}
++.obs-inference-badge {
++  color: var(--inference-badge-fg);
++  background: color-mix(in srgb, var(--inference-badge) 14%, var(--bg-1));
++  border: 0.5px solid color-mix(in srgb, var(--inference-badge) 35%, transparent);
++}
++.obs-inference-ap { border-color: var(--ap-border); }
++.obs-inference-group {
++  border-color: var(--group-border);
++  border-style: dashed;
++  background: var(--group-bg);
++}
++
+ .ai-box textarea { width: 100%; min-height: 88px; resize: vertical; margin-top: 0.5rem; }
+ .ai-status {
+   display: flex;
+@@ -802,7 +856,7 @@ button.primary {
+   position: fixed;
+   inset: 0;
+   z-index: 3;
+-  background: linear-gradient(transparent 50%, rgba(0,0,0,0.05) 50%);
++  background: linear-gradient(transparent 50%, var(--scanline-stripe) 50%);
+   background-size: 100% 3px;
+   opacity: 0.25;
+ }
+diff --git a/observatory/web/src/observatoryUx.js b/observatory/web/src/observatoryUx.js
+index 9b297af..61e7fc5 100644
+--- a/observatory/web/src/observatoryUx.js
++++ b/observatory/web/src/observatoryUx.js
+@@ -476,6 +476,9 @@ export const OBS_O13CFIX_MARKER = "obs-o13c-fix-marker";
+ export const OBS_O13D_MARKER = "obs-o13d-marker";
+ /** Bundle proof string for OBS-UX O13D-FIX deploy markers. */
+ export const OBS_O13DFIX_MARKER = "obs-o13dfix-marker";
++/** Bundle proof string for OBS-UX O14 deploy markers. */
++export const OBS_O14_MARKER = "obs-o14-marker";
++export const OBS_O14FIX_MARKER = "obs-o14fix-marker";
+ 
+ /** NameProposal / hostname source rank — ai sotto manual (I5). */
+ export const PROPOSAL_SOURCE_RANK = {
