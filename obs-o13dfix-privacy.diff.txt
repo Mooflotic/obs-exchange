@@ -1,0 +1,60 @@
+# obs-o13dfix-privacy.diff.txt
+# Tema: redazione privacy O13D (C4) + regola applicata.
+# Esclusioni dichiarate (binari PNG non serializzati nel diff testuale):
+#   - observatory/docs/obs-o13d-redact-o13c-oggi-1280.png  (binary; pixel redact O13D)
+#   - observatory/docs/obs-o13d-redact-o13c-oggi-768.png
+#   - observatory/docs/obs-o13d-redact-o13c-oggi-390.png
+#   - observatory/docs/obs-o13d-redact-o13c-dossier-1280.png
+#   - observatory/docs/obs-o13d-redact-o13c-dossier-768.png
+#   - observatory/docs/obs-o13d-redact-o13c-dossier-390.png
+# Motivo esclusione dal corpo diff: PNG binari; revisionabili come artefatti share, non come unified diff.
+# Regola privacy: nessun IP/MAC/hostname/SNI/nome dispositivo negli artefatti pubblici; solo aggregati/token anonimi.
+#
+diff --git a/observatory/docs/obs-o13cfix.md b/observatory/docs/obs-o13cfix.md
+index f3b7fdd..2f2ac05 100644
+--- a/observatory/docs/obs-o13cfix.md
++++ b/observatory/docs/obs-o13cfix.md
+@@ -1,5 +1,7 @@
+ # OBS-EGRESS O13C-FIX — baseline prematura (0.10.80)
+ 
++> **Share / redact:** per obs-exchange usare [`obs-o13cfix-redatto.md`](obs-o13cfix-redatto.md) e i PNG `obs-o13d-redact-o13c-*.png` (**[Corretto in O13D]**). Non riscrivere i secret via da questo report privato.
++
+ Correzione chiusura baseline su `deferred==0`, criteri B2 misurati (O13B M1), switch novità distinto da ingest, emissioni su ready falso marcate e ripescabili. Ramo lavoro locale; STOP per review; nessun merge su main; FA 251 intatto; `FLOW_INGEST` / `ZEEK_PROVIDER` non toccati.
+ 
+ **VERSION:** 0.10.80  
+diff --git a/observatory/docs/obs-o13cfix-redatto.md b/observatory/docs/obs-o13cfix-redatto.md
+new file mode 100644
+--- /dev/null
++++ b/observatory/docs/obs-o13cfix-redatto.md
+@@ -0,0 +1,31 @@
++# O13C-FIX — redazione per share (obs-exchange)
++
++**[Corretto in O13D]** — le immagini O13C originali restano nel repo privato; per il canale pubblico usare solo le copie pixelate.
++
++## Token / marker
++
++| token | valore |
++|-------|--------|
++| VERSION | 0.10.81 (O13D) / 0.10.80 (O13C-FIX) |
++| o13cfix_marker | `obs-o13c-fix` |
++| o13d_marker | `obs-o13d` |
++| DEBT | `DEBT-O13C-PREMATURE-BASELINE` (chiuso in FIX); `DEBT-SCREENSHOT-HARNESS-FRAGILE` (aperto O13D) |
++
++## PNG redatti (exchange-safe)
++
++Pixelazione full-frame (blocchi ~10–12 px): layout riconoscibile, testo/IP/MAC/nomi illeggibili.
++
++| file | sorgente privata |
++|------|------------------|
++| `obs-o13d-redact-o13c-oggi-1280.png` | `obs-o13c-oggi-1280.png` |
++| `obs-o13d-redact-o13c-oggi-768.png` | `obs-o13c-oggi-768.png` |
++| `obs-o13d-redact-o13c-oggi-390.png` | `obs-o13c-oggi-390.png` |
++| `obs-o13d-redact-o13c-dossier-1280.png` | `obs-o13c-dossier-1280.png` |
++| `obs-o13d-redact-o13c-dossier-768.png` | `obs-o13c-dossier-768.png` |
++| `obs-o13d-redact-o13c-dossier-390.png` | `obs-o13c-dossier-390.png` |
++
++## Politica
++
++- Canale pubblico: **solo** `obs-exchange` (`DEBT-PUBLIC-CHANNEL-EXPOSURE`).
++- Non pubblicare i PNG O13C non redatti.
++- Report O13C-FIX privato può restare con dettagli; per exchange usare questo file + redatti.
