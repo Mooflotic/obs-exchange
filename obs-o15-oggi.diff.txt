@@ -1,0 +1,603 @@
+=== Oggi.vue (O15 hunks via full file diff vs HEAD filtered) ===
+diff --git a/observatory/scripts/o13dfix_capture.py b/observatory/scripts/o13dfix_capture.py
+index c0f368a..73bf763 100644
+--- a/observatory/scripts/o13dfix_capture.py
++++ b/observatory/scripts/o13dfix_capture.py
+@@ -2 +2 @@
+-"""O13D-FIX D1 — harness O9 + privacy-safe all'origine.
++"""O9 / O13D-FIX / O14 — harness cattura screenshot privacy-safe all'origine.
+@@ -4 +4,5 @@
+-- Login via ADMIN_USER / ADMIN_PASSWORD da observatory/.env (mai stampati).
++Autenticazione ufficiale (O14/O14-FIX): session mint — vedi docs/obs-session-mint.md.
++- Path mint: /tmp/obs_session_mint.txt (fuori dal repo; cancellato a fine run).
++- Scadenza mint PROPRIA: CAPTURE_MINT_TTL_SEC (default 180), indipendente da SESSION_HOURS.
++  Fonte: run harness misurata 36s (dossier×3 bp) × 5 margine → 180s (O14-FIX).
++- Fallback form login solo se mint assente/rifiutato/scaduto (non è il metodo ufficiale).
+@@ -14,0 +19 @@ import sys
++import time
+@@ -24,0 +30,5 @@ PREFIX = os.environ.get("OBS_CAPTURE_PREFIX", "obs-o13dfix")
++SESSION_MINT_PATH = Path("/tmp/obs_session_mint.txt")
++# O14-FIX: vita breve propria del mint (secondi). Non leggere/modificare SESSION_HOURS.
++# Misura fonte: wall-clock run dossier-only = 36s (2026-07-29); TTL = 36×5 = 180s.
++CAPTURE_MINT_TTL_SEC = int(os.environ.get("CAPTURE_MINT_TTL_SEC", "180"))
++MEASURED_HARNESS_RUN_SEC = 36
+@@ -62 +72 @@ PRIVACY_REDACT_JS = r"""
+-  const uiExact = /^(Oggi|Inventario|Mappa|Dossier|Topologia|Monitoring|Timeline|Actions|Runbook|Findings|Incidents|Dashboard|Plant|Impianto|GS308|Entra|Login|Menu|Chiudi|Apri|Salva|Annulla|Accedi|LAN OBSERVATORY|Priorità|Regola|Impatto|Certezza|Freschezza|Legenda|Copertura|Baseline|Ingresso|Uscita)$/i;
++  const uiExact = /^(Oggi|Inventario|Mappa|Dossier|Topologia|Monitoring|Timeline|Actions|Runbook|Findings|Incidents|Dashboard|Plant|Impianto|GS308|Entra|Login|Menu|Chiudi|Apri|Salva|Annulla|Accedi|LAN OBSERVATORY|Priorità|Regola|Impatto|Certezza|Freschezza|Legenda|Copertura|Baseline|Ingresso|Uscita|APPROFONDISCI|APPLICA|NON APPLICARE|Adotta|Conferma|Correggi|Assegna|Ignora|Rifiuta|Archivia|Riconosci|Tieni manuale|Evidenza|Fatti osservati|Dati mancanti o non correnti|Interpretazione deterministica|INFERENZA IA|Legenda neutra|Significato per colonna|Proposte|Da verificare)$/i;
+@@ -150,0 +161,5 @@ def load_env_creds() -> tuple[str, str]:
++def mint_ttl_sec() -> int:
++    """Harness-only mint lifetime; independent of SESSION_HOURS."""
++    return CAPTURE_MINT_TTL_SEC if CAPTURE_MINT_TTL_SEC > 0 else 180
++
++
+@@ -152,2 +167,5 @@ def load_session_mint() -> dict[str, str] | None:
+-    """o12 format: cookie_name\\ncookie_value\\n[csrf]. Never print values."""
+-    mint = Path("/tmp/obs_session_mint.txt")
++    """Mint file format: cookie_name\\ncookie_value\\n[csrf]. Never print values.
++
++    Rejects mint older than CAPTURE_MINT_TTL_SEC (mtime age).
++    """
++    mint = SESSION_MINT_PATH
+@@ -155,0 +174,20 @@ def load_session_mint() -> dict[str, str] | None:
++    # Circoscrizione: path deve restare fuori dall'albero repo
++    try:
++        mint.resolve().relative_to(ROOT.resolve())
++        print(
++            "FAIL session_mint path inside repo tree — refused",
++            file=sys.stderr,
++        )
++        raise SystemExit(3)
++    except ValueError:
++        pass
++    age = time.time() - mint.stat().st_mtime
++    ttl = mint_ttl_sec()
++    if age > ttl:
++        print(
++            f"session_mint expired age_sec={int(age)} ttl_sec={ttl} "
++            f"(measured_run_sec={MEASURED_HARNESS_RUN_SEC})",
++            file=sys.stderr,
++        )
++        return None
++    print(f"session_mint_age_sec={int(age)} ttl_sec={ttl}")
+@@ -172,0 +211,27 @@ def load_session_mint() -> dict[str, str] | None:
++def clear_session_mint() -> None:
++    """Remove mint file after capture — token must not linger on disk."""
++    try:
++        if SESSION_MINT_PATH.exists():
++            SESSION_MINT_PATH.unlink()
++            print(f"session_mint_cleared path={SESSION_MINT_PATH}")
++    except OSError as exc:
++        print(f"warn session_mint_clear type={type(exc).__name__}", file=sys.stderr)
++
++
++def emit_mint_provenance(used: bool) -> str:
++    """Line that screenshot reports must quote — emitted by harness, not hand-written."""
++    ttl = mint_ttl_sec()
++    if used:
++        line = (
++            f"catture autenticate via session mint, scadenza {ttl}s "
++            f"(fonte run harness {MEASURED_HARNESS_RUN_SEC}s×5), token non pubblicato"
++        )
++    else:
++        line = (
++            f"catture autenticate via form login (session mint assente/rifiutato/scaduto); "
++            f"mint_ttl_sec={ttl}; token mint non pubblicato"
++        )
++    print(f"CAPTURE_PROVENANCE\t{line}")
++    return line
++
++
+@@ -184 +249 @@ def resolve_dossier_ids(page) -> list[tuple[str, str]]:
+-              const r = await fetch('/api/inventory/devices', { credentials: 'same-origin' });
++              const r = await fetch('/api/assets', { credentials: 'same-origin' });
+@@ -187 +252 @@ def resolve_dossier_ids(page) -> list[tuple[str, str]]:
+-              const items = j.items || j.devices || j || [];
++              const items = j.items || j.assets || j.devices || j || [];
+@@ -189 +254 @@ def resolve_dossier_ids(page) -> list[tuple[str, str]]:
+-              let solo = null, manual = null;
++              let solo = null, manual = null, withInfer = null;
+@@ -193,5 +258,8 @@ def resolve_dossier_ids(page) -> list[tuple[str, str]]:
+-                const l2 = d.l2_only || d.solo_l2 || d.kind === 'l2_only' || d.presence === 'l2_only'
+-                  || (d.flags && (d.flags.l2_only || d.flags.solo_l2))
+-                  || (d.labels && d.labels.includes && d.labels.includes('solo-L2'));
+-                const nameSrc = (d.name_source || d.name_kind || d.held_name_source || '');
+-                const manualish = /manual/i.test(String(nameSrc)) || d.name_authority >= 100;
++                const ips = d.ips || [];
++                const l2 = (!ips || ips.length === 0);
++                const nameSrc = String(
++                  (d.field_sources && d.field_sources.name && d.field_sources.name.source)
++                  || d.name_source || d.name_kind || d.guess_source || ''
++                );
++                const manualish = /manual/i.test(nameSrc);
++                const inferish = /ai|infer/i.test(nameSrc) || /ai|infer/i.test(String(d.guess_source || ''));
+@@ -200 +268,2 @@ def resolve_dossier_ids(page) -> list[tuple[str, str]]:
+-                if (solo != null && manual != null) break;
++                if (inferish && withInfer == null) withInfer = id;
++                if (solo != null && manual != null && withInfer != null) break;
+@@ -202 +270,0 @@ def resolve_dossier_ids(page) -> list[tuple[str, str]]:
+-              // fallback: first two distinct ids
+@@ -207 +275,2 @@ def resolve_dossier_ids(page) -> list[tuple[str, str]]:
+-              return { ok:true, solo, manual, n: ids.length };
++              if (withInfer == null) withInfer = manual;
++              return { ok:true, solo, manual, withInfer, n: ids.length };
+@@ -216 +285,4 @@ def resolve_dossier_ids(page) -> list[tuple[str, str]]:
+-    print(f"dossier_resolve n={data.get('n')} solo_id={data.get('solo')} manual_id={data.get('manual')}")
++    print(
++        f"dossier_resolve n={data.get('n')} solo_id={data.get('solo')} "
++        f"manual_id={data.get('manual')} infer_id={data.get('withInfer')}"
++    )
+@@ -219,3 +291 @@ def resolve_dossier_ids(page) -> list[tuple[str, str]]:
+-    if data.get("manual") is not None and data.get("manual") != data.get("solo"):
+-        out.append(("dossier-noto", f"/dossier/{data['manual']}"))
+-    elif data.get("manual") is not None:
++    if data.get("manual") is not None:
+@@ -222,0 +293,2 @@ def resolve_dossier_ids(page) -> list[tuple[str, str]]:
++    if data.get("withInfer") is not None:
++        out.append(("dossier", f"/dossier/{data['withInfer']}"))
+@@ -231,0 +304,12 @@ def capture_one(page, slug: str, route: str, w: int, full_page: bool = False) ->
++    # O14: porta il blocco INFERENZA IA in viewport prima dello scatto
++    if slug.startswith("dossier"):
++        try:
++            page.evaluate(
++                """() => {
++                  const el = document.querySelector('#q-inference, [data-o11="inferenza"], .inference');
++                  if (el) el.scrollIntoView({ block: 'center' });
++                }"""
++            )
++            page.wait_for_timeout(300)
++        except Exception as exc:
++            print(f"warn scroll_infer type={type(exc).__name__} slug={slug}", file=sys.stderr)
+@@ -248,0 +333 @@ def main() -> int:
++    mint_used = False
+@@ -250,20 +335,15 @@ def main() -> int:
+-    with sync_playwright() as p:
+-        browser = p.chromium.launch(headless=True)
+-        context = browser.new_context(
+-            viewport={"width": 1280, "height": HEIGHT},
+-            device_scale_factor=1,
+-        )
+-        page = context.new_page()
+-        authed = False
+-        if mint:
+-            cookies = [
+-                {
+-                    "name": mint["name"],
+-                    "value": mint["value"],
+-                    "url": BASE,
+-                    "httpOnly": True,
+-                    "sameSite": "Lax",
+-                }
+-            ]
+-            if mint.get("csrf"):
+-                cookies.append(
++    try:
++        with sync_playwright() as p:
++            launch_kw: dict = {"headless": True}
++            exe = os.environ.get("OBS_PW_EXECUTABLE", "").strip()
++            if exe:
++                launch_kw["executable_path"] = exe
++            browser = p.chromium.launch(**launch_kw)
++            context = browser.new_context(
++                viewport={"width": 1280, "height": HEIGHT},
++                device_scale_factor=1,
++            )
++            page = context.new_page()
++            authed = False
++            if mint:
++                cookies = [
+@@ -271,2 +351,2 @@ def main() -> int:
+-                        "name": "obs_csrf",
+-                        "value": mint["csrf"],
++                        "name": mint["name"],
++                        "value": mint["value"],
+@@ -274 +354 @@ def main() -> int:
+-                        "httpOnly": False,
++                        "httpOnly": True,
+@@ -277,29 +357,59 @@ def main() -> int:
+-                )
+-            context.add_cookies(cookies)
+-            page.goto(f"{BASE}/oggi", wait_until="domcontentloaded", timeout=60_000)
+-            page.wait_for_timeout(1200)
+-            if "/login" not in page.url:
+-                print(
+-                    f"auth_via=session_mint cookie_name={mint['name']} "
+-                    f"value_len={len(mint['value'])} csrf_len={len(mint.get('csrf') or '')}"
+-                )
+-                authed = True
+-            else:
+-                print("session_mint rejected; falling back to form login")
+-        if not authed:
+-            page.goto(f"{BASE}/login", wait_until="domcontentloaded", timeout=60_000)
+-            page.wait_for_timeout(600)
+-            page.locator("#login-username, input[autocomplete='username']").first.fill(user)
+-            page.locator("#login-password, input[type='password']").first.fill(password)
+-            # Login.vue: <button class="primary"> inside <form> — not type=submit
+-            page.locator("form button.primary, form button").first.click()
+-            page.wait_for_timeout(2500)
+-            if "/login" in page.url:
+-                print(
+-                    "FAIL login: ADMIN_* present in .env but rejected by /api/auth/login; "
+-                    "session mint absent/expired. "
+-                    "searched=ADMIN_USER,ADMIN_PASSWORD (+ /tmp/obs_session_mint.txt)",
+-                    file=sys.stderr,
+-                )
+-                return 1
+-            print("auth_via=form_login")
++                ]
++                if mint.get("csrf"):
++                    cookies.append(
++                        {
++                            "name": "obs_csrf",
++                            "value": mint["csrf"],
++                            "url": BASE,
++                            "httpOnly": False,
++                            "sameSite": "Lax",
++                        }
++                    )
++                context.add_cookies(cookies)
++                page.goto(f"{BASE}/oggi", wait_until="domcontentloaded", timeout=60_000)
++                page.wait_for_timeout(1200)
++                if "/login" not in page.url:
++                    print(
++                        f"auth_via=session_mint cookie_name={mint['name']} "
++                        f"value_len={len(mint['value'])} csrf_len={len(mint.get('csrf') or '')}"
++                    )
++                    authed = True
++                    mint_used = True
++                else:
++                    print("session_mint rejected; falling back to form login")
++            if not authed:
++                page.goto(f"{BASE}/login", wait_until="domcontentloaded", timeout=60_000)
++                page.wait_for_timeout(600)
++                page.locator("#login-username, input[autocomplete='username']").first.fill(user)
++                page.locator("#login-password, input[type='password']").first.fill(password)
++                # Login.vue: <button class="primary"> inside <form> — not type=submit
++                page.locator("form button.primary, form button").first.click()
++                page.wait_for_timeout(2500)
++                if "/login" in page.url:
++                    print(
++                        "FAIL login: ADMIN_* present in .env but rejected by /api/auth/login; "
++                        "session mint absent/expired. "
++                        f"searched=ADMIN_USER,ADMIN_PASSWORD (+ {SESSION_MINT_PATH})",
++                        file=sys.stderr,
++                    )
++                    return 1
++                print("auth_via=form_login")
++
++            emit_mint_provenance(used=mint_used)
++
++            only = {
++                s.strip()
++                for s in os.environ.get("OBS_CAPTURE_ONLY", "").split(",")
++                if s.strip()
++            }
++            routes = list(STATIC_ROUTES)
++            # need a logged-in page first for dossier resolve
++            page.goto(f"{BASE}/oggi", wait_until="networkidle", timeout=90_000)
++            page.wait_for_timeout(800)
++            routes.extend(resolve_dossier_ids(page))
++            if only:
++                def _match(slug: str) -> bool:
++                    for pref in only:
++                        if slug == pref or slug.startswith(pref + "-") or slug.startswith(pref):
++                            return True
++                    return False
+@@ -307,5 +417,2 @@ def main() -> int:
+-        routes = list(STATIC_ROUTES)
+-        # need inventory-ish page first for dossier resolve
+-        page.goto(f"{BASE}/oggi", wait_until="networkidle", timeout=90_000)
+-        page.wait_for_timeout(800)
+-        routes.extend(resolve_dossier_ids(page))
++                routes = [(s, r) for s, r in routes if _match(s)]
++                print(f"capture_filter only={sorted(only)} matched={[s for s, _ in routes]}")
+@@ -313,9 +420,12 @@ def main() -> int:
+-        for slug, route in routes:
+-            page.goto(f"{BASE}{route}", wait_until="networkidle", timeout=90_000)
+-            page.wait_for_timeout(1000)
+-            for w in WIDTHS:
+-                full = slug.startswith("dossier") and w == 390
+-                capture_one(page, slug, route, w, full_page=full)
+-        browser.close()
+-    print("CAPTURE_DONE")
+-    return 0
++            for slug, route in routes:
++                page.goto(f"{BASE}{route}", wait_until="networkidle", timeout=90_000)
++                page.wait_for_timeout(1000)
++                for w in WIDTHS:
++                    # O15: oggi full_page per mostrare matrice + tre pulsanti sotto
++                    full = (slug.startswith("dossier") and w == 390) or slug == "oggi"
++                    capture_one(page, slug, route, w, full_page=full)
++            browser.close()
++        print("CAPTURE_DONE")
++        return 0
++    finally:
++        clear_session_mint()
+diff --git a/observatory/web/src/api.js b/observatory/web/src/api.js
+index ca47f6b..8b69e0a 100644
+--- a/observatory/web/src/api.js
++++ b/observatory/web/src/api.js
+@@ -283,0 +284,3 @@ export const api = {
++  "obs-o14-marker": true,
++  "obs-o14fix-marker": true,
++  "obs-o15-marker": true,
+diff --git a/observatory/web/src/observatoryUx.js b/observatory/web/src/observatoryUx.js
+index 9b297af..d23bc50 100644
+--- a/observatory/web/src/observatoryUx.js
++++ b/observatory/web/src/observatoryUx.js
+@@ -478,0 +479,4 @@ export const OBS_O13DFIX_MARKER = "obs-o13dfix-marker";
++/** Bundle proof string for OBS-UX O14 deploy markers. */
++export const OBS_O14_MARKER = "obs-o14-marker";
++export const OBS_O14FIX_MARKER = "obs-o14fix-marker";
++export const OBS_O15_MARKER = "obs-o15-marker";
+diff --git a/observatory/web/src/views/Oggi.vue b/observatory/web/src/views/Oggi.vue
+index 9e4b79f..e9909fc 100644
+--- a/observatory/web/src/views/Oggi.vue
++++ b/observatory/web/src/views/Oggi.vue
+@@ -62 +62,6 @@ import ViewStateBanner from "../components/ViewStateBanner.vue";
+-import { isAiSource, fritzPresenceOutageFromReliability } from "../observatoryUx";
++import OggiDecisionMatrix from "../components/OggiDecisionMatrix.vue";
++import {
++  isAiSource,
++  fritzPresenceOutageFromReliability,
++  OBS_O15_MARKER,
++} from "../observatoryUx";
+@@ -63,0 +69,8 @@ import FritzOutageBanner from "../components/FritzOutageBanner.vue";
++import {
++  evidenceFromNameProposal,
++  evidenceFromChassis,
++  evidenceFromMove,
++  evidenceFromFdb,
++  matrixActionsFor,
++  isDecisionMatrixEligible,
++} from "../oggiDecisionMatrix.js";
+@@ -445,0 +459,55 @@ function openTopology(id) {
++/** O15 — binding matrice ↔ destinazioni esistenti (nessuna nuova rotta). */
++function openDeepenDest(dest, assetId, fdbCard = null) {
++  if (dest === "plant") {
++    if (fdbCard) {
++      fdbActionClick(fdbCard, "dossier");
++      return;
++    }
++    openPlant(assetId);
++    return;
++  }
++  if (dest === "topology") {
++    openTopology(assetId);
++    return;
++  }
++  if (fdbCard) {
++    fdbActionClick(fdbCard, "dossier");
++    return;
++  }
++  openDossier(assetId);
++}
++
++function nameMatrixBundle(row) {
++  const evidence = evidenceFromNameProposal(row);
++  const actions = matrixActionsFor("name", { evidence, row });
++  // Tre vie reali: deepen + apply eseguibile + dismiss (F-9).
++  if (!showAdoptButton(row)) {
++    return { evidence, actions, eligible: false };
++  }
++  return { evidence, actions, eligible: isDecisionMatrixEligible(actions) };
++}
++
++function chassisMatrixBundle(card) {
++  const evidence = evidenceFromChassis(card);
++  const actions = matrixActionsFor("chassis", { evidence, card });
++  return { evidence, actions, eligible: isDecisionMatrixEligible(actions) };
++}
++
++function moveMatrixBundle(item) {
++  const evidence = evidenceFromMove(item);
++  const actions = matrixActionsFor("move", { evidence, item });
++  return { evidence, actions, eligible: isDecisionMatrixEligible(actions) };
++}
++
++function fdbMatrixBundle(card) {
++  const evidence = evidenceFromFdb(card, fdbFields(card));
++  const actions = matrixActionsFor("fdb", { evidence, card });
++  return { evidence, actions, eligible: isDecisionMatrixEligible(actions) };
++}
++
++function onChassisMatrixApply(card, act) {
++  if (act?.handler === "adopt") return adoptChassisProposal(card);
++  if (act?.handler === "confirm") return confirmInferenceAsManual(card);
++  if (act?.handler === "rename") return openRename(card);
++}
++
+@@ -964 +1032 @@ onUnmounted(() => {
+-  <div class="oggi">
++  <div class="oggi" :data-o15="OBS_O15_MARKER">
+@@ -1157 +1225,4 @@ onUnmounted(() => {
+-                  <div><dt>Azione raccomandata</dt><dd>{{ fdbFields(card).action }}</dd></div>
++                  <div v-if="!fdbMatrixBundle(card).eligible">
++                    <dt>Cosa verificare</dt>
++                    <dd>{{ fdbFields(card).action }}</dd>
++                  </div>
+@@ -1159,0 +1231,9 @@ onUnmounted(() => {
++                <OggiDecisionMatrix
++                  v-if="fdbMatrixBundle(card).eligible"
++                  :evidence="fdbMatrixBundle(card).evidence"
++                  :actions="fdbMatrixBundle(card).actions"
++                  :busy="busyKey.startsWith('fdb-' + card.uid)"
++                  @deepen="openDeepenDest($event.dest, card.device?.asset_id, card)"
++                  @apply="fdbActionClick(card, 'acknowledge')"
++                  @dismiss="fdbActionClick(card, 'ignore')"
++                />
+@@ -1161 +1241 @@ onUnmounted(() => {
+-                  v-if="card.inference"
++                  v-else-if="card.inference"
+@@ -1185 +1265 @@ onUnmounted(() => {
+-                <div class="oggi-actions">
++                <div v-if="!fdbMatrixBundle(card).eligible" class="oggi-actions">
+@@ -1191 +1270,0 @@ onUnmounted(() => {
+-                    :class="{ primary: act.id === 'acknowledge' || act.id === 'dossier' }"
+@@ -1559 +1637,0 @@ onUnmounted(() => {
+-                  <div><dt>Azione raccomandata</dt><dd>{{ item.action }}</dd></div>
+@@ -1562,0 +1641,9 @@ onUnmounted(() => {
++                <OggiDecisionMatrix
++                  v-if="moveMatrixBundle(item).eligible"
++                  :evidence="moveMatrixBundle(item).evidence"
++                  :actions="moveMatrixBundle(item).actions"
++                  :busy="busyKey === item.key"
++                  @deepen="openDeepenDest($event.dest, item.asset_id)"
++                  @apply="approveMove(item)"
++                  @dismiss="rejectMove(item)"
++                />
+@@ -1565 +1652 @@ onUnmounted(() => {
+-                <div class="oggi-actions">
++                <div v-if="!moveMatrixBundle(item).eligible" class="oggi-actions">
+@@ -1568 +1655 @@ onUnmounted(() => {
+-                    class="oggi-btn primary"
++                    class="oggi-btn"
+@@ -1585,6 +1671,0 @@ onUnmounted(() => {
+-                  <button type="button" class="oggi-btn ghost" @click="openPlant(item.asset_id)">
+-                    Impianto
+-                  </button>
+-                  <button type="button" class="oggi-btn ghost" @click="openTopology(item.asset_id)">
+-                    Topologia
+-                  </button>
+@@ -1648 +1729,4 @@ onUnmounted(() => {
+-                  <div><dt>Azione raccomandata</dt><dd>{{ chassisFields(card).action }}</dd></div>
++                  <div v-if="!chassisMatrixBundle(card).eligible">
++                    <dt>Cosa verificare</dt>
++                    <dd>{{ chassisFields(card).action }}</dd>
++                  </div>
+@@ -1651,0 +1736,9 @@ onUnmounted(() => {
++                <OggiDecisionMatrix
++                  v-if="chassisMatrixBundle(card).eligible"
++                  :evidence="chassisMatrixBundle(card).evidence"
++                  :actions="chassisMatrixBundle(card).actions"
++                  :busy="busyKey === card.key"
++                  @deepen="openDeepenDest('dossier', card.primary_asset_id)"
++                  @apply="onChassisMatrixApply(card, $event)"
++                  @dismiss="keepManualRejectProposal(card)"
++                />
+@@ -1665 +1758 @@ onUnmounted(() => {
+-                    class="oggi-btn primary"
++                    class="oggi-btn"
+@@ -1682 +1775 @@ onUnmounted(() => {
+-                <div class="oggi-actions">
++                <div v-if="!chassisMatrixBundle(card).eligible" class="oggi-actions">
+@@ -1686 +1779 @@ onUnmounted(() => {
+-                    class="oggi-btn primary"
++                    class="oggi-btn"
+@@ -1695 +1788 @@ onUnmounted(() => {
+-                    class="oggi-btn primary"
++                    class="oggi-btn"
+@@ -1708 +1801 @@ onUnmounted(() => {
+-                    class="oggi-btn primary"
++                    class="oggi-btn"
+@@ -1756 +1849 @@ onUnmounted(() => {
+-            <h3 class="oggi-h3">Adotta consigliati</h3>
++            <h3 class="oggi-h3">Proposte</h3>
+@@ -1760,0 +1854 @@ onUnmounted(() => {
++              data-o15-family="proposta_nome"
+@@ -1792 +1885,0 @@ onUnmounted(() => {
+-                    <div><dt>Azione raccomandata</dt><dd>{{ problemFields(row).action }}</dd></div>
+@@ -1795,0 +1889,9 @@ onUnmounted(() => {
++                  <OggiDecisionMatrix
++                    v-if="nameMatrixBundle(row).eligible"
++                    :evidence="nameMatrixBundle(row).evidence"
++                    :actions="nameMatrixBundle(row).actions"
++                    :busy="busyKey === row.key"
++                    @deepen="openDeepenDest($event.dest, row.asset_id)"
++                    @apply="adoptRow(row)"
++                    @dismiss="rejectRow(row)"
++                  />
+@@ -1797,29 +1898,0 @@ onUnmounted(() => {
+-                <template #value>
+-                  <div class="oggi-actions">
+-                    <button
+-                      type="button"
+-                      class="oggi-btn primary"
+-                      :disabled="busyKey === row.key"
+-                      @click="adoptRow(row)"
+-                    >
+-                      adotta
+-                    </button>
+-                    <button
+-                      type="button"
+-                      class="oggi-btn"
+-                      :disabled="busyKey === row.key"
+-                      @click="rejectRow(row)"
+-                    >
+-                      ignora
+-                    </button>
+-                    <button type="button" class="oggi-btn ghost" @click="openDossier(row.asset_id)">
+-                      Dossier
+-                    </button>
+-                    <button type="button" class="oggi-btn ghost" @click="openPlant(row.asset_id)">
+-                      Impianto
+-                    </button>
+-                    <button type="button" class="oggi-btn ghost" @click="openTopology(row.asset_id)">
+-                      Topologia
+-                    </button>
+-                  </div>
+-                </template>
+@@ -1875 +1947,0 @@ onUnmounted(() => {
+-                        <div><dt>Azione raccomandata</dt><dd>{{ problemFields(row).action }}</dd></div>
+@@ -1878,0 +1951,9 @@ onUnmounted(() => {
++                      <OggiDecisionMatrix
++                        v-if="nameMatrixBundle(row).eligible"
++                        :evidence="nameMatrixBundle(row).evidence"
++                        :actions="nameMatrixBundle(row).actions"
++                        :busy="busyKey === row.key"
++                        @deepen="openDeepenDest($event.dest, row.asset_id)"
++                        @apply="adoptRow(row)"
++                        @dismiss="rejectRow(row)"
++                      />
+@@ -1881 +1962 @@ onUnmounted(() => {
+-                      <div class="oggi-actions">
++                      <div v-if="!nameMatrixBundle(row).eligible" class="oggi-actions">
+@@ -1884 +1965 @@ onUnmounted(() => {
+-                          class="oggi-btn primary"
++                          class="oggi-btn"
+=== UNTRACKED oggiO15Responsive.test.js ===
+diff --git a/web/src/oggiO15Responsive.test.js b/web/src/oggiO15Responsive.test.js
+new file mode 100644
+index 0000000..991cee8
+--- /dev/null
++++ b/web/src/oggiO15Responsive.test.js
+@@ -0,0 +1,40 @@
++/**
++ * O15 — vincolo responsive: CSS matrice senza carosello/tab/accordion.
++ */
++import assert from "node:assert/strict";
++import { readFileSync } from "node:fs";
++import { dirname, join } from "node:path";
++import { fileURLToPath } from "node:url";
++import { describe, it } from "node:test";
++
++const here = dirname(fileURLToPath(import.meta.url));
++const vue = readFileSync(
++  join(here, "components/OggiDecisionMatrix.vue"),
++  "utf8",
++);
++const style = vue.includes("<style")
++  ? vue.slice(vue.indexOf("<style"))
++  : vue;
++
++describe("O15 responsive matrix CSS", () => {
++  it("traspone a ≤768 con tre celle in linea", () => {
++    assert.match(style, /@media \(max-width: 768px\)/);
++    assert.match(style, /grid-template-areas:/);
++    assert.match(style, /"c1 c2 c3"/);
++    assert.match(style, /\.odm-actions/);
++    assert.match(style, /grid-template-columns: 1fr 1fr 1fr/);
++    // vietati pattern strutturali che nascondono alternative (non commenti)
++    for (const bad of ["carousel", "swiper", "tab-panel", "v-tabs", "role=\"tab\""]) {
++      assert.equal(style.toLowerCase().includes(bad), false, bad);
++    }
++  });
++
++  it("pulsanti senza classe primary nel markup azioni", () => {
++    const tmpl = vue.slice(0, vue.indexOf("<style"));
++    const actions = tmpl.slice(tmpl.indexOf('data-o15="matrix-actions"'));
++    assert.match(actions, /data-o15-col="approfondisci"/);
++    assert.match(actions, /data-o15-col="applica"/);
++    assert.match(actions, /data-o15-col="non_applicare"/);
++    assert.equal(/class="[^"]*primary/.test(actions), false);
++  });
++});
