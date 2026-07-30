@@ -1,0 +1,87 @@
+{
+  "wave": "O29-V",
+  "captures": {
+    "topology-bclosed-1280": {
+      "file": "obs-o29-v-topology-bclosed-1280.png",
+      "w": 1280,
+      "h": 4136
+    },
+    "topology-bopen-1280": {
+      "file": "obs-o29-v-topology-bopen-1280.png",
+      "w": 1280,
+      "h": 7390
+    },
+    "topology-bclosed-768": {
+      "file": "obs-o29-v-topology-bclosed-768.png",
+      "w": 768,
+      "h": 4847
+    },
+    "topology-bopen-768": {
+      "file": "obs-o29-v-topology-bopen-768.png",
+      "w": 768,
+      "h": 8101
+    },
+    "topology-bclosed-390": {
+      "file": "obs-o29-v-topology-bclosed-390.png",
+      "w": 390,
+      "h": 7275
+    },
+    "topology-bopen-390": {
+      "file": "obs-o29-v-topology-bopen-390.png",
+      "w": 390,
+      "h": 10528
+    },
+    "gs308-1280": {
+      "file": "obs-o29-v-gs308-1280.png",
+      "w": 1280,
+      "h": 1666
+    }
+  },
+  "gs308_post": {
+    "ok": "#4fb477",
+    "inference_fg": "#c4a0ff",
+    "samples": [
+      {
+        "sel": ".tag.fact",
+        "prop": "backgroundColor",
+        "computed": "color(srgb 0.309804 0.705882 0.466667 / 0.18)",
+        "ok": "#4fb477",
+        "inf": "#c4a0ff"
+      },
+      {
+        "sel": ".tag.fact",
+        "prop": "color",
+        "computed": "rgb(79, 180, 119)",
+        "ok": "#4fb477",
+        "inf": "#c4a0ff"
+      },
+      {
+        "sel": ".tag.infer",
+        "prop": "color",
+        "computed": "rgb(196, 160, 255)",
+        "ok": "#4fb477",
+        "inf": "#c4a0ff"
+      },
+      {
+        "sel": ".tag.infer",
+        "prop": "backgroundColor",
+        "computed": "color(srgb 0.607843 0.482353 0.831373 / 0.18)",
+        "ok": "#4fb477",
+        "inf": "#c4a0ff"
+      }
+    ]
+  },
+  "g3": {
+    "scripts": [
+      "http://192.168.1.3:8080/assets/index-CVzNuM8H.js"
+    ],
+    "markers": {
+      "url": "http://192.168.1.3:8080/assets/index-CVzNuM8H.js",
+      "len": 485011,
+      "has_ok_mix": true,
+      "has_old_6ecf": false,
+      "has_old_9ab0": false,
+      "has_inference_fg": true
+    }
+  }
+}
