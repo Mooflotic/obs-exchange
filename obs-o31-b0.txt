@@ -1,0 +1,41 @@
+===== 0.1 git log --oneline -8 feature/obs-currency =====
+c6f5aca docs(observatory): report O30 (principale 3b7690f8b258d923dad4e7563dcb42189c0ea694)
+3b7690f feat(observatory): O30 omogeneità colori + Topology B (0.10.96)
+5e72dd2 feat(observatory): O29 GS308 token realign + mappa inventory (0.10.95)
+76fabaa feat(observatory): O28 a11y dialogo disposition + chrome N=0 (0.10.94)
+b251a43 docs(observatory): O27 chiusura UX lifecycle — test E1.2 + catture (no prodotto)
+ffd85ae docs(observatory): report O26 (principale 3f9ab1f)
+3f9ab1f feat(observatory): O26 Oggi lifecycle dispositions (0.10.93)
+638d115 docs(observatory): report O25 (principale 4571e45)
+
+===== git rev-parse HEAD =====
+c6f5aca1b1784dd1771e75ec6ec11fd5ced58f66
+
+===== git fetch origin && git rev-parse origin/feature/obs-currency =====
+c6f5aca1b1784dd1771e75ec6ec11fd5ced58f66
+
+===== discendenza da 3b7690f8b258d923dad4e7563dcb42189c0ea694? =====
+YES
+
+===== HEAD tip vs O30 principale =====
+c6f5aca docs(observatory): report O30 (principale 3b7690f8b258d923dad4e7563dcb42189c0ea694)
+3b7690f feat(observatory): O30 omogeneità colori + Topology B (0.10.96)
+
+===== 0.2 COMMIT-PINNED housekeeping O30 =====
+COLOR_SEMANTICS.md
+  rete-palazzo @ 3b7690f (intro) sha256=3051ccbbecfd1ac82a2c72d53552bde5f4ec6c46706257e92511eb6926b5bc64 wc=42
+  obs-exchange pin=344a2a144616377dcda79ad20c290226a2d3e205
+  URL=https://raw.githubusercontent.com/Mooflotic/obs-exchange/344a2a144616377dcda79ad20c290226a2d3e205/COLOR_SEMANTICS.md
+  curl200 + local==raw PINNED: YES
+  main tip vs pin: IDENTICO (nessuna divergenza)
+
+obs-o30.md
+  rete-palazzo @ 3b7690f (prima versione report) sha256=fd5e26c2…1f227c wc=279
+  rete-palazzo @ c6f5aca (report con hash cite) sha256=6bd5a38183fb3ccbf186672ad1f43b7ea68761337d1d87f57ff5d98a4ac7a5f4 wc=279
+  NOTA: 3b7690f vs c6f5aca DIVERGONO di 1 riga (sezione hash commit principale)
+  stato riportato O30 finale = c6f5aca / exchange 625b25320de92936d526348c63cc6f7809bbfc0c
+  URL=https://raw.githubusercontent.com/Mooflotic/obs-exchange/625b25320de92936d526348c63cc6f7809bbfc0c/obs-o30.md
+  curl200 + local(c6f5aca)==raw PINNED: YES
+  main tip vs pin 625b253: IDENTICO al momento della verifica O31
+
+GATE 0.1: PASS (discendenza 3b7690f YES; HEAD=origin=c6f5aca)
