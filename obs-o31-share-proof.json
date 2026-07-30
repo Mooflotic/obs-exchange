@@ -1,146 +1,146 @@
 [
   {
     "name": "obs-o31.md",
-    "exchange_commit": "b87634c82a3a3d3308870ea581640298c7491425",
-    "sha256": "943ac15358b6d9cf3b6bcaa38f5ead6d808fe9050dc075636317435ed8a56403",
-    "wc_or_bin": 181,
+    "exchange_commit": "6d0e8658800a6fc221d794e9157fff9ed3461e33",
+    "sha256": "0ec16318edee86d76105981e558c7ff4a22d4dbe391f6cd620a2a7ee41375a8f",
     "match": true,
-    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/b87634c82a3a3d3308870ea581640298c7491425/obs-o31.md"
+    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/6d0e8658800a6fc221d794e9157fff9ed3461e33/obs-o31.md",
+    "wc": 193
   },
   {
     "name": "obs-o31-A.json",
     "exchange_commit": "4f8e59ac8ca476bcd34694a63d07262160980281",
     "sha256": "08e446d1b7ac3afeba3579fcd83f5007acf93ca99139e35d44c161a620d89eea",
-    "wc_or_bin": 68,
     "match": true,
-    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/4f8e59ac8ca476bcd34694a63d07262160980281/obs-o31-A.json"
+    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/4f8e59ac8ca476bcd34694a63d07262160980281/obs-o31-A.json",
+    "wc": 68
   },
   {
     "name": "obs-o31-b0.txt",
     "exchange_commit": "1540565719823e4ba754a4ae1483f9b4c8ca0287",
     "sha256": "da0809b5bcd76b2c69fcb66f757cfb26b0b72930a3dc54b2d1be849e5de35fde",
-    "wc_or_bin": 41,
     "match": true,
-    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/1540565719823e4ba754a4ae1483f9b4c8ca0287/obs-o31-b0.txt"
+    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/1540565719823e4ba754a4ae1483f9b4c8ca0287/obs-o31-b0.txt",
+    "wc": 41
   },
   {
     "name": "obs-o31-measure.json",
     "exchange_commit": "088c8f995388e315e73e2758dcb5865e88f08ef3",
     "sha256": "bde9511c663eb5441324397c0153095af77f818559ed561d4470d13fc8c1ff7b",
-    "wc_or_bin": 340,
     "match": true,
-    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/088c8f995388e315e73e2758dcb5865e88f08ef3/obs-o31-measure.json"
+    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/088c8f995388e315e73e2758dcb5865e88f08ef3/obs-o31-measure.json",
+    "wc": 340
   },
   {
     "name": "obs-o31-design-language.md",
     "exchange_commit": "b14f8a8df40985f080d3f78df49577268b570dd0",
     "sha256": "eb383b93e20d8b14ae26db6b83cc2c5b7dc2fd18ea3ee22593dd50b41c4af665",
-    "wc_or_bin": 83,
     "match": true,
-    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/b14f8a8df40985f080d3f78df49577268b570dd0/obs-o31-design-language.md"
+    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/b14f8a8df40985f080d3f78df49577268b570dd0/obs-o31-design-language.md",
+    "wc": 83
   },
   {
     "name": "PROCESS_NOTES.md",
     "exchange_commit": "7aca93ac72b6360987688ddfa24a9f06b7315eee",
     "sha256": "2c785c9a552e320bed62746d8801f1f5fc434900b3d5f4129196f5044b491994",
-    "wc_or_bin": 25,
     "match": true,
-    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/7aca93ac72b6360987688ddfa24a9f06b7315eee/PROCESS_NOTES.md"
+    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/7aca93ac72b6360987688ddfa24a9f06b7315eee/PROCESS_NOTES.md",
+    "wc": 25
   },
   {
     "name": "obs-o31-a3-baseline-1280.png",
     "exchange_commit": "45aabb69e37e44ca93326c74badf4c381eb0deef",
     "sha256": "a654935f0d3193a1dc5c0376825f0ffaa25b5d0a18e64113d7e3d8bc2d656f78",
-    "wc_or_bin": "bin",
     "match": true,
-    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/45aabb69e37e44ca93326c74badf4c381eb0deef/obs-o31-a3-baseline-1280.png"
+    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/45aabb69e37e44ca93326c74badf4c381eb0deef/obs-o31-a3-baseline-1280.png",
+    "wc": null
   },
   {
     "name": "obs-o31-a3-a_neutral-1280.png",
     "exchange_commit": "e642e4acb13d24161f8b325ce93c9dea6b699dbf",
     "sha256": "ea21ecc496d5a98cdab22f856576b90a1e62328ffde57545e5a7a9dfa1cef517",
-    "wc_or_bin": "bin",
     "match": true,
-    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/e642e4acb13d24161f8b325ce93c9dea6b699dbf/obs-o31-a3-a_neutral-1280.png"
+    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/e642e4acb13d24161f8b325ce93c9dea6b699dbf/obs-o31-a3-a_neutral-1280.png",
+    "wc": null
   },
   {
     "name": "obs-o31-a3-b_accent-1280.png",
     "exchange_commit": "e89462b4d372ba8b0e6f1ec1200c7394dc98b229",
     "sha256": "c890ccb25f96b1da90ee94f5431dfcc212347ffd0df41338f881c5e311d2eba8",
-    "wc_or_bin": "bin",
     "match": true,
-    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/e89462b4d372ba8b0e6f1ec1200c7394dc98b229/obs-o31-a3-b_accent-1280.png"
+    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/e89462b4d372ba8b0e6f1ec1200c7394dc98b229/obs-o31-a3-b_accent-1280.png",
+    "wc": null
   },
   {
     "name": "obs-o31-a3-c_structure-1280.png",
     "exchange_commit": "7b71c77003381b1f16001e93bbc608d84ca43983",
     "sha256": "eeb79285db2f48e709ce61323a1b535ccac03eecc081ceb6d1521b075d8f703f",
-    "wc_or_bin": "bin",
     "match": true,
-    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/7b71c77003381b1f16001e93bbc608d84ca43983/obs-o31-a3-c_structure-1280.png"
+    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/7b71c77003381b1f16001e93bbc608d84ca43983/obs-o31-a3-c_structure-1280.png",
+    "wc": null
   },
   {
     "name": "obs-o31-b-oggi-1280.png",
     "exchange_commit": "1de58bb3409a69129f14b7094866c4c0d03d0a62",
     "sha256": "bcd7af08227e894dc57bad97500191d81507c7e48b4525726aee6bbaaa705450",
-    "wc_or_bin": "bin",
     "match": true,
-    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/1de58bb3409a69129f14b7094866c4c0d03d0a62/obs-o31-b-oggi-1280.png"
+    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/1de58bb3409a69129f14b7094866c4c0d03d0a62/obs-o31-b-oggi-1280.png",
+    "wc": null
   },
   {
     "name": "obs-o31-b-oggi-768.png",
     "exchange_commit": "d2ca15b8265d2df66069f48806a1991a4090832e",
     "sha256": "fcce9469ae9824f3e7e2b5028f19c62170236a40517d59b53053fac4b49f7db3",
-    "wc_or_bin": "bin",
     "match": true,
-    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/d2ca15b8265d2df66069f48806a1991a4090832e/obs-o31-b-oggi-768.png"
+    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/d2ca15b8265d2df66069f48806a1991a4090832e/obs-o31-b-oggi-768.png",
+    "wc": null
   },
   {
     "name": "obs-o31-b-oggi-390.png",
     "exchange_commit": "25f816523a72a36215816b9767b56f8968431941",
     "sha256": "acae172c7fe44fe0620a36a148b0a3069888efdf55a709065e9634a797948697",
-    "wc_or_bin": "bin",
     "match": true,
-    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/25f816523a72a36215816b9767b56f8968431941/obs-o31-b-oggi-390.png"
+    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/25f816523a72a36215816b9767b56f8968431941/obs-o31-b-oggi-390.png",
+    "wc": null
   },
   {
     "name": "obs-o31-c1-oggi-fold-1280.png",
     "exchange_commit": "9aba857a8d866218f3adc7c22bff189c0579676d",
     "sha256": "c8e1bedbc7846a9ac3e8986d7ec2e0b1af9d645a02321018f46991356a7c3e49",
-    "wc_or_bin": "bin",
     "match": true,
-    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/9aba857a8d866218f3adc7c22bff189c0579676d/obs-o31-c1-oggi-fold-1280.png"
+    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/9aba857a8d866218f3adc7c22bff189c0579676d/obs-o31-c1-oggi-fold-1280.png",
+    "wc": null
   },
   {
     "name": "obs-o31-c1-oggi-fold-768.png",
     "exchange_commit": "8d24163c42528b1cf8c20209765a2af0da80f507",
     "sha256": "49c075687d294643997f17caa341f74578fb204373cf2e170e2503860ce74709",
-    "wc_or_bin": "bin",
     "match": true,
-    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/8d24163c42528b1cf8c20209765a2af0da80f507/obs-o31-c1-oggi-fold-768.png"
+    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/8d24163c42528b1cf8c20209765a2af0da80f507/obs-o31-c1-oggi-fold-768.png",
+    "wc": null
   },
   {
     "name": "obs-o31-c1-oggi-fold-390.png",
     "exchange_commit": "f2db77461aa46dca003f2b4fa7ca8007eac85535",
     "sha256": "c06a966981bd2e1d274d8ae6ab3d6323a7fbe699467f7762d83af65ccbae9543",
-    "wc_or_bin": "bin",
     "match": true,
-    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/f2db77461aa46dca003f2b4fa7ca8007eac85535/obs-o31-c1-oggi-fold-390.png"
+    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/f2db77461aa46dca003f2b4fa7ca8007eac85535/obs-o31-c1-oggi-fold-390.png",
+    "wc": null
   },
   {
     "name": "obs-o31-c3_v1_quiet-fold-1280.png",
     "exchange_commit": "e52c145d7920523bcdfcbaa17dd8548b13e3c81a",
     "sha256": "641cd9f04e0ca67913c529232324a973005aab0d09b90f3db896275f06871363",
-    "wc_or_bin": "bin",
     "match": true,
-    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/e52c145d7920523bcdfcbaa17dd8548b13e3c81a/obs-o31-c3_v1_quiet-fold-1280.png"
+    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/e52c145d7920523bcdfcbaa17dd8548b13e3c81a/obs-o31-c3_v1_quiet-fold-1280.png",
+    "wc": null
   },
   {
     "name": "obs-o31-c3_v2_workfirst-fold-1280.png",
     "exchange_commit": "a2a578ef192559666838594e84edc21689251f6f",
     "sha256": "fe10e9125bd50d369ea953d5640d5caa6c86a83dda6f59911f63bd50d46bcc9d",
-    "wc_or_bin": "bin",
     "match": true,
-    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/a2a578ef192559666838594e84edc21689251f6f/obs-o31-c3_v2_workfirst-fold-1280.png"
+    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/a2a578ef192559666838594e84edc21689251f6f/obs-o31-c3_v2_workfirst-fold-1280.png",
+    "wc": null
   }
 ]
