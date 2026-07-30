@@ -1,0 +1,55 @@
+{
+  "wave": "O30-V2",
+  "base": "http://192.168.1.3:8080",
+  "captures": {
+    "bclosed-1280": {
+      "path": "obs-o30-v-topology-bclosed-1280.png",
+      "wh": [
+        1280,
+        4464
+      ],
+      "bytes": 753426
+    },
+    "bclosed-768": {
+      "path": "obs-o30-v-topology-bclosed-768.png",
+      "wh": [
+        768,
+        5171
+      ],
+      "bytes": 725191
+    },
+    "bclosed-390": {
+      "path": "obs-o30-v-topology-bclosed-390.png",
+      "wh": [
+        390,
+        7708
+      ],
+      "bytes": 776653
+    },
+    "bopen-1280": {
+      "path": "obs-o30-v-topology-bopen-1280.png",
+      "wh": [
+        1280,
+        7461
+      ],
+      "bytes": 1025816
+    },
+    "bopen-768": {
+      "path": "obs-o30-v-topology-bopen-768.png",
+      "wh": [
+        768,
+        8168
+      ],
+      "bytes": 988314
+    },
+    "bopen-390": {
+      "path": "obs-o30-v-topology-bopen-390.png",
+      "wh": [
+        390,
+        9227
+      ],
+      "bytes": 930056
+    }
+  },
+  "auth": "session_mint_ttl180"
+}
