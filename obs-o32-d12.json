@@ -1,0 +1,39 @@
+{
+  "candidates": 56,
+  "qualified": 16,
+  "excluded": 40,
+  "dangerous_exclusions": 0,
+  "excl_reasons": {
+    "solo_l2_stable_baseline": 9,
+    "p7_hygiene": 31
+  },
+  "live_risk_n": 17,
+  "top5_live": [
+    {
+      "badge": "P1",
+      "summary": "Solo L2 · 70:50:AF:FB:86:FA",
+      "family": "fdb"
+    },
+    {
+      "badge": "P1",
+      "summary": "Solo L2 · 38:A6:CE:40:A7:76",
+      "family": "fdb"
+    },
+    {
+      "badge": "P1",
+      "summary": "Solo L2 · 62:5A:C6:B6:6D:53",
+      "family": "fdb"
+    },
+    {
+      "badge": "P1",
+      "summary": "02:AA:3A:FF:48:33",
+      "family": "secondary"
+    },
+    {
+      "badge": "P1",
+      "summary": "BE:C7:6A:B4:E7:98",
+      "family": "secondary"
+    }
+  ],
+  "excluded_stable_sc": 9
+}
