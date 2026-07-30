@@ -1,0 +1,276 @@
+{
+  "wave": "O28-V",
+  "base": "http://192.168.1.3:8080",
+  "auth_provenance": "catture autenticate via session mint, scadenza 180s (fonte run harness 36s×5), token non pubblicato",
+  "o27_before": {
+    "initial_focus_in_dialog": false,
+    "focus_trap": "ABSENT_focus_escapes",
+    "esc_closes": false,
+    "focus_return": "BODY"
+  },
+  "v1": {
+    "on_open": {
+      "dialog_open": true,
+      "active_tag": "INPUT",
+      "active_id": "",
+      "active_name": "disp-esito",
+      "active_class": "",
+      "active_type": "radio",
+      "active_inside_dialog": true
+    },
+    "initial_focus_in_dialog": true,
+    "tab_sequence": [
+      {
+        "dialog_open": true,
+        "active_tag": "TEXTAREA",
+        "active_id": "disp-motivo",
+        "active_name": null,
+        "active_class": "",
+        "active_type": null,
+        "active_inside_dialog": true
+      },
+      {
+        "dialog_open": true,
+        "active_tag": "BUTTON",
+        "active_id": "",
+        "active_name": null,
+        "active_class": "ghost",
+        "active_type": "button",
+        "active_inside_dialog": true
+      },
+      {
+        "dialog_open": true,
+        "active_tag": "BUTTON",
+        "active_id": "",
+        "active_name": null,
+        "active_class": "primary",
+        "active_type": "button",
+        "active_inside_dialog": true
+      },
+      {
+        "dialog_open": true,
+        "active_tag": "INPUT",
+        "active_id": "",
+        "active_name": "disp-esito",
+        "active_class": "",
+        "active_type": "radio",
+        "active_inside_dialog": true
+      },
+      {
+        "dialog_open": true,
+        "active_tag": "TEXTAREA",
+        "active_id": "disp-motivo",
+        "active_name": null,
+        "active_class": "",
+        "active_type": null,
+        "active_inside_dialog": true
+      },
+      {
+        "dialog_open": true,
+        "active_tag": "BUTTON",
+        "active_id": "",
+        "active_name": null,
+        "active_class": "ghost",
+        "active_type": "button",
+        "active_inside_dialog": true
+      },
+      {
+        "dialog_open": true,
+        "active_tag": "BUTTON",
+        "active_id": "",
+        "active_name": null,
+        "active_class": "primary",
+        "active_type": "button",
+        "active_inside_dialog": true
+      },
+      {
+        "dialog_open": true,
+        "active_tag": "INPUT",
+        "active_id": "",
+        "active_name": "disp-esito",
+        "active_class": "",
+        "active_type": "radio",
+        "active_inside_dialog": true
+      },
+      {
+        "dialog_open": true,
+        "active_tag": "TEXTAREA",
+        "active_id": "disp-motivo",
+        "active_name": null,
+        "active_class": "",
+        "active_type": null,
+        "active_inside_dialog": true
+      },
+      {
+        "dialog_open": true,
+        "active_tag": "BUTTON",
+        "active_id": "",
+        "active_name": null,
+        "active_class": "ghost",
+        "active_type": "button",
+        "active_inside_dialog": true
+      },
+      {
+        "dialog_open": true,
+        "active_tag": "BUTTON",
+        "active_id": "",
+        "active_name": null,
+        "active_class": "primary",
+        "active_type": "button",
+        "active_inside_dialog": true
+      },
+      {
+        "dialog_open": true,
+        "active_tag": "INPUT",
+        "active_id": "",
+        "active_name": "disp-esito",
+        "active_class": "",
+        "active_type": "radio",
+        "active_inside_dialog": true
+      },
+      {
+        "dialog_open": true,
+        "active_tag": "TEXTAREA",
+        "active_id": "disp-motivo",
+        "active_name": null,
+        "active_class": "",
+        "active_type": null,
+        "active_inside_dialog": true
+      },
+      {
+        "dialog_open": true,
+        "active_tag": "BUTTON",
+        "active_id": "",
+        "active_name": null,
+        "active_class": "ghost",
+        "active_type": "button",
+        "active_inside_dialog": true
+      }
+    ],
+    "focus_trap": "PASS_contained",
+    "focus_escaped": false,
+    "shift_tab_from_first": {
+      "dialog_open": true,
+      "active_tag": "BUTTON",
+      "active_id": "",
+      "active_name": null,
+      "active_class": "primary",
+      "active_type": "button",
+      "active_inside_dialog": true
+    },
+    "shift_tab_stays_inside": true,
+    "esc_closes": true,
+    "after_esc": {
+      "dialog_open": false,
+      "active_tag": "BUTTON",
+      "active_id": "",
+      "active_name": null,
+      "active_class": "odm-btn",
+      "active_type": "button",
+      "active_inside_dialog": false
+    },
+    "focus_after_esc_is_opener": true,
+    "esc_no_write": true,
+    "after_annulla": {
+      "dialog_open": false,
+      "active_tag": "BUTTON",
+      "active_id": "",
+      "active_name": null,
+      "active_class": "odm-btn",
+      "active_type": "button",
+      "active_inside_dialog": false
+    },
+    "focus_after_annulla_is_opener": true
+  },
+  "v2": {
+    "validation_error": "Motivazione obbligatoria.",
+    "states": [
+      "initial",
+      "esito_no_motivo",
+      "ready_no_submit"
+    ]
+  },
+  "v3": {
+    "deployed_n0": {
+      "present": false,
+      "height": 0,
+      "in_dom": false
+    }
+  },
+  "g3": {
+    "page": {
+      "url": "http://192.168.1.3:8080/oggi",
+      "scripts": [
+        "http://192.168.1.3:8080/assets/index-BFZN3CqU.js"
+      ],
+      "css": [
+        "http://192.168.1.3:8080/assets/index-BHuXFdM5.css"
+      ],
+      "has_disposition_close_attr": false,
+      "version_guess": null,
+      "meta": [
+        {
+          "name": "viewport",
+          "content": "width=device-width, initial-scale=1.0"
+        },
+        {
+          "name": "theme-color",
+          "content": "#0F1319"
+        }
+      ]
+    },
+    "bundle": {
+      "js_url": "http://192.168.1.3:8080/assets/index-BFZN3CqU.js",
+      "markers": {
+        "status": 200,
+        "len": 485011,
+        "has_apg_comment": false,
+        "has_focus_trap_sel": true,
+        "has_closed_gt0": false,
+        "has_o28_first_focus": true
+      }
+    }
+  },
+  "post_dispositions": {
+    "status": 200,
+    "body": {
+      "items": [],
+      "count": 0,
+      "closed_count": 0,
+      "closed_keys": []
+    }
+  },
+  "disp_baseline": {
+    "status": 200,
+    "body": {
+      "items": [],
+      "count": 0,
+      "closed_count": 0,
+      "closed_keys": []
+    }
+  },
+  "opener": {
+    "text": "Ignora",
+    "className": "odm-btn"
+  },
+  "disp_after_esc": {
+    "status": 200,
+    "body": {
+      "items": [],
+      "count": 0,
+      "closed_count": 0,
+      "closed_keys": []
+    }
+  },
+  "v5": {
+    "colors_changed": false,
+    "note": "D1-D5: nessun cambio colore/token; riuso --text-1/--text-2/--danger/--bg-* invariati. Tabella O27 non ripetuta."
+  },
+  "v1_verdict": {
+    "initial_focus": "PASS",
+    "focus_trap": "PASS",
+    "esc": "PASS",
+    "focus_return": "PASS"
+  },
+  "v3_verdict": "PASS"
+}
