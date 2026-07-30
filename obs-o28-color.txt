@@ -1,0 +1,3 @@
+PASS: no hard-coded color literals outside allowlist; matrix.css decls-only
+  token_file=assets/matrix.css (literals only in --custom-property decls)
+  allowlist_count=16
