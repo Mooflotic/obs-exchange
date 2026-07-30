@@ -1,10 +1,10 @@
 [
   {
     "name": "obs-o31.md",
-    "exchange_commit": "6d0e8658800a6fc221d794e9157fff9ed3461e33",
-    "sha256": "0ec16318edee86d76105981e558c7ff4a22d4dbe391f6cd620a2a7ee41375a8f",
+    "exchange_commit": "948c2a6eab2354709cb7670d7b40c85bcfc09aaa",
+    "sha256": "a3b30b1a4d3aeb5088d6dd593677f26242900f51cbe31841eb7ee067ff9910a0",
     "match": true,
-    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/6d0e8658800a6fc221d794e9157fff9ed3461e33/obs-o31.md",
+    "url_raw_commit_pinned": "https://raw.githubusercontent.com/Mooflotic/obs-exchange/948c2a6eab2354709cb7670d7b40c85bcfc09aaa/obs-o31.md",
     "wc": 193
   },
   {
