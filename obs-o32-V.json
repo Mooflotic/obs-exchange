@@ -1,0 +1,484 @@
+{
+  "wave": "O32-V-final",
+  "captures": {
+    "1280": {
+      "path": "obs-o32-post-oggi-1280.png",
+      "wh": [
+        1280,
+        2043
+      ],
+      "sha256": "4ecf0b4f88700e6b086304ca7ab50d35a48869fc62458159ba1f8570731c0804",
+      "png_magic": true,
+      "bytes": 188990
+    },
+    "fold-1280": {
+      "path": "obs-o32-post-oggi-fold-1280.png",
+      "wh": [
+        1280,
+        900
+      ],
+      "sha256": "b5cdf5a64117dab23645c9df110768da83bbf4b3f96054df9c355e1ef3ce831d",
+      "png_magic": true,
+      "bytes": 76985
+    },
+    "768": {
+      "path": "obs-o32-post-oggi-768.png",
+      "wh": [
+        768,
+        2111
+      ],
+      "sha256": "a8a3f61dd784380daacee9db4b56212ada222699ca8fb2fc3d72ce3adb8c2176",
+      "png_magic": true,
+      "bytes": 165124
+    },
+    "fold-768": {
+      "path": "obs-o32-post-oggi-fold-768.png",
+      "wh": [
+        768,
+        900
+      ],
+      "sha256": "1c2db284f24387e53d6d412b8e266c79d3d8464b27bcf6a0754e951eeb2bb52b",
+      "png_magic": true,
+      "bytes": 59270
+    },
+    "390": {
+      "path": "obs-o32-post-oggi-390.png",
+      "wh": [
+        390,
+        2433
+      ],
+      "sha256": "fc2133345b33e86784bd3ba2cf318b1141a0f1dfb8c7a878e3c7d2f1d5052efb",
+      "png_magic": true,
+      "bytes": 163090
+    },
+    "fold-390": {
+      "path": "obs-o32-post-oggi-fold-390.png",
+      "wh": [
+        390,
+        900
+      ],
+      "sha256": "4a406c4958cd0bb808d7ca0bf734c3fd0eb3d32ef52c0127d76c6cb8d9542c2e",
+      "png_magic": true,
+      "bytes": 54469
+    }
+  },
+  "live": {
+    "1280": {
+      "risk_n": 17,
+      "families": {
+        "fdb": 5,
+        "secondary": 8,
+        "coverage": 3,
+        "behavior": 1
+      },
+      "badges": {
+        "P1": 8,
+        "P3": 2,
+        "P4": 6,
+        "P6": 1
+      },
+      "top5": [
+        {
+          "badge": "P1",
+          "summary": "Solo L2 \u00b7 70:50:AF:FB:86:FA",
+          "family": "fdb"
+        },
+        {
+          "badge": "P1",
+          "summary": "Solo L2 \u00b7 38:A6:CE:40:A7:76",
+          "family": "fdb"
+        },
+        {
+          "badge": "P1",
+          "summary": "Solo L2 \u00b7 62:5A:C6:B6:6D:53",
+          "family": "fdb"
+        },
+        {
+          "badge": "P1",
+          "summary": "02:AA:3A:FF:48:33",
+          "family": "secondary"
+        },
+        {
+          "badge": "P1",
+          "summary": "BE:C7:6A:B4:E7:98",
+          "family": "secondary"
+        }
+      ],
+      "all": [
+        {
+          "badge": "P1",
+          "family": "fdb",
+          "summary": "Solo L2 \u00b7 70:50:AF:FB:86:FA"
+        },
+        {
+          "badge": "P1",
+          "family": "fdb",
+          "summary": "Solo L2 \u00b7 38:A6:CE:40:A7:76"
+        },
+        {
+          "badge": "P1",
+          "family": "fdb",
+          "summary": "Solo L2 \u00b7 62:5A:C6:B6:6D:53"
+        },
+        {
+          "badge": "P1",
+          "family": "secondary",
+          "summary": "02:AA:3A:FF:48:33"
+        },
+        {
+          "badge": "P1",
+          "family": "secondary",
+          "summary": "BE:C7:6A:B4:E7:98"
+        },
+        {
+          "badge": "P1",
+          "family": "secondary",
+          "summary": "DA:12:6E:8C:C4:D3"
+        },
+        {
+          "badge": "P1",
+          "family": "secondary",
+          "summary": "4A:77:B9:A5:31:F7"
+        },
+        {
+          "badge": "P1",
+          "family": "secondary",
+          "summary": "68:13:F3:E7:D2:B2"
+        },
+        {
+          "badge": "P3",
+          "family": "fdb",
+          "summary": "MAC-move 62:5A:C6:B6:6D:53"
+        },
+        {
+          "badge": "P3",
+          "family": "fdb",
+          "summary": "MAC-move B0:4A:39:92:49:57"
+        },
+        {
+          "badge": "P4",
+          "family": "coverage",
+          "summary": "Sorgente copertura vecchia \u00b7 Zeek behaviour (JA4 / JA4D / DHCP fp)"
+        },
+        {
+          "badge": "P4",
+          "family": "coverage",
+          "summary": "Sorgente copertura vecchia \u00b7 Zeek egress hybrid (ext host+port / int relazione)"
+        },
+        {
+          "badge": "P4",
+          "family": "coverage",
+          "summary": "Sorgente copertura vecchia \u00b7 ASUSTOR NAS SNMP (Cassiopea)"
+        },
+        {
+          "badge": "P4",
+          "family": "secondary",
+          "summary": "Cassiopea \u2014 NIC 2"
+        },
+        {
+          "badge": "P4",
+          "family": "secondary",
+          "summary": "DVR Hikvision"
+        },
+        {
+          "badge": "P4",
+          "family": "secondary",
+          "summary": "Amazon Echo/Fire (OUI 2023+)"
+        },
+        {
+          "badge": "P6",
+          "family": "behavior",
+          "summary": "19 ignoti con evidenze Zeek (proposta automatica non disponibile \u2014 assegnazione manuale)"
+        }
+      ],
+      "has_orphan": false,
+      "has_discarded_moves": false,
+      "has_help_btn": true,
+      "has_igiene": true,
+      "igiene_open_summary": "Proposte e igiene inventario (P7)\napparati, nomi, copertura disabilitata \u2014 nessun rischio attivo",
+      "matrix_rain": false,
+      "scanline": false,
+      "has_pq": false,
+      "version": "0.10.97",
+      "scrollHeight": 2043
+    },
+    "768": {
+      "risk_n": 17,
+      "families": {
+        "fdb": 5,
+        "secondary": 8,
+        "coverage": 3,
+        "behavior": 1
+      },
+      "badges": {
+        "P1": 8,
+        "P3": 2,
+        "P4": 6,
+        "P6": 1
+      },
+      "top5": [
+        {
+          "badge": "P1",
+          "summary": "Solo L2 \u00b7 70:50:AF:FB:86:FA",
+          "family": "fdb"
+        },
+        {
+          "badge": "P1",
+          "summary": "Solo L2 \u00b7 38:A6:CE:40:A7:76",
+          "family": "fdb"
+        },
+        {
+          "badge": "P1",
+          "summary": "Solo L2 \u00b7 62:5A:C6:B6:6D:53",
+          "family": "fdb"
+        },
+        {
+          "badge": "P1",
+          "summary": "02:AA:3A:FF:48:33",
+          "family": "secondary"
+        },
+        {
+          "badge": "P1",
+          "summary": "BE:C7:6A:B4:E7:98",
+          "family": "secondary"
+        }
+      ],
+      "all": [
+        {
+          "badge": "P1",
+          "family": "fdb",
+          "summary": "Solo L2 \u00b7 70:50:AF:FB:86:FA"
+        },
+        {
+          "badge": "P1",
+          "family": "fdb",
+          "summary": "Solo L2 \u00b7 38:A6:CE:40:A7:76"
+        },
+        {
+          "badge": "P1",
+          "family": "fdb",
+          "summary": "Solo L2 \u00b7 62:5A:C6:B6:6D:53"
+        },
+        {
+          "badge": "P1",
+          "family": "secondary",
+          "summary": "02:AA:3A:FF:48:33"
+        },
+        {
+          "badge": "P1",
+          "family": "secondary",
+          "summary": "BE:C7:6A:B4:E7:98"
+        },
+        {
+          "badge": "P1",
+          "family": "secondary",
+          "summary": "DA:12:6E:8C:C4:D3"
+        },
+        {
+          "badge": "P1",
+          "family": "secondary",
+          "summary": "4A:77:B9:A5:31:F7"
+        },
+        {
+          "badge": "P1",
+          "family": "secondary",
+          "summary": "68:13:F3:E7:D2:B2"
+        },
+        {
+          "badge": "P3",
+          "family": "fdb",
+          "summary": "MAC-move 62:5A:C6:B6:6D:53"
+        },
+        {
+          "badge": "P3",
+          "family": "fdb",
+          "summary": "MAC-move B0:4A:39:92:49:57"
+        },
+        {
+          "badge": "P4",
+          "family": "coverage",
+          "summary": "Sorgente copertura vecchia \u00b7 Zeek behaviour (JA4 / JA4D / DHCP fp)"
+        },
+        {
+          "badge": "P4",
+          "family": "coverage",
+          "summary": "Sorgente copertura vecchia \u00b7 Zeek egress hybrid (ext host+port / int relazione)"
+        },
+        {
+          "badge": "P4",
+          "family": "coverage",
+          "summary": "Sorgente copertura vecchia \u00b7 ASUSTOR NAS SNMP (Cassiopea)"
+        },
+        {
+          "badge": "P4",
+          "family": "secondary",
+          "summary": "Cassiopea \u2014 NIC 2"
+        },
+        {
+          "badge": "P4",
+          "family": "secondary",
+          "summary": "DVR Hikvision"
+        },
+        {
+          "badge": "P4",
+          "family": "secondary",
+          "summary": "Amazon Echo/Fire (OUI 2023+)"
+        },
+        {
+          "badge": "P6",
+          "family": "behavior",
+          "summary": "19 ignoti con evidenze Zeek (proposta automatica non disponibile \u2014 assegnazione manuale)"
+        }
+      ],
+      "has_orphan": false,
+      "has_discarded_moves": false,
+      "has_help_btn": true,
+      "has_igiene": true,
+      "igiene_open_summary": "Proposte e igiene inventario (P7)\napparati, nomi, copertura disabilitata \u2014 nessun rischio attivo",
+      "matrix_rain": false,
+      "scanline": false,
+      "has_pq": false,
+      "version": "0.10.97",
+      "scrollHeight": 2111
+    },
+    "390": {
+      "risk_n": 17,
+      "families": {
+        "fdb": 5,
+        "secondary": 8,
+        "coverage": 3,
+        "behavior": 1
+      },
+      "badges": {
+        "P1": 8,
+        "P3": 2,
+        "P4": 6,
+        "P6": 1
+      },
+      "top5": [
+        {
+          "badge": "P1",
+          "summary": "Solo L2 \u00b7 70:50:AF:FB:86:FA",
+          "family": "fdb"
+        },
+        {
+          "badge": "P1",
+          "summary": "Solo L2 \u00b7 38:A6:CE:40:A7:76",
+          "family": "fdb"
+        },
+        {
+          "badge": "P1",
+          "summary": "Solo L2 \u00b7 62:5A:C6:B6:6D:53",
+          "family": "fdb"
+        },
+        {
+          "badge": "P1",
+          "summary": "02:AA:3A:FF:48:33",
+          "family": "secondary"
+        },
+        {
+          "badge": "P1",
+          "summary": "BE:C7:6A:B4:E7:98",
+          "family": "secondary"
+        }
+      ],
+      "all": [
+        {
+          "badge": "P1",
+          "family": "fdb",
+          "summary": "Solo L2 \u00b7 70:50:AF:FB:86:FA"
+        },
+        {
+          "badge": "P1",
+          "family": "fdb",
+          "summary": "Solo L2 \u00b7 38:A6:CE:40:A7:76"
+        },
+        {
+          "badge": "P1",
+          "family": "fdb",
+          "summary": "Solo L2 \u00b7 62:5A:C6:B6:6D:53"
+        },
+        {
+          "badge": "P1",
+          "family": "secondary",
+          "summary": "02:AA:3A:FF:48:33"
+        },
+        {
+          "badge": "P1",
+          "family": "secondary",
+          "summary": "BE:C7:6A:B4:E7:98"
+        },
+        {
+          "badge": "P1",
+          "family": "secondary",
+          "summary": "DA:12:6E:8C:C4:D3"
+        },
+        {
+          "badge": "P1",
+          "family": "secondary",
+          "summary": "4A:77:B9:A5:31:F7"
+        },
+        {
+          "badge": "P1",
+          "family": "secondary",
+          "summary": "68:13:F3:E7:D2:B2"
+        },
+        {
+          "badge": "P3",
+          "family": "fdb",
+          "summary": "MAC-move 62:5A:C6:B6:6D:53"
+        },
+        {
+          "badge": "P3",
+          "family": "fdb",
+          "summary": "MAC-move B0:4A:39:92:49:57"
+        },
+        {
+          "badge": "P4",
+          "family": "coverage",
+          "summary": "Sorgente copertura vecchia \u00b7 Zeek behaviour (JA4 / JA4D / DHCP fp)"
+        },
+        {
+          "badge": "P4",
+          "family": "coverage",
+          "summary": "Sorgente copertura vecchia \u00b7 Zeek egress hybrid (ext host+port / int relazione)"
+        },
+        {
+          "badge": "P4",
+          "family": "coverage",
+          "summary": "Sorgente copertura vecchia \u00b7 ASUSTOR NAS SNMP (Cassiopea)"
+        },
+        {
+          "badge": "P4",
+          "family": "secondary",
+          "summary": "Cassiopea \u2014 NIC 2"
+        },
+        {
+          "badge": "P4",
+          "family": "secondary",
+          "summary": "DVR Hikvision"
+        },
+        {
+          "badge": "P4",
+          "family": "secondary",
+          "summary": "Amazon Echo/Fire (OUI 2023+)"
+        },
+        {
+          "badge": "P6",
+          "family": "behavior",
+          "summary": "19 ignoti con evidenze Zeek (proposta automatica non disponibile \u2014 assegnazione manuale)"
+        }
+      ],
+      "has_orphan": false,
+      "has_discarded_moves": false,
+      "has_help_btn": true,
+      "has_igiene": true,
+      "igiene_open_summary": "Proposte e igiene inventario (P7)\napparati, nomi, copertura disabilitata \u2014 nessun rischio attivo",
+      "matrix_rain": false,
+      "scanline": false,
+      "has_pq": false,
+      "version": "0.10.97",
+      "scrollHeight": 2433
+    }
+  }
+}
