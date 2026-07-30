@@ -1,0 +1,452 @@
+{
+  "wave": "O27-E2",
+  "base": "http://192.168.1.3:8080",
+  "auth_provenance": "catture autenticate via session mint, scadenza 180s (fonte run harness 36s×5), token non pubblicato",
+  "captures": {
+    "oggi-1280": "/Users/michelestorci/Developer/rete-palazzo/observatory/docs/obs-o27-oggi-1280.png",
+    "oggi-768": "/Users/michelestorci/Developer/rete-palazzo/observatory/docs/obs-o27-oggi-768.png",
+    "oggi-390": "/Users/michelestorci/Developer/rete-palazzo/observatory/docs/obs-o27-oggi-390.png",
+    "timeline-disp-1280": "/Users/michelestorci/Developer/rete-palazzo/observatory/docs/obs-o27-timeline-disp-1280.png",
+    "timeline-disp-768": "/Users/michelestorci/Developer/rete-palazzo/observatory/docs/obs-o27-timeline-disp-768.png",
+    "timeline-disp-390": "/Users/michelestorci/Developer/rete-palazzo/observatory/docs/obs-o27-timeline-disp-390.png"
+  },
+  "contrast": {
+    "oggi_closed": {
+      "closed_count": {
+        "label": "closed_count_link",
+        "sel": "[data-o26=\"closed-count\"] a, [data-o26=\"closed-count\"]",
+        "fg": "rgb(152, 162, 179)",
+        "bg": "rgb(15, 19, 25)",
+        "ratio": 7.23,
+        "fontSize": "13px",
+        "text": "0 casi chiusi — consulta Timeline"
+      },
+      "closed_count_box": {
+        "label": "closed_count_geometry",
+        "display": "block",
+        "visibility": "visible",
+        "width": 1012,
+        "height": 19,
+        "top": 62,
+        "left": 244,
+        "fontSize": "13px",
+        "text": "0 casi chiusi — consulta Timeline",
+        "always_present": true
+      }
+    },
+    "dialog_initial": {
+      "closed_count": {
+        "label": "closed_count_link",
+        "sel": "[data-o26=\"closed-count\"] a, [data-o26=\"closed-count\"]",
+        "fg": "rgb(152, 162, 179)",
+        "bg": "rgb(15, 19, 25)",
+        "ratio": 7.23,
+        "fontSize": "13px",
+        "text": "0 casi chiusi — consulta Timeline"
+      },
+      "closed_count_box": {
+        "label": "closed_count_geometry",
+        "display": "block",
+        "visibility": "visible",
+        "width": 1012,
+        "height": 19,
+        "top": -1304,
+        "left": 244,
+        "fontSize": "13px",
+        "text": "0 casi chiusi — consulta Timeline",
+        "always_present": true
+      },
+      "dialog_title": {
+        "label": "dialog_title",
+        "sel": "#disp-dialog-title",
+        "fg": "rgb(232, 235, 240)",
+        "bg": "rgb(22, 27, 35)",
+        "ratio": 14.46,
+        "fontSize": "16.8px",
+        "text": "Chiudi caso in Oggi"
+      },
+      "dialog_hint": {
+        "label": "dialog_hint",
+        "sel": ".disp-dialog__hint",
+        "fg": "rgb(152, 162, 179)",
+        "bg": "rgb(22, 27, 35)",
+        "ratio": 6.71,
+        "fontSize": "14.4px",
+        "text": "Scegli esito e motiva. Il caso esce da Oggi e resta consultabile in Timeline."
+      },
+      "dialog_legend": {
+        "label": "esito_legend",
+        "sel": ".disp-dialog__esiti legend",
+        "fg": "rgb(232, 235, 240)",
+        "bg": "rgb(22, 27, 35)",
+        "ratio": 14.46,
+        "fontSize": "14px",
+        "text": "Esito"
+      },
+      "dialog_radio": {
+        "label": "esito_radio_label",
+        "sel": ".disp-dialog__radio",
+        "fg": "rgb(232, 235, 240)",
+        "bg": "rgb(22, 27, 35)",
+        "ratio": 14.46,
+        "fontSize": "15.2px",
+        "text": "Non minaccioso (noto)"
+      },
+      "dialog_motivo_label": {
+        "label": "motivo_label",
+        "sel": "label.disp-dialog__motivo",
+        "fg": "rgb(232, 235, 240)",
+        "bg": "rgb(22, 27, 35)",
+        "ratio": 14.46,
+        "fontSize": "14.4px",
+        "text": "Motivazione (obbligatoria)"
+      },
+      "dialog_textarea": {
+        "label": "motivo_textarea",
+        "fg": "rgb(232, 235, 240)",
+        "bg": "rgb(15, 19, 25)",
+        "ratio": 15.59,
+        "placeholder": {
+          "color": "rgb(232, 235, 240)",
+          "opacity": "1",
+          "ratio": 15.59
+        }
+      },
+      "dialog_error": {
+        "label": "dialog_error",
+        "missing": true
+      },
+      "dialog_primary": {
+        "label": "confirm_btn",
+        "sel": ".disp-dialog__actions .primary",
+        "fg": "rgb(15, 19, 25)",
+        "bg": "rgb(107, 197, 219)",
+        "ratio": 9.43,
+        "fontSize": "14px",
+        "text": "Conferma chiusura"
+      },
+      "dialog_ghost": {
+        "label": "cancel_btn",
+        "sel": ".disp-dialog__actions .ghost",
+        "fg": "rgb(152, 162, 179)",
+        "bg": "rgb(22, 27, 35)",
+        "ratio": 6.71,
+        "fontSize": "14px",
+        "text": "Annulla"
+      }
+    },
+    "dialog_error_state": {
+      "closed_count": {
+        "label": "closed_count_link",
+        "sel": "[data-o26=\"closed-count\"] a, [data-o26=\"closed-count\"]",
+        "fg": "rgb(152, 162, 179)",
+        "bg": "rgb(15, 19, 25)",
+        "ratio": 7.23,
+        "fontSize": "13px",
+        "text": "0 casi chiusi — consulta Timeline"
+      },
+      "closed_count_box": {
+        "label": "closed_count_geometry",
+        "display": "block",
+        "visibility": "visible",
+        "width": 1012,
+        "height": 19,
+        "top": -1304,
+        "left": 244,
+        "fontSize": "13px",
+        "text": "0 casi chiusi — consulta Timeline",
+        "always_present": true
+      },
+      "dialog_title": {
+        "label": "dialog_title",
+        "sel": "#disp-dialog-title",
+        "fg": "rgb(232, 235, 240)",
+        "bg": "rgb(22, 27, 35)",
+        "ratio": 14.46,
+        "fontSize": "16.8px",
+        "text": "host#10"
+      },
+      "dialog_hint": {
+        "label": "dialog_hint",
+        "sel": ".disp-dialog__hint",
+        "fg": "rgb(152, 162, 179)",
+        "bg": "rgb(22, 27, 35)",
+        "ratio": 6.71,
+        "fontSize": "14.4px",
+        "text": "Scegli esito e motiva. Il caso esce da Oggi e resta consultabile in Timeline."
+      },
+      "dialog_legend": {
+        "label": "esito_legend",
+        "sel": ".disp-dialog__esiti legend",
+        "fg": "rgb(232, 235, 240)",
+        "bg": "rgb(22, 27, 35)",
+        "ratio": 14.46,
+        "fontSize": "14px",
+        "text": "Esito"
+      },
+      "dialog_radio": {
+        "label": "esito_radio_label",
+        "sel": ".disp-dialog__radio",
+        "fg": "rgb(232, 235, 240)",
+        "bg": "rgb(22, 27, 35)",
+        "ratio": 14.46,
+        "fontSize": "15.2px",
+        "text": "Non minaccioso (noto)"
+      },
+      "dialog_motivo_label": {
+        "label": "motivo_label",
+        "sel": "label.disp-dialog__motivo",
+        "fg": "rgb(232, 235, 240)",
+        "bg": "rgb(22, 27, 35)",
+        "ratio": 14.46,
+        "fontSize": "14.4px",
+        "text": "Motivazione (obbligatoria)"
+      },
+      "dialog_textarea": {
+        "label": "motivo_textarea",
+        "fg": "rgb(232, 235, 240)",
+        "bg": "rgb(15, 19, 25)",
+        "ratio": 15.59,
+        "placeholder": {
+          "color": "rgb(232, 235, 240)",
+          "opacity": "1",
+          "ratio": 15.59
+        }
+      },
+      "dialog_error": {
+        "label": "dialog_error",
+        "sel": ".disp-dialog .error, [role=\"alert\"]",
+        "fg": "rgb(224, 107, 82)",
+        "bg": "rgb(22, 27, 35)",
+        "ratio": 5.26,
+        "fontSize": "14.4px",
+        "text": "Motivazione obbligatoria."
+      },
+      "dialog_primary": {
+        "label": "confirm_btn",
+        "sel": ".disp-dialog__actions .primary",
+        "fg": "rgb(15, 19, 25)",
+        "bg": "rgb(107, 197, 219)",
+        "ratio": 9.43,
+        "fontSize": "14px",
+        "text": "host#11"
+      },
+      "dialog_ghost": {
+        "label": "cancel_btn",
+        "sel": ".disp-dialog__actions .ghost",
+        "fg": "rgb(152, 162, 179)",
+        "bg": "rgb(22, 27, 35)",
+        "ratio": 6.71,
+        "fontSize": "14px",
+        "text": "Annulla"
+      }
+    },
+    "dialog_ready": {
+      "closed_count": {
+        "label": "closed_count_link",
+        "sel": "[data-o26=\"closed-count\"] a, [data-o26=\"closed-count\"]",
+        "fg": "rgb(152, 162, 179)",
+        "bg": "rgb(15, 19, 25)",
+        "ratio": 7.23,
+        "fontSize": "13px",
+        "text": "0 casi chiusi — consulta Timeline"
+      },
+      "closed_count_box": {
+        "label": "closed_count_geometry",
+        "display": "block",
+        "visibility": "visible",
+        "width": 1012,
+        "height": 19,
+        "top": -1304,
+        "left": 244,
+        "fontSize": "13px",
+        "text": "0 casi chiusi — consulta Timeline",
+        "always_present": true
+      },
+      "dialog_title": {
+        "label": "dialog_title",
+        "sel": "#disp-dialog-title",
+        "fg": "rgb(232, 235, 240)",
+        "bg": "rgb(22, 27, 35)",
+        "ratio": 14.46,
+        "fontSize": "16.8px",
+        "text": "host#10"
+      },
+      "dialog_hint": {
+        "label": "dialog_hint",
+        "sel": ".disp-dialog__hint",
+        "fg": "rgb(152, 162, 179)",
+        "bg": "rgb(22, 27, 35)",
+        "ratio": 6.71,
+        "fontSize": "14.4px",
+        "text": "Scegli esito e motiva. Il caso esce da Oggi e resta consultabile in Timeline."
+      },
+      "dialog_legend": {
+        "label": "esito_legend",
+        "sel": ".disp-dialog__esiti legend",
+        "fg": "rgb(232, 235, 240)",
+        "bg": "rgb(22, 27, 35)",
+        "ratio": 14.46,
+        "fontSize": "14px",
+        "text": "Esito"
+      },
+      "dialog_radio": {
+        "label": "esito_radio_label",
+        "sel": ".disp-dialog__radio",
+        "fg": "rgb(232, 235, 240)",
+        "bg": "rgb(22, 27, 35)",
+        "ratio": 14.46,
+        "fontSize": "15.2px",
+        "text": "Non minaccioso (noto)"
+      },
+      "dialog_motivo_label": {
+        "label": "motivo_label",
+        "sel": "label.disp-dialog__motivo",
+        "fg": "rgb(232, 235, 240)",
+        "bg": "rgb(22, 27, 35)",
+        "ratio": 14.46,
+        "fontSize": "14.4px",
+        "text": "Motivazione (obbligatoria)"
+      },
+      "dialog_textarea": {
+        "label": "motivo_textarea",
+        "fg": "rgb(232, 235, 240)",
+        "bg": "rgb(15, 19, 25)",
+        "ratio": 15.59,
+        "placeholder": {
+          "color": "rgb(232, 235, 240)",
+          "opacity": "1",
+          "ratio": 15.59
+        }
+      },
+      "dialog_error": {
+        "label": "dialog_error",
+        "sel": ".disp-dialog .error, [role=\"alert\"]",
+        "fg": "rgb(224, 107, 82)",
+        "bg": "rgb(22, 27, 35)",
+        "ratio": 5.26,
+        "fontSize": "14.4px",
+        "text": "host#1"
+      },
+      "dialog_primary": {
+        "label": "confirm_btn",
+        "sel": ".disp-dialog__actions .primary",
+        "fg": "rgb(15, 19, 25)",
+        "bg": "rgb(107, 197, 219)",
+        "ratio": 9.43,
+        "fontSize": "14px",
+        "text": "host#11"
+      },
+      "dialog_ghost": {
+        "label": "cancel_btn",
+        "sel": ".disp-dialog__actions .ghost",
+        "fg": "rgb(152, 162, 179)",
+        "bg": "rgb(22, 27, 35)",
+        "ratio": 6.71,
+        "fontSize": "14px",
+        "text": "Annulla"
+      }
+    }
+  },
+  "a11y": {
+    "on_open": {
+      "dialog_open": true,
+      "active_tag": "BUTTON",
+      "active_id": "",
+      "active_class": "odm-btn",
+      "active_inside_dialog": false
+    },
+    "tab_sequence": [
+      {
+        "dialog_open": true,
+        "active_tag": "TEXTAREA",
+        "active_id": "disp-motivo",
+        "active_class": "",
+        "active_inside_dialog": true
+      },
+      {
+        "dialog_open": true,
+        "active_tag": "BUTTON",
+        "active_id": "",
+        "active_class": "ghost",
+        "active_inside_dialog": true
+      },
+      {
+        "dialog_open": true,
+        "active_tag": "BUTTON",
+        "active_id": "",
+        "active_class": "primary",
+        "active_inside_dialog": true
+      },
+      {
+        "dialog_open": true,
+        "active_tag": "SUMMARY",
+        "active_id": "",
+        "active_class": "oggi-collapse-sum",
+        "active_inside_dialog": false
+      }
+    ],
+    "focus_trap": "ABSENT_focus_escapes",
+    "focus_escaped": true,
+    "esc_closes": false,
+    "after_annulla": {
+      "dialog_open": false,
+      "active_tag": "BODY",
+      "active_id": "",
+      "active_class": "",
+      "active_inside_dialog": false
+    },
+    "focus_return_to_opener": "UNVERIFIED_no_opener_ref_stored — dialog has no focus restore logic in component",
+    "initial_focus_in_dialog": false
+  },
+  "closed_count": {
+    "label": "closed_count_geometry",
+    "display": "block",
+    "visibility": "visible",
+    "width": 1012,
+    "height": 19,
+    "top": 62,
+    "left": 244,
+    "fontSize": "13px",
+    "text": "0 casi chiusi — consulta Timeline",
+    "always_present": true
+  },
+  "dialog_states": [
+    "initial",
+    "esito_no_motivo",
+    "ready_no_submit"
+  ],
+  "dialog_trigger": "button:has-text(\"Ignora\")",
+  "dialog_validation_error": "Motivazione obbligatoria.",
+  "post_e2_dispositions": {
+    "status": 200,
+    "body": {
+      "items": [],
+      "count": 0,
+      "closed_count": 0,
+      "closed_keys": []
+    }
+  },
+  "o9_png_assert": [
+    {
+      "cmd": "--pair /Users/michelestorci/Developer/rete-palazzo/observatory/docs/obs-o27-oggi-1280.png 1280 /Users/michelestorci/Developer/rete-palazzo/observatory/docs/obs-o27-oggi-768.png 768",
+      "rc": 0,
+      "out": "obs-o27-oggi-1280.png: 1280x16313 sha256=da37e5843597ed6923949d4984671dd99f240bc1d7c13a64a501456f011d31de\nobs-o27-oggi-768.png: 768x19679 sha256=c6a89c09390de47a72bd10276ba53fd82dc9c76550cc66060dc6e2be06fa8f5a\nPASS pair distinct widths"
+    },
+    {
+      "cmd": "--pair /Users/michelestorci/Developer/rete-palazzo/observatory/docs/obs-o27-oggi-1280.png 1280 /Users/michelestorci/Developer/rete-palazzo/observatory/docs/obs-o27-oggi-390.png 390",
+      "rc": 0,
+      "out": "obs-o27-oggi-1280.png: 1280x16313 sha256=da37e5843597ed6923949d4984671dd99f240bc1d7c13a64a501456f011d31de\nobs-o27-oggi-390.png: 390x25261 sha256=3a3bab722c642c032de55faf9eeb8a4f43504653c40468fc546ae8b04b6c4cd1\nPASS pair distinct widths"
+    },
+    {
+      "cmd": "--pair /Users/michelestorci/Developer/rete-palazzo/observatory/docs/obs-o27-timeline-disp-1280.png 1280 /Users/michelestorci/Developer/rete-palazzo/observatory/docs/obs-o27-timeline-disp-768.png 768",
+      "rc": 0,
+      "out": "obs-o27-timeline-disp-1280.png: 1280x11917 sha256=ea38fc81a61173c6c58e212e83864c35d51a5c266810b6012957a63500402d5f\nobs-o27-timeline-disp-768.png: 768x11985 sha256=c79e4f3070e212388f4d1e077bc950e296a601ed498127407b134c07dd5c5576\nPASS pair distinct widths"
+    },
+    {
+      "cmd": "--pair /Users/michelestorci/Developer/rete-palazzo/observatory/docs/obs-o27-timeline-disp-1280.png 1280 /Users/michelestorci/Developer/rete-palazzo/observatory/docs/obs-o27-timeline-disp-390.png 390",
+      "rc": 0,
+      "out": "obs-o27-timeline-disp-1280.png: 1280x11917 sha256=ea38fc81a61173c6c58e212e83864c35d51a5c266810b6012957a63500402d5f\nobs-o27-timeline-disp-390.png: 390x14498 sha256=a3c57a22f13412a8b3e82979e236362eac5b88cd0b421f9417595f9aab68956b\nPASS pair distinct widths"
+    }
+  ]
+}
