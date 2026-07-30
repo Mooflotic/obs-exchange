@@ -1,0 +1,31 @@
+/Users/michelestorci/Developer/rete-palazzo/observatory/.venv/lib/python3.9/site-packages/pytest_asyncio/plugin.py:208: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+============================= test session starts ==============================
+platform darwin -- Python 3.9.6, pytest-8.3.4, pluggy-1.6.0 -- /Users/michelestorci/Developer/rete-palazzo/observatory/.venv/bin/python3
+cachedir: .pytest_cache
+rootdir: /Users/michelestorci/Developer/rete-palazzo/observatory
+plugins: anyio-4.12.1, asyncio-0.24.0
+asyncio: mode=strict, default_loop_scope=None
+collecting ... collected 17 items
+
+tests/test_disposition_o26.py::test_disposition_key_chassis_asset PASSED [  5%]
+tests/test_disposition_o26.py::test_disposition_key_fdb_row_granularity PASSED [ 11%]
+tests/test_disposition_o26.py::test_material_new_sa_signal_absent_from_fingerprint PASSED [ 17%]
+tests/test_disposition_o26.py::test_material_new_sb_mac_move_new PASSED  [ 23%]
+tests/test_disposition_o26.py::test_material_new_i3_conflict_new PASSED  [ 29%]
+tests/test_disposition_o26.py::test_material_new_name_kind_changed PASSED [ 35%]
+tests/test_disposition_o26.py::test_material_new_i2_absent_flip PASSED   [ 41%]
+tests/test_disposition_o26.py::test_material_new_exclusion_same_signal_only_last_seen PASSED [ 47%]
+tests/test_disposition_o26.py::test_material_new_exclusion_source_fdb_alone PASSED [ 52%]
+tests/test_disposition_o26.py::test_material_new_exclusion_soft_no_delta PASSED [ 58%]
+tests/test_disposition_api_o26.py::test_v4_rejects_empty_motivation_and_bad_esito PASSED [ 64%]
+tests/test_disposition_api_o26.py::test_v1_close_and_v5_reopen_keeps_both_events PASSED [ 70%]
+tests/test_disposition_api_o26.py::test_v3_row_granularity_keys_distinct PASSED [ 76%]
+tests/test_disposition_api_o26.py::test_v0_empty_table_means_no_closed_keys PASSED [ 82%]
+tests/test_disposition_api_o26.py::test_e12_mixed_fdb_rows_filter_hides_only_closed_key PASSED [ 88%]
+tests/test_disposition_api_o26.py::test_e12_fdb_and_chassis_keys_do_not_collide PASSED [ 94%]
+tests/test_disposition_api_o26.py::test_e12_http_post_rejects_empty_or_bad_esito_writes_nothing PASSED [100%]
+
+============================== 17 passed in 0.96s ==============================
