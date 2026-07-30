@@ -266,7 +266,7 @@ Eccezioni contrasto: `--text-3` TEMP debitata; `wp_gate` non toccato.
 
 ## 9. Hash commit principale
 
-_(compitato in G5 — vedi `git log -1` dopo push)_
+`3b7690f8b258d923dad4e7563dcb42189c0ea694` — feat O30 0.10.96 (il tip del solo report non autocertifica; O31 conferma in Blocco 0.1).
 
 ---
 
