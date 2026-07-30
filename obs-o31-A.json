@@ -1,0 +1,68 @@
+{
+  "wave": "O31-A",
+  "scope": "branding/estetica Matrix user-facing — NON matrice decisionale O15",
+  "a1_len": 4,
+  "a1": [
+    {
+      "i": 1,
+      "id": "MatrixRain.vue",
+      "where": "App.vue globale (tutte le rotte autenticata + login wrap)",
+      "visible_now": false,
+      "evidence": ".matrix-bg { display: none } in matrix.css since 10e93f12 (2026-07-23 OBS-025); deployed CSS .matrix-bg{display:none}; census matrix_rain_display=none",
+      "role": "decorativo ambient (katakana+digits, fill da --ok/--bg-0); NON comunica stato operativo",
+      "note": "componente ancora montato e RAF attivo se reduced-motion assente — solo nascosto via CSS"
+    },
+    {
+      "i": 2,
+      "id": "class.matrix-bg",
+      "where": "canvas MatrixRain; CSS globale",
+      "visible_now": false,
+      "role": "hook stile pioggia; naming tematico; invisibile all'utente come stringa"
+    },
+    {
+      "i": 3,
+      "id": "div.scanline",
+      "where": "App.vue globale; tutte le rotte",
+      "visible_now": true,
+      "evidence": "scanline_display=block opacity=0.25 @1280/768/390 deployed",
+      "role": "decorativo CRT/cyber; NON stato",
+      "breakpoints": "tutti"
+    },
+    {
+      "i": 4,
+      "id": "token.--scanline-stripe",
+      "where": "matrix.css :root → .scanline",
+      "visible_now": true,
+      "role": "supporto effetto scanline; non copy"
+    }
+  ],
+  "a1_not_user_facing_excluded": [
+    "matrix.css filename (igiene interna — A2)",
+    "OggiDecisionMatrix / data-o15=decision-matrix (O15 funzionale — non branding)",
+    "commenti codice Matrix APPLICA",
+    "nessun copy UI con parola Matrix/MatrixRain"
+  ],
+  "a2": {
+    "o15_matrix": "NON toccata",
+    "matrix_css_rename": "nota igiene opzionale; non in O31"
+  },
+  "a3_alternatives": [
+    {
+      "id": "a_neutral",
+      "desc": "Nessun effetto: scanline off, rain resta none",
+      "capture": "obs-o31-a3-a_neutral-1280.png"
+    },
+    {
+      "id": "b_accent",
+      "desc": "Accento sottile radial --accent/--data-out (token esistenti)",
+      "capture": "obs-o31-a3-b_accent-1280.png"
+    },
+    {
+      "id": "c_structure",
+      "desc": "Gradiente strutturale --bg-1→--bg-0 in testa pagina (no cyber)",
+      "capture": "obs-o31-a3-c_structure-1280.png"
+    }
+  ],
+  "a3_baseline": "obs-o31-a3-baseline-1280.png",
+  "assert_len_a1": 4
+}
