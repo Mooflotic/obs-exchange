@@ -1,0 +1,193 @@
+{
+  "wave": "O30-M",
+  "head": "5e72dd23d436ec3fef2f7b0ba2555116124502f5",
+  "m1": "docs/COLOR_SEMANTICS.md",
+  "m2_allowlist_len": 15,
+  "m2_allowlist": [
+    {
+      "i": 1,
+      "file": "components/AssetHabits.vue",
+      "allowlist_reason": "habits probable/soft (#c47a2c/#6a9cc8/#c45c5c) — non canvas/AI; deferred oltre D3",
+      "class": "candidate_resolve_gs308_schema",
+      "note": "letterali/status/glow → token ruolo"
+    },
+    {
+      "i": 2,
+      "file": "components/Branch308Card.vue",
+      "allowlist_reason": "308 status rgba mix (ok/warn/muted) — residual non-token; deferred oltre canvas/AI",
+      "class": "candidate_resolve_gs308_schema",
+      "note": "letterali/status/glow → token ruolo"
+    },
+    {
+      "i": 3,
+      "file": "components/CalibrationBadge.vue",
+      "allowlist_reason": "calib warn glow rgba(230,195,92) + #0e1912 — deferred oltre canvas/AI",
+      "class": "candidate_resolve_gs308_schema",
+      "note": "letterali/status/glow → token ruolo"
+    },
+    {
+      "i": 4,
+      "file": "components/MatrixRain.vue",
+      "allowlist_reason": "canvas: rgba() assemblato a runtime da getComputedStyle(--ok/--bg-0); nessun literal di palette fissa (gate vede template rgba)",
+      "class": "intentional_debited",
+      "note": "canvas da token; gate vede template rgba — DEBT-COLOR-LITERAL-GATE-JS-CANVAS-GAP"
+    },
+    {
+      "i": 5,
+      "file": "components/SensorHealth.vue",
+      "allowlist_reason": "sensor panel rgba — deferred oltre canvas/AI",
+      "class": "candidate_resolve_gs308_schema",
+      "note": "letterali/status/glow → token ruolo"
+    },
+    {
+      "i": 6,
+      "file": "components/SpanSensorCard.vue",
+      "allowlist_reason": "span status rgba — deferred oltre canvas/AI",
+      "class": "candidate_resolve_gs308_schema",
+      "note": "letterali/status/glow → token ruolo"
+    },
+    {
+      "i": 7,
+      "file": "views/Actions.vue",
+      "allowlist_reason": "actions glow rgba(61,255,138,*) — residual decorativo non-canvas; deferred",
+      "class": "candidate_resolve_gs308_schema",
+      "note": "letterali/status/glow → token ruolo"
+    },
+    {
+      "i": 8,
+      "file": "views/Dashboard.vue",
+      "allowlist_reason": "dashboard residual rgba — deferred oltre canvas/AI",
+      "class": "candidate_resolve_gs308_schema",
+      "note": "letterali/status/glow → token ruolo"
+    },
+    {
+      "i": 9,
+      "file": "views/Dossier.vue",
+      "allowlist_reason": "warn/state chips rgba + fallback var(--warn/--ok,#…) — non AI; INFERENZA IA → var(--inference*) in O14/O14-FIX",
+      "class": "candidate_resolve_gs308_schema",
+      "note": "letterali/status/glow → token ruolo"
+    },
+    {
+      "i": 10,
+      "file": "views/Inventory.vue",
+      "allowlist_reason": "overlay/modal rgba residui — non AI; chrome AI → token in O14-FIX",
+      "class": "candidate_resolve_gs308_schema",
+      "note": "letterali/status/glow → token ruolo"
+    },
+    {
+      "i": 11,
+      "file": "views/Monitoring.vue",
+      "allowlist_reason": "monitoring glow rgba(61,255,138,*) — deferred oltre canvas/AI",
+      "class": "candidate_resolve_gs308_schema",
+      "note": "letterali/status/glow → token ruolo"
+    },
+    {
+      "i": 12,
+      "file": "views/Oggi.vue",
+      "allowlist_reason": "oggi residual #e4b866 / color-mix — deferred oltre canvas/AI",
+      "class": "candidate_resolve_gs308_schema",
+      "note": "letterali/status/glow → token ruolo"
+    },
+    {
+      "i": 13,
+      "file": "views/Plant.vue",
+      "allowlist_reason": "role-badge non-ok hues (#e4b866/#75b9e8/…) + empty-state borders — ok greens già var(--ok); deferred oltre canvas/AI",
+      "class": "b_categorical_or_ambiguous",
+      "note": "palette categoriale ruoli impianto (AP/switch/…) senza token di ruolo dedicato — (b)"
+    },
+    {
+      "i": 14,
+      "file": "views/Suggestions.vue",
+      "allowlist_reason": "badge.enrich hex (#122028/#3a6a88/#8ec8e8) — non AI; badge.ai → var(--inference*) in O14-FIX",
+      "class": "candidate_resolve_gs308_schema",
+      "note": "letterali/status/glow → token ruolo"
+    },
+    {
+      "i": 15,
+      "file": "views/Timeline.vue",
+      "allowlist_reason": "timeline glow rgba(61,255,138,*) — deferred oltre canvas/AI",
+      "class": "candidate_resolve_gs308_schema",
+      "note": "letterali/status/glow → token ruolo"
+    }
+  ],
+  "m2_candidate_len": 13,
+  "m2_candidates": [
+    "components/AssetHabits.vue",
+    "components/Branch308Card.vue",
+    "components/CalibrationBadge.vue",
+    "components/SensorHealth.vue",
+    "components/SpanSensorCard.vue",
+    "views/Actions.vue",
+    "views/Dashboard.vue",
+    "views/Dossier.vue",
+    "views/Inventory.vue",
+    "views/Monitoring.vue",
+    "views/Oggi.vue",
+    "views/Suggestions.vue",
+    "views/Timeline.vue"
+  ],
+  "m2_keep_intentional": [
+    "components/MatrixRain.vue"
+  ],
+  "m2_keep_b": [
+    "views/Plant.vue"
+  ],
+  "m3": "color_literal_gate PASS su tutto web/src — letterali solo in allowlist; nessun FAIL fuori allowlist",
+  "m3_gate_covers_web_src": true,
+  "m4_role_coherence": [
+    {
+      "file": "views/Topology.vue",
+      "sel": "grid_bg / depth_border / endpoint tint",
+      "token": "--ok",
+      "role_declared": "stato positivo",
+      "use": "decorazione",
+      "cat": "a",
+      "fix": "D1 option B → --border/--text-3"
+    },
+    {
+      "file": "components/MatrixRain.vue",
+      "token": "--ok",
+      "use": "pioggia decorativa ambient",
+      "cat": "b",
+      "note": "prodotto intenzionale cyber; non forzare in O30"
+    },
+    {
+      "file": "components/ToggleSwitch.vue",
+      "token": "--ok",
+      "use": "stato ON",
+      "cat": "ok_aligned",
+      "note": "ON = positivo — coerente"
+    }
+  ],
+  "m5": "Topology B deciso Michele — primo elemento D",
+  "gate_m": {
+    "d1_topology_b": true,
+    "d2_allowlist_candidates": [
+      "components/AssetHabits.vue",
+      "components/Branch308Card.vue",
+      "components/CalibrationBadge.vue",
+      "components/SensorHealth.vue",
+      "components/SpanSensorCard.vue",
+      "views/Actions.vue",
+      "views/Dashboard.vue",
+      "views/Dossier.vue",
+      "views/Inventory.vue",
+      "views/Monitoring.vue",
+      "views/Oggi.vue",
+      "views/Suggestions.vue",
+      "views/Timeline.vue"
+    ],
+    "d2_skip": [
+      "components/MatrixRain.vue",
+      "views/Plant.vue"
+    ],
+    "d3": "assorbito in D2 (letterali = allowlist hits)",
+    "d4_a": [
+      "Topology decorative --ok"
+    ],
+    "d4_b": [
+      "MatrixRain --ok ambient",
+      "Plant categorical hues"
+    ]
+  }
+}
