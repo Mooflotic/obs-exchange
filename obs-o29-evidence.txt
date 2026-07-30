@@ -1,0 +1,11 @@
+=== evidence_gate ===
+forbidden_ownership_terms=4
+  /collegato\s+a/ — asserisce ownership di link; FDB prova solo passaggio MAC (I5 rango 60)
+  /attaccat[oa]\s+a/ — sinonimo ownership fisico; vietato su FDB
+  /assegnat[oa]\s+(alla|alla porta|a porta)/ — asserisce assegnazione porta; FDB non è LLDP/manual
+  /appartiene\s+a/ — asserisce appartenenza; FDB non è identità
+i2_conditions=['sorgente_non_disponibile', 'dispositivo_assente', 'misurato_a_zero', 'disabilitato_dall_operatore', 'limite_strutturale']
+ownership_hits=0
+marker_errors=0
+i2_placeholder_errors=0
+PASS: no FDB+ownership vocabulary; required evidence markers present; I2 placeholders declared
