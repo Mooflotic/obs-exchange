@@ -182,7 +182,7 @@ Tutti curl 200 + local==raw al pin indicato. Inventario completo: `obs-o31-share
 
 | file | exchange commit | URL pin |
 |------|-----------------|--------|
-| `obs-o31.md` (questo testo, pin pre-cite) | `8e53b80ee9ef8e5dbfe2efef3dfed8be24f99df1` | [raw](https://raw.githubusercontent.com/Mooflotic/obs-exchange/8e53b80ee9ef8e5dbfe2efef3dfed8be24f99df1/obs-o31.md) |
+| `obs-o31.md` (questo testo) | `6d0e8658800a6fc221d794e9157fff9ed3461e33` | [raw](https://raw.githubusercontent.com/Mooflotic/obs-exchange/6d0e8658800a6fc221d794e9157fff9ed3461e33/obs-o31.md) |
 | `obs-o31-A.json` | `4f8e59ac8ca476bcd34694a63d07262160980281` | [raw](https://raw.githubusercontent.com/Mooflotic/obs-exchange/4f8e59ac8ca476bcd34694a63d07262160980281/obs-o31-A.json) |
 | `obs-o31-design-language.md` | `b14f8a8df40985f080d3f78df49577268b570dd0` | [raw](https://raw.githubusercontent.com/Mooflotic/obs-exchange/b14f8a8df40985f080d3f78df49577268b570dd0/obs-o31-design-language.md) |
 | `obs-o31-b-oggi-1280.png` | `1de58bb3409a69129f14b7094866c4c0d03d0a62` | [raw](https://raw.githubusercontent.com/Mooflotic/obs-exchange/1de58bb3409a69129f14b7094866c4c0d03d0a62/obs-o31-b-oggi-1280.png) |
