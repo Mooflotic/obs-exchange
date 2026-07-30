@@ -178,11 +178,11 @@ Confronto vs `obs-o31-c1-oggi-fold-1280.png`.
 
 ## 7. Share O31 (commit-pinned)
 
-Tutti curl 200 + local==raw. Dettaglio: `docs/obs-o31-share-proof.json`.
+Tutti curl 200 + local==raw al pin indicato. Inventario completo: `obs-o31-share-proof.json`.
 
 | file | exchange commit | URL pin |
 |------|-----------------|--------|
-| `obs-o31.md` | `b87634c82a3a3d3308870ea581640298c7491425` | [raw](https://raw.githubusercontent.com/Mooflotic/obs-exchange/b87634c82a3a3d3308870ea581640298c7491425/obs-o31.md) |
+| `obs-o31.md` (questo testo, pin pre-cite) | `8e53b80ee9ef8e5dbfe2efef3dfed8be24f99df1` | [raw](https://raw.githubusercontent.com/Mooflotic/obs-exchange/8e53b80ee9ef8e5dbfe2efef3dfed8be24f99df1/obs-o31.md) |
 | `obs-o31-A.json` | `4f8e59ac8ca476bcd34694a63d07262160980281` | [raw](https://raw.githubusercontent.com/Mooflotic/obs-exchange/4f8e59ac8ca476bcd34694a63d07262160980281/obs-o31-A.json) |
 | `obs-o31-design-language.md` | `b14f8a8df40985f080d3f78df49577268b570dd0` | [raw](https://raw.githubusercontent.com/Mooflotic/obs-exchange/b14f8a8df40985f080d3f78df49577268b570dd0/obs-o31-design-language.md) |
 | `obs-o31-b-oggi-1280.png` | `1de58bb3409a69129f14b7094866c4c0d03d0a62` | [raw](https://raw.githubusercontent.com/Mooflotic/obs-exchange/1de58bb3409a69129f14b7094866c4c0d03d0a62/obs-o31-b-oggi-1280.png) |
@@ -190,4 +190,4 @@ Tutti curl 200 + local==raw. Dettaglio: `docs/obs-o31-share-proof.json`.
 | `obs-o31-c1-oggi-fold-1280.png` | `9aba857a8d866218f3adc7c22bff189c0579676d` | [raw](https://raw.githubusercontent.com/Mooflotic/obs-exchange/9aba857a8d866218f3adc7c22bff189c0579676d/obs-o31-c1-oggi-fold-1280.png) |
 | `obs-o31-c3_v2_workfirst-fold-1280.png` | `a2a578ef192559666838594e84edc21689251f6f` | [raw](https://raw.githubusercontent.com/Mooflotic/obs-exchange/a2a578ef192559666838594e84edc21689251f6f/obs-o31-c3_v2_workfirst-fold-1280.png) |
 
-(Altri file nella proof JSON; `len` share proof = 18+ aggiornamenti successivi del report.)
+Il tip di sola pubblicazione del report su exchange può avanzare di un commit rispetto alla riga sopra (lag PROCESS_NOTES); O32 conferma in Blocco 0.1.
