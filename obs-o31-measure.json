@@ -1,0 +1,340 @@
+{
+  "wave": "O31",
+  "base": "http://192.168.1.3:8080",
+  "auth": "session_mint",
+  "captures": {
+    "oggi-1280": {
+      "path": "obs-o31-b-oggi-1280.png",
+      "wh": [
+        1280,
+        18497
+      ],
+      "sha256": "bcd7af08227e894dc57bad97500191d81507c7e48b4525726aee6bbaaa705450",
+      "bytes": 2993733
+    },
+    "oggi-fold-1280": {
+      "path": "obs-o31-c1-oggi-fold-1280.png",
+      "wh": [
+        1280,
+        900
+      ],
+      "sha256": "c8e1bedbc7846a9ac3e8986d7ec2e0b1af9d645a02321018f46991356a7c3e49"
+    },
+    "oggi-768": {
+      "path": "obs-o31-b-oggi-768.png",
+      "wh": [
+        768,
+        22246
+      ],
+      "sha256": "fcce9469ae9824f3e7e2b5028f19c62170236a40517d59b53053fac4b49f7db3",
+      "bytes": 2763460
+    },
+    "oggi-fold-768": {
+      "path": "obs-o31-c1-oggi-fold-768.png",
+      "wh": [
+        768,
+        900
+      ],
+      "sha256": "49c075687d294643997f17caa341f74578fb204373cf2e170e2503860ce74709"
+    },
+    "oggi-390": {
+      "path": "obs-o31-b-oggi-390.png",
+      "wh": [
+        390,
+        27800
+      ],
+      "sha256": "acae172c7fe44fe0620a36a148b0a3069888efdf55a709065e9634a797948697",
+      "bytes": 2470024
+    },
+    "oggi-fold-390": {
+      "path": "obs-o31-c1-oggi-fold-390.png",
+      "wh": [
+        390,
+        900
+      ],
+      "sha256": "c06a966981bd2e1d274d8ae6ab3d6323a7fbe699467f7762d83af65ccbae9543"
+    }
+  },
+  "census": {
+    "1280": {
+      "scrollHeight": 18634,
+      "bodyHeight": 18634,
+      "workspaceH": 18634,
+      "cards_problem": 36,
+      "closed_chrome_visible": false,
+      "legend_open": true,
+      "h1": "Oggi ?",
+      "help": "",
+      "above_fold_1280ish": [
+        {
+          "tag": "HEADER",
+          "cls": "page-head page-header",
+          "id": "",
+          "text": "Oggi ?",
+          "h": 26,
+          "top": 20
+        },
+        {
+          "tag": "DETAILS",
+          "cls": "oggi-collapse",
+          "id": "oggi-legend",
+          "text": "Priorit\u00e0 P1\u2013P7 \u00b7 legenda 7 livelli \u00b7 P1 resta in coda aperta \u00b7 P7 = igiene Priorit\u00e0 per conseguenza difensiva P1 \u2014 Dispo",
+          "h": 240,
+          "top": 62
+        },
+        {
+          "tag": "NAV",
+          "cls": "oggi-quick",
+          "id": "",
+          "text": "Domande rapide (\u22643 passi) Non riconosciuto / solo-L2 adesso? \u2192 FDB P1 / Nuovi MAC dove \u00e8 attaccato? \u2192 Impianto (cerca M",
+          "h": 335,
+          "top": 316
+        },
+        {
+          "tag": "DIV",
+          "cls": "oggi-orphan",
+          "id": "",
+          "text": "Fatto nome chassis orfano (non ri-puntato) FA 251 \u00b7 asset.name=LGS310C \u00b7 subject chassis 24 (inesistente) \u00b7 manual/100 \u00b7",
+          "h": 105,
+          "top": 665
+        },
+        {
+          "tag": "DIV",
+          "cls": "oggi-discarded",
+          "id": "",
+          "text": "396 eventi mac_move scartati \u2014 Eventi mac_move scartati: marcatura O5 F0 di supersession spurie da presenza concorrente ",
+          "h": 56,
+          "top": 782
+        },
+        {
+          "tag": "SECTION",
+          "cls": "oggi-section",
+          "id": "oggi-fdb",
+          "text": "FDB \u00b7 sensore difensivo 13 \u00b7 S-A\u2026S-D Solo L2 \u00b7 F0:B0:14:90:87:96 S-C \u00b7 media F0:B0:14:90:87:96 328c:2 ruolo non_determin",
+          "h": 11788,
+          "top": 858
+        }
+      ],
+      "section_ids": [
+        "oggi-legend",
+        "oggi-fdb",
+        "oggi-fdb-title",
+        "oggi-coverage",
+        "oggi-coverage-title",
+        "oggi-behavior",
+        "oggi-behavior-title",
+        "oggi-egress",
+        "oggi-egress-title",
+        "oggi-apparati",
+        "oggi-apparati-title",
+        "oggi-nomi",
+        "oggi-nomi-title",
+        "oggi-secondary",
+        "oggi-secondary-title"
+      ],
+      "matrix_rain_display": "none",
+      "scanline_opacity": "0.25",
+      "scanline_display": "block"
+    },
+    "768": {
+      "scrollHeight": 22726,
+      "bodyHeight": 22726,
+      "workspaceH": 22658,
+      "cards_problem": 36,
+      "closed_chrome_visible": false,
+      "legend_open": true,
+      "h1": "Oggi ?",
+      "help": "",
+      "above_fold_1280ish": [
+        {
+          "tag": "HEADER",
+          "cls": "page-head page-header",
+          "id": "",
+          "text": "Oggi ?",
+          "h": 26,
+          "top": 89
+        },
+        {
+          "tag": "DETAILS",
+          "cls": "oggi-collapse",
+          "id": "oggi-legend",
+          "text": "Priorit\u00e0 P1\u2013P7 \u00b7 legenda 7 livelli \u00b7 P1 resta in coda aperta \u00b7 P7 = igiene Priorit\u00e0 per conseguenza difensiva P1 \u2014 Dispo",
+          "h": 240,
+          "top": 131
+        },
+        {
+          "tag": "NAV",
+          "cls": "oggi-quick",
+          "id": "",
+          "text": "Domande rapide (\u22643 passi) Non riconosciuto / solo-L2 adesso? \u2192 FDB P1 / Nuovi MAC dove \u00e8 attaccato? \u2192 Impianto (cerca M",
+          "h": 335,
+          "top": 385
+        },
+        {
+          "tag": "DIV",
+          "cls": "oggi-orphan",
+          "id": "",
+          "text": "Fatto nome chassis orfano (non ri-puntato) FA 251 \u00b7 asset.name=LGS310C \u00b7 subject chassis 24 (inesistente) \u00b7 manual/100 \u00b7",
+          "h": 140,
+          "top": 734
+        },
+        {
+          "tag": "DIV",
+          "cls": "oggi-discarded",
+          "id": "",
+          "text": "396 eventi mac_move scartati \u2014 Eventi mac_move scartati: marcatura O5 F0 di supersession spurie da presenza concorrente ",
+          "h": 55,
+          "top": 886
+        }
+      ],
+      "section_ids": [
+        "oggi-legend",
+        "oggi-fdb",
+        "oggi-fdb-title",
+        "oggi-coverage",
+        "oggi-coverage-title",
+        "oggi-behavior",
+        "oggi-behavior-title",
+        "oggi-egress",
+        "oggi-egress-title",
+        "oggi-apparati",
+        "oggi-apparati-title",
+        "oggi-nomi",
+        "oggi-nomi-title",
+        "oggi-secondary",
+        "oggi-secondary-title"
+      ],
+      "matrix_rain_display": "none",
+      "scanline_opacity": "0.25",
+      "scanline_display": "block"
+    },
+    "390": {
+      "scrollHeight": 28627,
+      "bodyHeight": 28627,
+      "workspaceH": 28511,
+      "cards_problem": 36,
+      "closed_chrome_visible": false,
+      "legend_open": false,
+      "h1": "Oggi ?",
+      "help": "",
+      "above_fold_1280ish": [
+        {
+          "tag": "HEADER",
+          "cls": "page-head page-header",
+          "id": "",
+          "text": "Oggi ?",
+          "h": 26,
+          "top": 130
+        },
+        {
+          "tag": "DETAILS",
+          "cls": "oggi-collapse",
+          "id": "oggi-legend",
+          "text": "Priorit\u00e0 P1\u2013P7 \u00b7 legenda 7 livelli \u00b7 P1 resta in coda aperta \u00b7 P7 = igiene",
+          "h": 74,
+          "top": 172
+        },
+        {
+          "tag": "NAV",
+          "cls": "oggi-quick",
+          "id": "",
+          "text": "Domande rapide (\u22643 passi) Non riconosciuto / solo-L2 adesso? \u2192 FDB P1 / Nuovi MAC dove \u00e8 attaccato? \u2192 Impianto (cerca M",
+          "h": 335,
+          "top": 260
+        },
+        {
+          "tag": "DIV",
+          "cls": "oggi-orphan",
+          "id": "",
+          "text": "Fatto nome chassis orfano (non ri-puntato) FA 251 \u00b7 asset.name=LGS310C \u00b7 subject chassis 24 (inesistente) \u00b7 manual/100 \u00b7",
+          "h": 175,
+          "top": 609
+        },
+        {
+          "tag": "DIV",
+          "cls": "oggi-discarded",
+          "id": "",
+          "text": "396 eventi mac_move scartati \u2014 Eventi mac_move scartati: marcatura O5 F0 di supersession spurie da presenza concorrente ",
+          "h": 91,
+          "top": 795
+        }
+      ],
+      "section_ids": [
+        "oggi-legend",
+        "oggi-fdb",
+        "oggi-fdb-title",
+        "oggi-coverage",
+        "oggi-coverage-title",
+        "oggi-behavior",
+        "oggi-behavior-title",
+        "oggi-egress",
+        "oggi-egress-title",
+        "oggi-apparati",
+        "oggi-apparati-title",
+        "oggi-nomi",
+        "oggi-nomi-title",
+        "oggi-secondary",
+        "oggi-secondary-title"
+      ],
+      "matrix_rain_display": "none",
+      "scanline_opacity": "0.25",
+      "scanline_display": "block"
+    }
+  },
+  "a3": {
+    "a_neutral": {
+      "path": "obs-o31-a3-a_neutral-1280.png",
+      "wh": [
+        1280,
+        4308
+      ],
+      "sha256": "ea21ecc496d5a98cdab22f856576b90a1e62328ffde57545e5a7a9dfa1cef517",
+      "bytes": 724310
+    },
+    "b_accent": {
+      "path": "obs-o31-a3-b_accent-1280.png",
+      "wh": [
+        1280,
+        4308
+      ],
+      "sha256": "c890ccb25f96b1da90ee94f5431dfcc212347ffd0df41338f881c5e311d2eba8",
+      "bytes": 724353
+    },
+    "c_structure": {
+      "path": "obs-o31-a3-c_structure-1280.png",
+      "wh": [
+        1280,
+        4335
+      ],
+      "sha256": "eeb79285db2f48e709ce61323a1b535ccac03eecc081ceb6d1521b075d8f703f",
+      "bytes": 748663
+    },
+    "baseline": {
+      "path": "obs-o31-a3-baseline-1280.png",
+      "wh": [
+        1280,
+        4335
+      ],
+      "sha256": "a654935f0d3193a1dc5c0376825f0ffaa25b5d0a18e64113d7e3d8bc2d656f78",
+      "bytes": 762604
+    }
+  },
+  "c3": {
+    "c3_v1_quiet": {
+      "path": "obs-o31-c3_v1_quiet-fold-1280.png",
+      "wh": [
+        1280,
+        900
+      ],
+      "sha256": "641cd9f04e0ca67913c529232324a973005aab0d09b90f3db896275f06871363"
+    },
+    "c3_v2_workfirst": {
+      "path": "obs-o31-c3_v2_workfirst-fold-1280.png",
+      "wh": [
+        1280,
+        900
+      ],
+      "sha256": "fe10e9125bd50d369ea953d5640d5caa6c86a83dda6f59911f63bd50d46bcc9d"
+    }
+  }
+}
