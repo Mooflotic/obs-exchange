@@ -129,4 +129,18 @@ URL raw **commit-pinned** (tabella compilata dopo `share.sh` + push): vedi § Sh
 
 ## Share (obs-exchange, pin ≠ main)
 
-Compilato nello step share: URL `https://raw.githubusercontent.com/Mooflotic/obs-exchange/<PIN>/…` + doppio sha256 + curl 200.
+| File | pin obs-exchange | URL raw PINNED |
+|------|------------------|----------------|
+| pre-1280 | `adf8c90944cd6e911514c71a4e885d25b24919b1` | https://raw.githubusercontent.com/Mooflotic/obs-exchange/adf8c90944cd6e911514c71a4e885d25b24919b1/obs-o32-pre-oggi-1280.png |
+| pre-768 | `13c3416e6bde3a0f6f315e3add127ad9306db73f` | https://raw.githubusercontent.com/Mooflotic/obs-exchange/13c3416e6bde3a0f6f315e3add127ad9306db73f/obs-o32-pre-oggi-768.png |
+| pre-390 | `3ca8c6d7c39187782e71c09a4e34565e8e09131a` | https://raw.githubusercontent.com/Mooflotic/obs-exchange/3ca8c6d7c39187782e71c09a4e34565e8e09131a/obs-o32-pre-oggi-390.png |
+| post-1280 | `b2cbf69822c6b00634477017e92ea455548e407a` | https://raw.githubusercontent.com/Mooflotic/obs-exchange/b2cbf69822c6b00634477017e92ea455548e407a/obs-o32-post-oggi-1280.png |
+| post-768 | `c4e4aaa37ba75ed5b48e9d50e3d1b8e0d742f129` | https://raw.githubusercontent.com/Mooflotic/obs-exchange/c4e4aaa37ba75ed5b48e9d50e3d1b8e0d742f129/obs-o32-post-oggi-768.png |
+| post-390 | `fa17af31b0f7e262cb8bac5fc80a6ddf304394a6` | https://raw.githubusercontent.com/Mooflotic/obs-exchange/fa17af31b0f7e262cb8bac5fc80a6ddf304394a6/obs-o32-post-oggi-390.png |
+| fold-1280 | `1a98f0080694651b29899e8954cb007f5a767ec0` | https://raw.githubusercontent.com/Mooflotic/obs-exchange/1a98f0080694651b29899e8954cb007f5a767ec0/obs-o32-post-oggi-fold-1280.png |
+| fold-768 | `67fbb8ebe674c67696b4f6ad600909af69689f37` | https://raw.githubusercontent.com/Mooflotic/obs-exchange/67fbb8ebe674c67696b4f6ad600909af69689f37/obs-o32-post-oggi-fold-768.png |
+| fold-390 | `038b68282fec5720b617651fa13566b262ddf413` | https://raw.githubusercontent.com/Mooflotic/obs-exchange/038b68282fec5720b617651fa13566b262ddf413/obs-o32-post-oggi-fold-390.png |
+| `obs-o32-V.json` | `be03c683190d0f15a3347a03f9b54f27b4bdc85e` | https://raw.githubusercontent.com/Mooflotic/obs-exchange/be03c683190d0f15a3347a03f9b54f27b4bdc85e/obs-o32-V.json |
+| `obs-o32-d12.json` | `5610e9891b2526c69ae5e4e2a517747b7d34f61c` | https://raw.githubusercontent.com/Mooflotic/obs-exchange/5610e9891b2526c69ae5e4e2a517747b7d34f61c/obs-o32-d12.json |
+
+Verifica campione: post-1280 e pre-1280 curl **200**, doppio sha256 **match**. Report tip (con tabella share) ripubblicato dopo commit docs.
